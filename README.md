@@ -21,28 +21,32 @@
 - `go run .` second run reuses the same identity and key material.
 
 ## Phase 2: SQLite Storage Layer
-- [ ] Implement database open/create with `app.db`
-- [ ] Implement schema migrations (peers, messages, files, seen_message_ids tables)
-- [ ] Implement `AddPeer`
-- [ ] Implement `GetPeer`
-- [ ] Implement `ListPeers`
-- [ ] Implement `UpdatePeerStatus`
-- [ ] Implement `RemovePeer`
-- [ ] Implement `SaveMessage`
-- [ ] Implement `GetMessages(peerID, limit, offset)`
-- [ ] Implement `MarkDelivered`
-- [ ] Implement `GetPendingMessages(peerID)`
-- [ ] Implement `PruneExpiredQueue`
-- [ ] Implement `SaveFileMetadata`
-- [ ] Implement `UpdateTransferStatus`
-- [ ] Implement `GetFileByID`
-- [ ] Implement `InsertSeenID`
-- [ ] Implement `HasSeenID`
-- [ ] Implement `PruneOldEntries` (seen_message_ids)
-- [ ] Unit tests for all peer CRUD operations
-- [ ] Unit tests for all message CRUD operations
-- [ ] Unit tests for all file CRUD operations
-- [ ] Unit tests for seen_message_ids operations
+- [x] Implement database open/create with `app.db`
+- [x] Implement schema migrations (peers, messages, files, seen_message_ids tables)
+- [x] Implement `AddPeer`
+- [x] Implement `GetPeer`
+- [x] Implement `ListPeers`
+- [x] Implement `UpdatePeerStatus`
+- [x] Implement `RemovePeer`
+- [x] Implement `SaveMessage`
+- [x] Implement `GetMessages(peerID, limit, offset)`
+- [x] Implement `MarkDelivered`
+- [x] Implement `GetPendingMessages(peerID)`
+- [x] Implement `PruneExpiredQueue`
+- [x] Implement `SaveFileMetadata`
+- [x] Implement `UpdateTransferStatus`
+- [x] Implement `GetFileByID`
+- [x] Implement `InsertSeenID`
+- [x] Implement `HasSeenID`
+- [x] Implement `PruneOldEntries` (seen_message_ids)
+- [x] Unit tests for all peer CRUD operations
+- [x] Unit tests for all message CRUD operations
+- [x] Unit tests for all file CRUD operations
+- [x] Unit tests for seen_message_ids operations
+
+### Phase 2 Verification
+- `go test ./...` passes, including storage unit tests for migrations and all CRUD paths.
+- `go vet ./...` passes.
 
 ## Phase 3: Encryption & Signing
 - [ ] Implement ephemeral X25519 keypair generation
