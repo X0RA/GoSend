@@ -17,6 +17,16 @@
 - `crypto/encryption_test.go`: Round-trip encryption/decryption test.
 - `crypto/signatures.go`: Ed25519 sign/verify helpers.
 - `crypto/signatures_test.go`: Valid-signature and tampered-payload rejection tests.
+- `models/peer.go`: JSON-tagged peer model used by the network/UI layers.
+- `models/message.go`: JSON-tagged message model used by the network/UI layers.
+- `models/file.go`: JSON-tagged file metadata model used by the network/UI layers.
+- `network/protocol.go`: Protocol message structs, handshake signing/verification helpers, and length-prefixed framing (`WriteFrame`/`ReadFrame`) with 10 MB enforcement.
+- `network/connection.go`: `PeerConnection` implementation with sequence counters, connection state machine, send/receive APIs, and ping/pong keep-alive handling.
+- `network/handshake.go`: Shared handshake options/defaults, key-change decision hook, and session-key derivation helpers.
+- `network/client.go`: Outbound TCP dial and handshake flow, including session-key derivation and key-change checks.
+- `network/server.go`: TCP listener/accept loop, inbound handshake verification/response, and connection handoff.
+- `network/protocol_test.go`: Framing tests (round-trip and oversized frame rejection).
+- `network/integration_test.go`: Integration tests for handshake/session key matching, idle keep-alive stability, dead connection timeout detection, and key-change decision blocking.
 - `storage/types.go`: Shared storage types, status constants, validation helpers, null conversion helpers, and common errors.
 - `storage/database.go`: SQLite open/create logic plus schema migrations for peers/messages/files/seen IDs.
 - `storage/database_test.go`: Migration/open tests that verify DB file creation, schema version, and required tables.
@@ -98,26 +108,30 @@
 - `go vet ./...` passes.
 
 ## Phase 4: Network Protocol & TCP Server
-- [ ] Define model structs (Peer, Message, File) with JSON tags
-- [ ] Define all protocol message type structs with JSON serialization
-- [ ] Implement length-prefixed framing (`WriteFrame` / `ReadFrame`)
-- [ ] Implement max frame size enforcement (10 MB)
-- [ ] Implement TCP listener (configurable port)
-- [ ] Implement inbound connection accept and handshake read
-- [ ] Implement handshake verification and response
-- [ ] Implement session key derivation on connection establish
-- [ ] Implement `PeerConnection` struct (conn, session key, sequence counters, state)
-- [ ] Implement `SendMessage` on `PeerConnection`
-- [ ] Implement `ReceiveMessage` on `PeerConnection`
-- [ ] Implement connection state machine (CONNECTING → READY → IDLE → DISCONNECTED)
-- [ ] Implement outbound dial and handshake send
-- [ ] Implement key change detection (compare stored vs received Ed25519 key)
-- [ ] Implement key change warning flow (block until user decision)
-- [ ] Implement ping/pong keep-alive (60s interval, 15s timeout)
-- [ ] Implement connection timeout (30s)
-- [ ] Test: two instances handshake and derive matching session keys
-- [ ] Test: keep-alive maintains idle connections
-- [ ] Test: dead connection detected on ping timeout
+- [x] Define model structs (Peer, Message, File) with JSON tags
+- [x] Define all protocol message type structs with JSON serialization
+- [x] Implement length-prefixed framing (`WriteFrame` / `ReadFrame`)
+- [x] Implement max frame size enforcement (10 MB)
+- [x] Implement TCP listener (configurable port)
+- [x] Implement inbound connection accept and handshake read
+- [x] Implement handshake verification and response
+- [x] Implement session key derivation on connection establish
+- [x] Implement `PeerConnection` struct (conn, session key, sequence counters, state)
+- [x] Implement `SendMessage` on `PeerConnection`
+- [x] Implement `ReceiveMessage` on `PeerConnection`
+- [x] Implement connection state machine (CONNECTING → READY → IDLE → DISCONNECTED)
+- [x] Implement outbound dial and handshake send
+- [x] Implement key change detection (compare stored vs received Ed25519 key)
+- [x] Implement key change warning flow (block until user decision)
+- [x] Implement ping/pong keep-alive (60s interval, 15s timeout)
+- [x] Implement connection timeout (30s)
+- [x] Test: two instances handshake and derive matching session keys
+- [x] Test: keep-alive maintains idle connections
+- [x] Test: dead connection detected on ping timeout
+
+### Phase 4 Verification
+- `go test ./...` passes, including network framing and integration tests for handshake/session derivation and keep-alive behavior.
+- `go vet ./...` passes.
 
 ## Phase 5: mDNS Discovery
 - [ ] Implement mDNS service broadcast with TXT records (device_id, version, key_fingerprint)
