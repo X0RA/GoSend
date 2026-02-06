@@ -106,6 +106,8 @@ func Dial(address string, options HandshakeOptions) (*PeerConnection, error) {
 	connection := newPeerConnection(conn, sessionKey, ConnectionOptions{
 		LocalDeviceID:     opts.Identity.DeviceID,
 		PeerDeviceID:      response.DeviceID,
+		PeerDeviceName:    response.DeviceName,
+		PeerPublicKey:     response.Ed25519PublicKey,
 		KeepAliveInterval: opts.KeepAliveInterval,
 		KeepAliveTimeout:  opts.KeepAliveTimeout,
 		FrameReadTimeout:  opts.FrameReadTimeout,

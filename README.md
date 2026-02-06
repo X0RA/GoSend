@@ -25,8 +25,10 @@
 - `network/handshake.go`: Shared handshake options/defaults, key-change decision hook, and session-key derivation helpers.
 - `network/client.go`: Outbound TCP dial and handshake flow, including session-key derivation and key-change checks.
 - `network/server.go`: TCP listener/accept loop, inbound handshake verification/response, and connection handoff.
+- `network/peer_manager.go`: Peer lifecycle manager for add/accept/reject/remove/disconnect flows, reconnect backoff, startup reconnection, and DB synchronization.
 - `network/protocol_test.go`: Framing tests (round-trip and oversized frame rejection).
 - `network/integration_test.go`: Integration tests for handshake/session key matching, idle keep-alive stability, dead connection timeout detection, and key-change decision blocking.
+- `network/peer_manager_test.go`: Integration tests for peer add approval queue, restart reconnection, peer removal cleanup, and simultaneous add resolution.
 - `discovery/mdns.go`: mDNS broadcaster setup plus combined discovery service startup/shutdown orchestration.
 - `discovery/peer_scanner.go`: Background peer scanner with self-filtering, in-memory peer list, event channel, and manual refresh support.
 - `discovery/mdns_test.go`: Tests broadcaster TXT record generation and service startup/shutdown wiring.
@@ -154,20 +156,24 @@
 - `go vet ./...` passes.
 
 ## Phase 6: Peer Management
-- [ ] Implement `peer_add_request` send (initiator side)
-- [ ] Implement `peer_add_request` receive and queue for user approval
-- [ ] Implement accept flow: both sides persist peer to SQLite
-- [ ] Implement reject flow: close connection, nothing persisted
-- [ ] Implement `peer_add_response` send/receive
-- [ ] Implement simultaneous add resolution (lower UUID = initiator, other auto-accepts)
-- [ ] Implement `peer_remove` send/receive (remove from DB, close connection)
-- [ ] Implement `peer_disconnect` send/receive (mark offline, keep in DB)
-- [ ] Implement reconnection to known online peers on startup
-- [ ] Implement exponential backoff retry (immediate → 5s → 15s → 60s → every 60s)
-- [ ] Test: A adds B, B accepts, both show online
-- [ ] Test: B restarts, A detects offline, reconnects when B returns
-- [ ] Test: A removes B, both sides clean up
-- [ ] Test: simultaneous add resolves without conflict
+- [x] Implement `peer_add_request` send (initiator side)
+- [x] Implement `peer_add_request` receive and queue for user approval
+- [x] Implement accept flow: both sides persist peer to SQLite
+- [x] Implement reject flow: close connection, nothing persisted
+- [x] Implement `peer_add_response` send/receive
+- [x] Implement simultaneous add resolution (lower UUID = initiator, other auto-accepts)
+- [x] Implement `peer_remove` send/receive (remove from DB, close connection)
+- [x] Implement `peer_disconnect` send/receive (mark offline, keep in DB)
+- [x] Implement reconnection to known online peers on startup
+- [x] Implement exponential backoff retry (immediate → 5s → 15s → 60s → every 60s)
+- [x] Test: A adds B, B accepts, both show online
+- [x] Test: B restarts, A detects offline, reconnects when B returns
+- [x] Test: A removes B, both sides clean up
+- [x] Test: simultaneous add resolves without conflict
+
+### Phase 6 Verification
+- `go test ./...` passes, including peer management integration tests for add/remove/disconnect, restart reconnection, and simultaneous add resolution.
+- `go vet ./...` passes.
 
 ## Phase 7: Messaging
 - [ ] Implement send flow: encrypt with session key → sign → frame → send → store locally

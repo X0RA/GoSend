@@ -75,6 +75,20 @@ func TestPeerCRUD(t *testing.T) {
 		t.Fatalf("unexpected updated last_seen_timestamp: got %+v", updated.LastSeenTimestamp)
 	}
 
+	if err := store.UpdatePeerEndpoint(peer.DeviceID, "10.0.0.8", 7777, newSeen+1); err != nil {
+		t.Fatalf("UpdatePeerEndpoint failed: %v", err)
+	}
+	updatedEndpoint, err := store.GetPeer(peer.DeviceID)
+	if err != nil {
+		t.Fatalf("GetPeer after endpoint update failed: %v", err)
+	}
+	if updatedEndpoint.LastKnownIP == nil || *updatedEndpoint.LastKnownIP != "10.0.0.8" {
+		t.Fatalf("unexpected last_known_ip: %+v", updatedEndpoint.LastKnownIP)
+	}
+	if updatedEndpoint.LastKnownPort == nil || *updatedEndpoint.LastKnownPort != 7777 {
+		t.Fatalf("unexpected last_known_port: %+v", updatedEndpoint.LastKnownPort)
+	}
+
 	if err := store.RemovePeer(peer.DeviceID); err != nil {
 		t.Fatalf("RemovePeer failed: %v", err)
 	}

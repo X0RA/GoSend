@@ -202,6 +202,8 @@ func (s *Server) handleInboundConn(conn net.Conn) {
 	peerConnection := newPeerConnection(conn, sessionKey, ConnectionOptions{
 		LocalDeviceID:     s.options.Identity.DeviceID,
 		PeerDeviceID:      handshake.DeviceID,
+		PeerDeviceName:    handshake.DeviceName,
+		PeerPublicKey:     handshake.Ed25519PublicKey,
 		KeepAliveInterval: s.options.KeepAliveInterval,
 		KeepAliveTimeout:  s.options.KeepAliveTimeout,
 		FrameReadTimeout:  s.options.FrameReadTimeout,

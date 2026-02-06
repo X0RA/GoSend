@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // AddPeer inserts a new peer row.
@@ -176,6 +177,48 @@ func (s *Store) RemovePeer(deviceID string) error {
 	rowsAffected, err := res.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("read rows affected for remove peer %q: %w", deviceID, err)
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+
+	return nil
+}
+
+// UpdatePeerEndpoint updates last known endpoint fields and optional last seen timestamp.
+func (s *Store) UpdatePeerEndpoint(deviceID, ip string, port int, lastSeenTimestamp int64) error {
+	if deviceID == "" {
+		return errors.New("device_id is required")
+	}
+	if strings.TrimSpace(ip) == "" {
+		return errors.New("ip is required")
+	}
+	if port <= 0 {
+		return errors.New("port must be > 0")
+	}
+
+	res, err := s.db.Exec(
+		`UPDATE peers
+		SET last_known_ip = ?,
+		    last_known_port = ?,
+		    last_seen_timestamp = CASE
+				WHEN ? > 0 THEN ?
+				ELSE last_seen_timestamp
+			END
+		WHERE device_id = ?`,
+		ip,
+		port,
+		lastSeenTimestamp,
+		lastSeenTimestamp,
+		deviceID,
+	)
+	if err != nil {
+		return fmt.Errorf("update peer endpoint %q: %w", deviceID, err)
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read rows affected for update peer endpoint %q: %w", deviceID, err)
 	}
 	if rowsAffected == 0 {
 		return ErrNotFound

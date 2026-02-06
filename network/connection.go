@@ -34,6 +34,8 @@ const (
 type ConnectionOptions struct {
 	LocalDeviceID     string
 	PeerDeviceID      string
+	PeerDeviceName    string
+	PeerPublicKey     string
 	KeepAliveInterval time.Duration
 	KeepAliveTimeout  time.Duration
 	FrameReadTimeout  time.Duration
@@ -46,8 +48,10 @@ type PeerConnection struct {
 
 	sessionKey []byte
 
-	localDeviceID string
-	peerDeviceID  string
+	localDeviceID  string
+	peerDeviceID   string
+	peerDeviceName string
+	peerPublicKey  string
 
 	sendSequenceMu sync.Mutex
 	sendSequence   uint64
@@ -99,6 +103,8 @@ func newPeerConnection(conn net.Conn, sessionKey []byte, options ConnectionOptio
 		sessionKey:        append([]byte(nil), sessionKey...),
 		localDeviceID:     options.LocalDeviceID,
 		peerDeviceID:      options.PeerDeviceID,
+		peerDeviceName:    options.PeerDeviceName,
+		peerPublicKey:     options.PeerPublicKey,
 		keepAliveInterval: interval,
 		keepAliveTimeout:  timeout,
 		frameReadTimeout:  readTimeout,
@@ -138,6 +144,26 @@ func (pc *PeerConnection) LastError() error {
 // SessionKey returns a copy of the negotiated session key.
 func (pc *PeerConnection) SessionKey() []byte {
 	return append([]byte(nil), pc.sessionKey...)
+}
+
+// PeerDeviceID returns the remote device ID associated with this connection.
+func (pc *PeerConnection) PeerDeviceID() string {
+	return pc.peerDeviceID
+}
+
+// PeerDeviceName returns the remote device name from handshake metadata.
+func (pc *PeerConnection) PeerDeviceName() string {
+	return pc.peerDeviceName
+}
+
+// PeerPublicKey returns the remote Ed25519 public key (base64) from handshake metadata.
+func (pc *PeerConnection) PeerPublicKey() string {
+	return pc.peerPublicKey
+}
+
+// RemoteAddr returns the remote network endpoint.
+func (pc *PeerConnection) RemoteAddr() net.Addr {
+	return pc.conn.RemoteAddr()
 }
 
 // NextSendSequence increments and returns the outbound sequence counter.
