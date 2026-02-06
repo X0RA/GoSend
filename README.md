@@ -2,6 +2,38 @@
 
 # P2P Chat — Implementation Checklist
 
+## overview
+- `main.go`: App entrypoint; loads config, ensures keys exist, computes fingerprint, and prints device identity.
+- `tools.go`: Build-tagged imports that keep planned dependencies (`fyne`, `zeroconf`, `go-sqlite3`) pinned in `go.mod`.
+- `go.mod`: Go module definition and direct/indirect dependency versions.
+- `go.sum`: Dependency checksum lock file.
+- `config/config.go`: Data directory resolution, first-run directory creation, config load/create/save, and default config normalization.
+- `config/config_test.go`: Tests first-run config creation and second-run reload stability.
+- `crypto/keypair.go`: Ed25519 keypair generation/load/save, fingerprint generation, and display formatting.
+- `crypto/keypair_test.go`: Tests Ed25519/X25519 key persistence stability across repeated loads.
+- `crypto/ecdh.go`: X25519 key handling, ephemeral keypair generation, shared secret computation, and HKDF session key derivation.
+- `crypto/ecdh_session_test.go`: Tests that both peers derive identical shared secrets and session keys.
+- `crypto/encryption.go`: AES-256-GCM encryption/decryption helpers.
+- `crypto/encryption_test.go`: Round-trip encryption/decryption test.
+- `crypto/signatures.go`: Ed25519 sign/verify helpers.
+- `crypto/signatures_test.go`: Valid-signature and tampered-payload rejection tests.
+- `storage/types.go`: Shared storage types, status constants, validation helpers, null conversion helpers, and common errors.
+- `storage/database.go`: SQLite open/create logic plus schema migrations for peers/messages/files/seen IDs.
+- `storage/database_test.go`: Migration/open tests that verify DB file creation, schema version, and required tables.
+- `storage/peers.go`: Peer CRUD methods (`AddPeer`, `GetPeer`, `ListPeers`, `UpdatePeerStatus`, `RemovePeer`).
+- `storage/peers_test.go`: Peer CRUD tests.
+- `storage/messages.go`: Message CRUD and queue methods (`SaveMessage`, `GetMessages`, `MarkDelivered`, `GetPendingMessages`, `PruneExpiredQueue`).
+- `storage/messages_test.go`: Message CRUD and queue-pruning tests.
+- `storage/files.go`: File metadata CRUD methods (`SaveFileMetadata`, `UpdateTransferStatus`, `GetFileByID`).
+- `storage/files_test.go`: File metadata CRUD tests.
+- `storage/seen_ids.go`: Replay-protection ID methods (`InsertSeenID`, `HasSeenID`, `PruneOldEntries`).
+- `storage/seen_ids_test.go`: Seen-message ID insert/check/prune tests.
+- `storage/testutil_test.go`: Shared test helpers for creating a temporary store and seed peers.
+- `DESIGN.md`: Technical design document describing architecture, protocol, data model, crypto, and UX flows.
+- `PHASES.md`: Sequential implementation plan with phase-by-phase goals and verification criteria.
+- `AGENTS.md`: Local coding agent instructions and workflow constraints for this repository.
+- `README.md`: Implementation checklist and verification notes tracking what is complete.
+
 ## Phase 1: Project Scaffold & Configuration
 - [x] Initialize Go module with dependencies (fyne, go-sqlite3, zeroconf, uuid)
 - [x] Implement OS-aware data directory resolution (Linux/macOS/Windows)
@@ -49,17 +81,21 @@
 - `go vet ./...` passes.
 
 ## Phase 3: Encryption & Signing
-- [ ] Implement ephemeral X25519 keypair generation
-- [ ] Implement X25519 ECDH shared secret computation
-- [ ] Implement HKDF-SHA256 session key derivation
-- [ ] Implement `Encrypt(sessionKey, plaintext) → (ciphertext, iv)` (AES-256-GCM)
-- [ ] Implement `Decrypt(sessionKey, iv, ciphertext) → plaintext` (AES-256-GCM)
-- [ ] Implement `Sign(privateKey, data) → signature` (Ed25519)
-- [ ] Implement `Verify(publicKey, data, signature) → bool` (Ed25519)
-- [ ] Round-trip encryption test (encrypt → decrypt → compare)
-- [ ] Signature validity test (sign → verify)
-- [ ] Signature tampering test (sign → modify data → verify rejects)
-- [ ] Session key derivation test (both sides derive same key)
+- [x] Implement ephemeral X25519 keypair generation
+- [x] Implement X25519 ECDH shared secret computation
+- [x] Implement HKDF-SHA256 session key derivation
+- [x] Implement `Encrypt(sessionKey, plaintext) → (ciphertext, iv)` (AES-256-GCM)
+- [x] Implement `Decrypt(sessionKey, iv, ciphertext) → plaintext` (AES-256-GCM)
+- [x] Implement `Sign(privateKey, data) → signature` (Ed25519)
+- [x] Implement `Verify(publicKey, data, signature) → bool` (Ed25519)
+- [x] Round-trip encryption test (encrypt → decrypt → compare)
+- [x] Signature validity test (sign → verify)
+- [x] Signature tampering test (sign → modify data → verify rejects)
+- [x] Session key derivation test (both sides derive same key)
+
+### Phase 3 Verification
+- `go test ./...` passes, including crypto tests for ECDH/HKDF derivation, AES-GCM round-trip, and signature checks.
+- `go vet ./...` passes.
 
 ## Phase 4: Network Protocol & TCP Server
 - [ ] Define model structs (Peer, Message, File) with JSON tags
