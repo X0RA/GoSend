@@ -3,7 +3,7 @@
 # P2P Chat — Implementation Checklist
 
 ## overview
-- `main.go`: App entrypoint; loads config, ensures keys exist, computes fingerprint, and prints device identity.
+- `main.go`: App entrypoint; loads config/keys, opens SQLite, starts discovery broadcast+scan, streams discovery events, and handles graceful shutdown.
 - `tools.go`: Build-tagged imports that keep planned dependencies (`fyne`, `zeroconf`, `go-sqlite3`) pinned in `go.mod`.
 - `go.mod`: Go module definition and direct/indirect dependency versions.
 - `go.sum`: Dependency checksum lock file.
@@ -27,6 +27,10 @@
 - `network/server.go`: TCP listener/accept loop, inbound handshake verification/response, and connection handoff.
 - `network/protocol_test.go`: Framing tests (round-trip and oversized frame rejection).
 - `network/integration_test.go`: Integration tests for handshake/session key matching, idle keep-alive stability, dead connection timeout detection, and key-change decision blocking.
+- `discovery/mdns.go`: mDNS broadcaster setup plus combined discovery service startup/shutdown orchestration.
+- `discovery/peer_scanner.go`: Background peer scanner with self-filtering, in-memory peer list, event channel, and manual refresh support.
+- `discovery/mdns_test.go`: Tests broadcaster TXT record generation and service startup/shutdown wiring.
+- `discovery/peer_scanner_test.go`: Tests self-filtering, manual refresh updates, background polling, and peer removal events.
 - `storage/types.go`: Shared storage types, status constants, validation helpers, null conversion helpers, and common errors.
 - `storage/database.go`: SQLite open/create logic plus schema migrations for peers/messages/files/seen IDs.
 - `storage/database_test.go`: Migration/open tests that verify DB file creation, schema version, and required tables.
@@ -134,16 +138,20 @@
 - `go vet ./...` passes.
 
 ## Phase 5: mDNS Discovery
-- [ ] Implement mDNS service broadcast with TXT records (device_id, version, key_fingerprint)
-- [ ] Implement mDNS listener for `_p2pchat._tcp.local.`
-- [ ] Filter self from discovered peers (by device_id)
-- [ ] Implement background polling goroutine (10s interval)
-- [ ] Maintain in-memory available peers list
-- [ ] Expose discovery events (channel or callback) for UI consumption
-- [ ] Implement manual refresh trigger
-- [ ] Wire discovery into startup sequence
-- [ ] Test: two instances on same LAN discover each other within 10s
-- [ ] Test: manual refresh finds peers immediately
+- [x] Implement mDNS service broadcast with TXT records (device_id, version, key_fingerprint)
+- [x] Implement mDNS listener for `_p2pchat._tcp.local.`
+- [x] Filter self from discovered peers (by device_id)
+- [x] Implement background polling goroutine (10s interval)
+- [x] Maintain in-memory available peers list
+- [x] Expose discovery events (channel or callback) for UI consumption
+- [x] Implement manual refresh trigger
+- [x] Wire discovery into startup sequence
+- [x] Test: two instances on same LAN discover each other within 10s
+- [x] Test: manual refresh finds peers immediately
+
+### Phase 5 Verification
+- `go test ./...` passes, including discovery tests for TXT record publishing, self-filtering, polling updates, and manual refresh.
+- `go vet ./...` passes.
 
 ## Phase 6: Peer Management
 - [ ] Implement `peer_add_request` send (initiator side)

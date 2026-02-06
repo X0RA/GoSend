@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	"gosend/config"
 	"gosend/crypto"
+	"gosend/discovery"
+	"gosend/storage"
 )
 
 func main() {
@@ -37,5 +42,52 @@ func main() {
 	fmt.Printf("Listening Port:  %d\n", cfg.ListeningPort)
 	fmt.Printf("Fingerprint:     %s\n", crypto.FormatFingerprint(cfg.KeyFingerprint))
 	fmt.Printf("Config File:     %s\n", cfgPath)
-	fmt.Printf("Data Directory:  %s\n", filepath.Dir(cfgPath))
+	dataDir := filepath.Dir(cfgPath)
+	fmt.Printf("Data Directory:  %s\n", dataDir)
+
+	store, dbPath, err := storage.Open(dataDir)
+	if err != nil {
+		log.Fatalf("startup failed while opening database: %v", err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			log.Printf("database close error: %v", err)
+		}
+	}()
+	fmt.Printf("Database File:   %s\n", dbPath)
+
+	discoveryService, err := discovery.Start(discovery.Config{
+		SelfDeviceID:   cfg.DeviceID,
+		DeviceName:     cfg.DeviceName,
+		ListeningPort:  cfg.ListeningPort,
+		KeyFingerprint: cfg.KeyFingerprint,
+	})
+	if err != nil {
+		log.Printf("discovery startup failed: %v", err)
+	} else {
+		defer discoveryService.Stop()
+		fmt.Println("Discovery:       running")
+		go logDiscoveryEvents(discoveryService.Scanner.Events())
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	fmt.Println("Status:          running (press Ctrl+C to stop)")
+	<-ctx.Done()
+	fmt.Println("Status:          shutting down")
+}
+
+func logDiscoveryEvents(events <-chan discovery.Event) {
+	for event := range events {
+		switch event.Type {
+		case discovery.EventPeerUpserted:
+			log.Printf("discovery: peer available id=%s name=%q addr=%v port=%d",
+				event.Peer.DeviceID, event.Peer.DeviceName, event.Peer.Addresses, event.Peer.Port)
+		case discovery.EventPeerRemoved:
+			log.Printf("discovery: peer removed id=%s", event.Peer.DeviceID)
+		default:
+			log.Printf("discovery: event=%s id=%s", event.Type, event.Peer.DeviceID)
+		}
+	}
 }
