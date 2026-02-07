@@ -72,35 +72,15 @@ jobs:
             mkdir -p "${app_root}/MacOS"
             mv "dist/${bin_name}" "${app_root}/MacOS/${bin_name}"
 
-          cat > "${app_root}/Info.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-            <dict>
-              <key>CFBundleDisplayName</key>
-              <string>GoSend</string>
-              <key>CFBundleExecutable</key>
-              <string>gosend</string>
-              <key>CFBundleIdentifier</key>
-              <string>com.gosend.app</string>
-              <key>CFBundleName</key>
-              <string>GoSend</string>
-              <key>CFBundlePackageType</key>
-              <string>APPL</string>
-              <key>CFBundleShortVersionString</key>
-              <string>${raw_tag}</string>
-              <key>CFBundleVersion</key>
-              <string>${{ github.run_number }}</string>
-              <key>LSMinimumSystemVersion</key>
-              <string>11.0</string>
-            </dict>
-          </plist>
-          PLIST
+            sed -e "s/__VERSION__/${raw_tag}/" \
+                -e "s/__BUILD__/${{ github.run_number }}/" \
+                .github/Info.plist.template > "${app_root}/Info.plist"
 
-            (
-              cd dist
-              zip -qry "gosend-${safe_tag}-${{ matrix.goos }}-${{ matrix.goarch }}.app.zip" "${app_name}"
-            )
+            # Ad-hoc sign the .app bundle (required for Apple Silicon)
+            codesign --force --deep -s - "dist/${app_name}"
+
+            # Use ditto instead of zip to preserve macOS metadata and code signature
+            ditto -c -k --keepParent "dist/${app_name}" "dist/gosend-${safe_tag}-${{ matrix.goos }}-${{ matrix.goarch }}.app.zip"
             rm -rf "dist/${app_name}"
           else
             asset_name="gosend-${safe_tag}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
