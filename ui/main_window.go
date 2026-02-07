@@ -133,7 +133,7 @@ func newController(app fyne.App, options RunOptions) (*controller, error) {
 
 	ctrl := &controller{
 		app:           app,
-		window:        app.NewWindow("P2P Chat"),
+		window:        app.NewWindow("GoSend"),
 		cfg:           options.Config,
 		cfgPath:       options.ConfigPath,
 		dataDir:       options.DataDir,
@@ -360,16 +360,23 @@ func (c *controller) buildMainWindow() {
 	right := c.buildChatPane()
 
 	split := container.NewHSplit(left, right)
-	split.Offset = 0.3
+	split.Offset = 0.28
 
-	settingsBtn := widget.NewButtonWithIcon("Settings", theme.SettingsIcon(), c.showSettingsDialog)
-	refreshBtn := widget.NewButtonWithIcon("Refresh Discovery", theme.ViewRefreshIcon(), func() {
+	appTitle := widget.NewLabel("GoSend")
+	appTitle.TextStyle = fyne.TextStyle{Bold: true}
+	settingsBtn := widget.NewButtonWithIcon("", theme.SettingsIcon(), c.showSettingsDialog)
+	refreshBtn := widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() {
 		go c.refreshDiscovery()
 	})
-	toolbar := container.NewHBox(settingsBtn, refreshBtn, layout.NewSpacer())
+	toolbar := container.NewHBox(appTitle, layout.NewSpacer(), refreshBtn, settingsBtn)
 
 	c.statusLabel = widget.NewLabel("Starting...")
-	content := container.NewBorder(toolbar, c.statusLabel, nil, nil, split)
+	c.statusLabel.Importance = widget.LowImportance
+	content := container.NewBorder(
+		container.NewVBox(container.NewPadded(toolbar), widget.NewSeparator()),
+		container.NewVBox(widget.NewSeparator(), container.NewPadded(c.statusLabel)),
+		nil, nil, split,
+	)
 	c.window.SetContent(content)
 }
 

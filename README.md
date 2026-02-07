@@ -66,6 +66,26 @@ go vet ./...
 go mod tidy
 ```
 
+## GitHub Release Automation
+
+This repository includes a release workflow at `.github/workflows/release-build.yml`.
+
+When a GitHub Release is published, the workflow:
+
+- Uses the release tag (`github.event.release.tag_name`).
+- Builds binaries for `linux/amd64`, `darwin/amd64`, and `windows/amd64`.
+- Uploads those binaries to that same GitHub Release as assets.
+
+Expected asset names:
+
+- `gosend-<tag>-linux-amd64`
+- `gosend-<tag>-darwin-amd64`
+- `gosend-<tag>-windows-amd64.exe`
+
+Tag notes:
+
+- Git tags cannot contain spaces. For prereleases, prefer tags like `v0.0.1-alpha` (not `v0.0.1 alpha`).
+
 ## Runtime Data and Config
 
 Data directory resolution (`config.ResolveDataDir`):
@@ -270,6 +290,9 @@ Dialogs/prompts:
 
 ```text
 .
+├── .github/
+│   └── workflows/
+│       └── release-build.yml
 ├── AGENTS.md
 ├── Makefile
 ├── README.md
@@ -340,6 +363,7 @@ Dialogs/prompts:
 
 - `main.go`: Startup entrypoint. Loads/normalizes config, ensures key material, persists fingerprint updates, opens SQLite store, constructs local identity, and starts UI runtime.
 - `Makefile`: Convenience commands for build and non-UI test flows, plus two client run targets with isolated data dirs.
+- `.github/workflows/release-build.yml`: On release publish, builds platform binaries and uploads them to the created release as assets.
 - `tools.go`: Build-tagged dependency anchors for `fyne`, `zeroconf`, and `go-sqlite3`.
 - `go.mod`: Module `gosend`, Go version `1.25.6`, direct dependencies (Fyne, UUID, zeroconf, sqlite3, x/crypto).
 - `go.sum`: Dependency checksum lockfile.
