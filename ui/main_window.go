@@ -479,7 +479,8 @@ func (c *controller) showTooltip(target fyne.CanvasObject, hint string) {
 
 		label := widget.NewLabel(hint)
 		label.Wrapping = fyne.TextWrapWord
-		content := newRoundedBg(themedColor(theme.ColorNameInputBackground), 8, label)
+		wrapped := container.NewGridWrap(fyne.NewSize(240, label.MinSize().Height), label)
+		content := newRoundedBg(themedColor(theme.ColorNameInputBackground), 8, wrapped)
 		popup := widget.NewPopUp(content, canvas)
 		popup.ShowAtRelativePosition(fyne.NewPos(target.Size().Width+6, 0), target)
 
