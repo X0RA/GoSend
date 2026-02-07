@@ -58,6 +58,14 @@
 - `AGENTS.md`: Local coding agent instructions and workflow constraints for this repository.
 - `README.md`: Implementation checklist and verification notes tracking what is complete.
 
+## Development Commands
+- `make build`: Build the app binary at `./bin/gosend`.
+- `make run_tests`: Build and run two instances simultaneously for local P2P testing:
+  - `P2P_CHAT_DATA_DIR=/tmp/gosend-a ./bin/gosend`
+  - `P2P_CHAT_DATA_DIR=/tmp/gosend-b ./bin/gosend`
+- `make run_client_a`: Build and run the `gosend-a` client only.
+- `make run_client_b`: Build and run the `gosend-b` client only.
+
 ## Phase 1: Project Scaffold & Configuration
 - [x] Initialize Go module with dependencies (fyne, go-sqlite3, zeroconf, uuid)
 - [x] Implement OS-aware data directory resolution (Linux/macOS/Windows)
