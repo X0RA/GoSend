@@ -278,6 +278,7 @@ Main window:
 - Left pane: known peers list from DB (self filtered out).
 - Right pane: selected peer chat transcript + file transfer rows.
 - Chat composer is hidden until a peer is selected.
+- Chat header text is clickable to show the selected peer fingerprint, and its color reflects online/offline status.
 - Chat composer layout: message box on the left, with `Send` above `Attach` in a vertical action group on the right.
 - Chat input keyboard behavior: `Enter` sends the message, `Shift+Enter` inserts a newline.
 - Toolbar: Settings + Refresh Discovery.

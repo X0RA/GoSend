@@ -77,8 +77,7 @@ type controller struct {
 	fileTransfers map[string]chatFileEntry
 
 	peerList        *widget.List
-	chatHeader      *canvas.Text
-	chatKeyButton   *hintButton
+	chatHeader      *clickableLabel
 	chatMessagesBox *fyne.Container
 	chatScroll      *container.Scroll
 	messageInput    *messageEntry
