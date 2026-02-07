@@ -1,321 +1,438 @@
-# This document will track what has been implemented. When something has been done, please include it here. Any updates to the app should also update the readme.
+# GoSend — P2P Local Network Chat
 
-# P2P Chat — Implementation Checklist
+This README reflects the current repository state (module `gosend`) as of February 7, 2026.
 
-## overview
-- `main.go`: GUI app entrypoint; loads config/keys, opens SQLite, builds local identity, and launches the Phase 9 Fyne runtime.
-- `tools.go`: Build-tagged imports that keep planned dependencies (`fyne`, `zeroconf`, `go-sqlite3`) pinned in `go.mod`.
-- `go.mod`: Go module definition and direct/indirect dependency versions.
-- `go.sum`: Dependency checksum lock file.
-- `config/config.go`: Data directory resolution, first-run directory creation, config load/create/save, and default config normalization (including `port_mode` behavior for automatic vs fixed listening ports).
-- `config/config_test.go`: Tests first-run config creation and second-run reload stability.
-- `crypto/keypair.go`: Ed25519 keypair generation/load/save, fingerprint generation, and display formatting.
-- `crypto/keypair_test.go`: Tests Ed25519/X25519 key persistence stability across repeated loads.
-- `crypto/ecdh.go`: X25519 key handling, ephemeral keypair generation, shared secret computation, and HKDF session key derivation.
-- `crypto/ecdh_session_test.go`: Tests that both peers derive identical shared secrets and session keys.
-- `crypto/encryption.go`: AES-256-GCM encryption/decryption helpers.
-- `crypto/encryption_test.go`: Round-trip encryption/decryption test.
-- `crypto/signatures.go`: Ed25519 sign/verify helpers.
-- `crypto/signatures_test.go`: Valid-signature and tampered-payload rejection tests.
-- `models/peer.go`: JSON-tagged peer model used by the network/UI layers.
-- `models/message.go`: JSON-tagged message model used by the network/UI layers.
-- `models/file.go`: JSON-tagged file metadata model used by the network/UI layers.
-- `network/protocol.go`: Protocol message structs, handshake signing/verification helpers, and length-prefixed framing (`WriteFrame`/`ReadFrame`) with 10 MB enforcement.
-- `network/connection.go`: `PeerConnection` implementation with sequence counters, connection state machine, post-handshake AES-GCM frame encryption/decryption for all protocol traffic, send/receive APIs, and ping/pong keep-alive handling.
-- `network/handshake.go`: Shared handshake options/defaults, key-change decision hook, and session-key derivation helpers.
-- `network/client.go`: Outbound TCP dial and handshake flow, including session-key derivation and key-change checks.
-- `network/server.go`: TCP listener/accept loop, inbound handshake verification/response, and connection handoff.
-- `network/peer_manager.go`: Peer lifecycle manager for add/accept/reject/remove/disconnect plus encrypted message send/receive, signed control-message verification, sender identity binding to authenticated connections, ack/error handling, replay protection checks, offline queue drain, and reconnect backoff.
-- `network/file_transfer.go`: File transfer engine for `file_request`/`file_response`/`file_data`/`file_complete`, chunk encryption/decryption, checksum verification, retransmission retries, and reconnect resume.
-- `network/protocol_test.go`: Framing tests (round-trip and oversized frame rejection).
-- `network/integration_test.go`: Integration tests for handshake/session key matching, idle keep-alive stability, dead connection timeout detection, and key-change decision blocking.
-- `network/peer_manager_test.go`: Integration tests for peer add approval queue, restart reconnection, peer removal cleanup, simultaneous add resolution, control-signature rejection, sender-binding checks, and pending-request cleanup on disconnect.
-- `network/messaging_test.go`: Integration tests for delivered-ack updates, offline queue drain after reconnect, duplicate message replay rejection, out-of-sequence rejection, tampered-signature rejection, metadata-signature binding, and spoofed-ack rejection.
-- `network/file_transfer_test.go`: Integration tests for accepted transfers, reject flow, reconnect resume, and checksum mismatch failure handling.
-- `discovery/mdns.go`: mDNS broadcaster setup plus combined discovery service startup/shutdown orchestration.
-- `discovery/peer_scanner.go`: Background peer scanner with self-filtering, in-memory peer list, peer-aging to avoid transient dropouts, per-scan resolver lifecycle, event channel, and manual refresh support.
-- `discovery/mdns_test.go`: Tests broadcaster TXT record generation and service startup/shutdown wiring.
-- `discovery/peer_scanner_test.go`: Tests self-filtering, manual refresh updates, background polling, and peer removal events.
-- `storage/types.go`: Shared storage types, status constants, validation helpers, null conversion helpers, and common errors.
-- `storage/database.go`: SQLite open/create logic plus schema migrations for peers/messages/files/seen IDs.
-- `storage/database_test.go`: Migration/open tests that verify DB file creation, schema version, and required tables.
-- `storage/peers.go`: Peer CRUD methods (`AddPeer`, `GetPeer`, `ListPeers`, `UpdatePeerStatus`, `RemovePeer`).
-- `storage/peers_test.go`: Peer CRUD tests.
-- `storage/messages.go`: Message CRUD and queue methods (`SaveMessage`, `GetMessages`, `MarkDelivered`, `UpdateDeliveryStatus`, `GetMessageByID`, `GetPendingMessages`, `PruneExpiredQueue`).
-- `storage/messages_test.go`: Message CRUD tests including delivery status updates, message lookup by ID, and queue-pruning behavior.
-- `storage/files.go`: File metadata CRUD methods (`SaveFileMetadata`, `UpdateTransferStatus`, `GetFileByID`) with nullable ID/peer fields for flexible transfer lifecycle persistence.
-- `storage/files_test.go`: File metadata CRUD tests.
-- `ui/main_window.go`: GUI runtime controller; window shell, service lifecycle (discovery + peer manager), background event loops, and thread-safe dialog prompts for peer add/file accept/key change.
-- `ui/peers_list.go`: Left-pane peers list with online/offline indicators and selection, plus the discovery/add dialog (`Add`, `Refresh`, `Close`).
-- `ui/chat_window.go`: Per-peer chat view; message timeline (left/right alignment, timestamps, delivery marks), multiline input/send, attachment flow, and file transfer progress rendering.
-- `ui/settings.go`: Settings dialog for device name, fingerprint visibility, listening port mode (`Automatic`/`Fixed`), fixed-port value, and key reset workflow.
-- `ui/file_handler.go`: UI-facing file picker and transfer progress tracking helper.
-- `storage/seen_ids.go`: Replay-protection ID methods (`InsertSeenID`, `HasSeenID`, `PruneOldEntries`).
-- `storage/seen_ids_test.go`: Seen-message ID insert/check/prune tests.
-- `storage/testutil_test.go`: Shared test helpers for creating a temporary store and seed peers.
-- `DESIGN.md`: Technical design document describing architecture, protocol, data model, crypto, and UX flows.
-- `PHASES.md`: Sequential implementation plan with phase-by-phase goals and verification criteria.
-- `AGENTS.md`: Local coding agent instructions and workflow constraints for this repository.
-- `README.md`: Implementation checklist and verification notes tracking what is complete.
+GoSend is a local-network peer-to-peer desktop app built in Go. It uses mDNS for discovery, TCP for transport, a signed handshake with ephemeral X25519 key exchange, encrypted framed traffic, SQLite persistence, and a Fyne GUI.
+
+## What Is Implemented Today
+
+- Local LAN peer discovery via mDNS service `_p2pchat._tcp.local.` with TXT keys: `device_id`, `version`, `key_fingerprint`.
+- Signed handshake (`handshake`, `handshake_response`) with Ed25519 identities and ephemeral X25519 keys.
+- Session key derivation via HKDF-SHA256 using salt `p2pchat-session-v1` and sorted device IDs.
+- Transport-level encryption for all post-handshake frames using AES-256-GCM (`secure_frame`).
+- Peer lifecycle flows: add request/response, remove, disconnect, reconnect workers, and discovery-driven reconnect.
+- Encrypted + signed text messages with delivery status tracking (`pending`, `sent`, `delivered`, `failed`).
+- Offline outbound queue with limits: 500 pending messages per peer, 7-day age cutoff, 50 MB pending content per peer.
+- Replay defenses for chat messages: per-connection sequence checks, persistent seen ID table, and timestamp skew checks.
+- File transfer with request/accept/reject, chunk ack/nack retries, reconnect resume from chunk, and end checksum verification.
+- Cross-platform GUI (Fyne) with peer list, chat pane, discovery dialog, settings dialog, key-change prompt, and file-transfer prompts/progress.
+
+## Quick Start
+
+Build:
+
+```bash
+make build
+```
+
+Run one client using default data directory:
+
+```bash
+./bin/gosend
+```
+
+Run two isolated clients locally:
+
+```bash
+make build
+P2P_CHAT_DATA_DIR=/tmp/gosend-a ./bin/gosend
+P2P_CHAT_DATA_DIR=/tmp/gosend-b ./bin/gosend
+```
+
+Or use the Make targets:
+
+```bash
+make run_client_a
+make run_client_b
+```
 
 ## Development Commands
-- `make build`: Build the app binary at `./bin/gosend`.
-- `make test_non_ui`: Run Go tests for non-UI packages (excludes `gosend` and `gosend/ui`).
-- `make run_tests`: Build and run two instances simultaneously for local P2P testing:
-  - `P2P_CHAT_DATA_DIR=/tmp/gosend-a ./bin/gosend`
-  - `P2P_CHAT_DATA_DIR=/tmp/gosend-b ./bin/gosend`
-- `make run_client_a`: Build and run the `gosend-a` client only.
-- `make run_client_b`: Build and run the `gosend-b` client only.
 
-## Phase 1: Project Scaffold & Configuration
-- [x] Initialize Go module with dependencies (fyne, go-sqlite3, zeroconf, uuid)
-- [x] Implement OS-aware data directory resolution (Linux/macOS/Windows)
-- [x] Create directory structure on first launch (`keys/`, `files/`)
-- [x] Generate device UUID on first launch
-- [x] Implement `config.json` creation with default values
-- [x] Implement `config.json` load on subsequent launches
-- [x] Implement Ed25519 keypair generation
-- [x] Implement Ed25519 PEM save/load (private key with 0600 permissions)
-- [x] Implement X25519 static key generation
-- [x] Implement X25519 PEM save/load (private key with 0600 permissions)
-- [x] Compute and store key fingerprint (truncated SHA-256 hex)
-- [x] Wire up `main.go` startup: load config → generate keys if missing → print identity
+Repository-provided:
 
-### Phase 1 Verification
-- `go run .` first run creates config and key files under the OS-specific app data directory.
-- `go run .` second run reuses the same identity and key material.
+```bash
+make build
+make test_non_ui
+make run_client_a
+make run_client_b
+```
 
-## Phase 2: SQLite Storage Layer
-- [x] Implement database open/create with `app.db`
-- [x] Implement schema migrations (peers, messages, files, seen_message_ids tables)
-- [x] Implement `AddPeer`
-- [x] Implement `GetPeer`
-- [x] Implement `ListPeers`
-- [x] Implement `UpdatePeerStatus`
-- [x] Implement `RemovePeer`
-- [x] Implement `SaveMessage`
-- [x] Implement `GetMessages(peerID, limit, offset)`
-- [x] Implement `MarkDelivered`
-- [x] Implement `GetPendingMessages(peerID)`
-- [x] Implement `PruneExpiredQueue`
-- [x] Implement `SaveFileMetadata`
-- [x] Implement `UpdateTransferStatus`
-- [x] Implement `GetFileByID`
-- [x] Implement `InsertSeenID`
-- [x] Implement `HasSeenID`
-- [x] Implement `PruneOldEntries` (seen_message_ids)
-- [x] Unit tests for all peer CRUD operations
-- [x] Unit tests for all message CRUD operations
-- [x] Unit tests for all file CRUD operations
-- [x] Unit tests for seen_message_ids operations
+Standard Go commands used in this project:
 
-### Phase 2 Verification
-- `go test ./...` passes, including storage unit tests for migrations and all CRUD paths.
-- `go vet ./...` passes.
+```bash
+gofmt -w .
+go test ./...
+go vet ./...
+go mod tidy
+```
 
-## Phase 3: Encryption & Signing
-- [x] Implement ephemeral X25519 keypair generation
-- [x] Implement X25519 ECDH shared secret computation
-- [x] Implement HKDF-SHA256 session key derivation
-- [x] Implement `Encrypt(sessionKey, plaintext) → (ciphertext, iv)` (AES-256-GCM)
-- [x] Implement `Decrypt(sessionKey, iv, ciphertext) → plaintext` (AES-256-GCM)
-- [x] Implement `Sign(privateKey, data) → signature` (Ed25519)
-- [x] Implement `Verify(publicKey, data, signature) → bool` (Ed25519)
-- [x] Round-trip encryption test (encrypt → decrypt → compare)
-- [x] Signature validity test (sign → verify)
-- [x] Signature tampering test (sign → modify data → verify rejects)
-- [x] Session key derivation test (both sides derive same key)
+## Runtime Data and Config
 
-### Phase 3 Verification
-- `go test ./...` passes, including crypto tests for ECDH/HKDF derivation, AES-GCM round-trip, and signature checks.
-- `go vet ./...` passes.
+Data directory resolution (`config.ResolveDataDir`):
 
-## Phase 4: Network Protocol & TCP Server
-- [x] Define model structs (Peer, Message, File) with JSON tags
-- [x] Define all protocol message type structs with JSON serialization
-- [x] Implement length-prefixed framing (`WriteFrame` / `ReadFrame`)
-- [x] Implement max frame size enforcement (10 MB)
-- [x] Implement TCP listener (configurable port)
-- [x] Implement inbound connection accept and handshake read
-- [x] Implement handshake verification and response
-- [x] Implement session key derivation on connection establish
-- [x] Implement `PeerConnection` struct (conn, session key, sequence counters, state)
-- [x] Implement `SendMessage` on `PeerConnection`
-- [x] Implement `ReceiveMessage` on `PeerConnection`
-- [x] Implement connection state machine (CONNECTING → READY → IDLE → DISCONNECTED)
-- [x] Implement outbound dial and handshake send
-- [x] Implement key change detection (compare stored vs received Ed25519 key)
-- [x] Implement key change warning flow (block until user decision)
-- [x] Implement ping/pong keep-alive (60s interval, 15s timeout)
-- [x] Implement connection timeout (30s)
-- [x] Test: two instances handshake and derive matching session keys
-- [x] Test: keep-alive maintains idle connections
-- [x] Test: dead connection detected on ping timeout
+- `P2P_CHAT_DATA_DIR` override if set.
+- Linux: `${XDG_CONFIG_HOME:-~/.config}/p2p-chat`
+- macOS: `~/Library/Application Support/p2p-chat`
+- Windows: `%APPDATA%\p2p-chat` (fallback `~/AppData/Roaming/p2p-chat`)
 
-### Phase 4 Verification
-- `go test ./...` passes, including network framing and integration tests for handshake/session derivation and keep-alive behavior.
-- `go vet ./...` passes.
+Expected layout:
 
-## Phase 5: mDNS Discovery
-- [x] Implement mDNS service broadcast with TXT records (device_id, version, key_fingerprint)
-- [x] Implement mDNS listener for `_p2pchat._tcp.local.`
-- [x] Filter self from discovered peers (by device_id)
-- [x] Implement background polling goroutine (10s interval)
-- [x] Maintain in-memory available peers list
-- [x] Expose discovery events (channel or callback) for UI consumption
-- [x] Implement manual refresh trigger
-- [x] Wire discovery into startup sequence
-- [x] Test: two instances on same LAN discover each other within 10s
-- [x] Test: manual refresh finds peers immediately
+```text
+<data-dir>/
+  app.db
+  config.json
+  keys/
+    ed25519_private.pem
+    ed25519_public.pem
+    x25519_private.pem
+  files/
+```
 
-### Phase 5 Verification
-- `go test ./...` passes, including discovery tests for TXT record publishing, self-filtering, polling updates, and manual refresh.
-- `go vet ./...` passes.
-- Manual refresh no longer treats expected scan timeout windows as errors; peers are retained across transient missed scans until stale.
+Default first-run config values:
 
-### Discovery Stability Retrospective
-- **Observed issue:** Peers were discovered at startup, then disappeared after ~1 minute; manual refresh often reported `context deadline exceeded` and did not rediscover peers.
-- **Root cause 1:** The scanner reused a single `zeroconf.Resolver` across scans. After a scan context ended, resolver internals were effectively closed, so later scans became unreliable.
-- **Root cause 2:** `PeerStaleAfter` defaulting used TTL before the TTL default was set, causing peers to age out too quickly in real usage.
-- **Fix 1:** Use a fresh resolver per scan (`discovery/peer_scanner.go`), and keep refresh handling tolerant of normal scan-window timeout/cancel behavior.
-- **Fix 2:** Set TTL defaults before stale-time calculation (`discovery/mdns.go`), and compute stale retention from TTL/refresh interval to avoid transient dropouts.
-- **Result:** Discovery remains stable over time, and refresh is reliable instead of becoming startup-only.
+- `device_id`: generated UUID.
+- `device_name`: hostname (fallback `P2P Chat Device`).
+- `port_mode`: `automatic`.
+- `listening_port`: `0` (ephemeral OS-selected port).
+- `key_fingerprint`: computed at startup from Ed25519 public key and persisted.
 
-## Phase 6: Peer Management
-- [x] Implement `peer_add_request` send (initiator side)
-- [x] Implement `peer_add_request` receive and queue for user approval
-- [x] Implement accept flow: both sides persist peer to SQLite
-- [x] Implement reject flow: close connection, nothing persisted
-- [x] Implement `peer_add_response` send/receive
-- [x] Implement simultaneous add resolution (lower UUID = initiator, other auto-accepts)
-- [x] Implement `peer_remove` send/receive (remove from DB, close connection)
-- [x] Implement `peer_disconnect` send/receive (mark offline, keep in DB)
-- [x] Implement reconnection to known online peers on startup
-- [x] Implement exponential backoff retry (immediate → 5s → 15s → 60s → every 60s)
-- [x] Test: A adds B, B accepts, both show online
-- [x] Test: B restarts, A detects offline, reconnects when B returns
-- [x] Test: A removes B, both sides clean up
-- [x] Test: simultaneous add resolves without conflict
+`config.json` fields:
 
-### Phase 6 Verification
-- `go test ./...` passes, including peer management integration tests for add/remove/disconnect, restart reconnection, and simultaneous add resolution.
-- `go vet ./...` passes.
+```json
+{
+  "device_id": "string",
+  "device_name": "string",
+  "port_mode": "automatic|fixed",
+  "listening_port": 0,
+  "ed25519_private_key_path": "string",
+  "ed25519_public_key_path": "string",
+  "x25519_private_key_path": "string",
+  "key_fingerprint": "hex"
+}
+```
 
-### Reconnection After Restart Retrospective
-- **Observed issue:** After closing and reopening one client, known peers remained shown as offline even though the other client was still running and discoverable on the network. The restarted client never attempted to reconnect.
-- **Root cause 1 (status gap):** On shutdown, `PeerManager.Stop()` closes all connections. Each `connectionLoop` cleanup marks the peer as `"offline"` in the database. On restart, `PeerManager.Start()` only reconnects peers with status `"online"` — since every peer is now `"offline"`, no reconnection is ever attempted.
-- **Root cause 2 (discovery–reconnection gap):** The `discoveryEventLoop` in the UI layer processed mDNS `EventPeerUpserted` events but only used them to update the discovery dialog's available-peers list. It never checked whether a discovered peer was an already-added peer that should be reconnected to. Discovery and reconnection were completely decoupled.
-- **Root cause 3 (wrong stored port):** When a peer connects inbound, `persistPeerConnection` stores the remote TCP endpoint via `conn.RemoteAddr()`. For inbound connections this is the peer's ephemeral outbound port, not their listening port. Any reconnection attempt using this stored port would fail. Discovery provides the correct listening port, so bridging discovery into reconnection also fixes this.
-- **Fix 1:** Added `NotifyPeerDiscovered(deviceID, ip, port)` to `PeerManager` (`network/peer_manager.go`). When called, it validates the peer is known and not blocked, updates the stored endpoint in the database from the discovery data (correct listening port), and starts a reconnect worker if no active connection exists.
-- **Fix 2:** Bridged discovery events to reconnection in the UI controller (`ui/main_window.go`). On each `EventPeerUpserted`, if the discovered peer is a known/added peer, `NotifyPeerDiscovered` is called. Additionally, on startup after the initial mDNS scan completes, all discovered peers are checked against the known peer list and reconnection is triggered for any matches.
-- **Result:** After restart, known peers are reconnected within one mDNS scan interval (~10 seconds) as soon as they are rediscovered on the network. Both the restarted client and the still-running client can initiate reconnection, and the stored endpoint is always updated from discovery to reflect the correct listening port.
+## Protocol and Security (Current Behavior)
 
-## Phase 7: Messaging
-- [x] Implement send flow: encrypt with session key → sign → frame → send → store locally
-- [x] Implement receive flow: validate sequence → check seen_message_ids → verify signature → decrypt → store → display
-- [x] Implement `ack` message send on receive
-- [x] Implement `ack` message handling (update delivery_status to "delivered")
-- [x] Implement replay protection: sequence number validation (reject if ≤ last seen)
-- [x] Implement replay protection: message_id deduplication via seen_message_ids table
-- [x] Implement replay protection: timestamp skew rejection (±5 min)
-- [x] Implement offline message queue (store as "pending" in DB)
-- [x] Implement queue drain on reconnect (send pending messages in order)
-- [x] Implement queue limits: max 500 messages per peer
-- [x] Implement queue limits: max 7 days age
-- [x] Implement queue limits: max 50 MB per peer
-- [x] Implement queue overflow handling (oldest marked "failed", user notified)
-- [x] Implement error responses for decryption/signature failures
-- [x] Test: A sends to B, B receives and decrypts, A sees ✓✓
-- [x] Test: B offline → A queues → B reconnects → messages delivered
-- [x] Test: replayed message rejected (duplicate message_id)
-- [x] Test: out-of-sequence message rejected
-- [x] Test: tampered signature rejected
+Framing:
 
-### Phase 7 Verification
-- `go test ./...` passes, including messaging integration tests for ack delivery, replay protection, and offline queue drain.
-- `go vet ./...` passes.
+- Length-prefixed frames: `[4-byte big-endian length][JSON payload]`.
+- Max frame payload: `10 MB`.
+- Frame read timeout default: `30s`.
 
-### Messaging/Control Security Hardening
-- [x] Verify signatures on inbound `peer_add_request`, `peer_add_response`, and `peer_remove` before acting.
-- [x] Bind control sender identity to `conn.PeerDeviceID()` instead of trusting payload IDs.
-- [x] Reject `ack` updates unless they come from the authenticated connection peer and match stored message routing.
-- [x] Remove stale inbound add-request decision entries on timeout/disconnect to prevent map leaks.
-- [x] Bind encrypted-message signatures to full message metadata + ciphertext (not ciphertext-only).
-- [x] Encrypt every post-handshake protocol frame at the connection layer using the negotiated session key (AES-GCM envelope).
-- [x] Add integration tests for control signature rejection, spoofed identity rejection, metadata tamper rejection, and spoofed ACK rejection.
+Connection-level encryption:
 
-## Phase 8: File Transfer
-- [x] Implement `file_request` send with metadata and SHA-256 checksum
-- [x] Implement `file_request` receive and present accept/reject prompt
-- [x] Implement `file_response` send (accepted/rejected)
-- [x] Implement `file_response` handling (proceed or abort)
-- [x] Implement chunked file reading (256 KB chunks)
-- [x] Implement per-chunk AES-256-GCM encryption with unique IV
-- [x] Implement `file_data` send with chunk_index and total_chunks
-- [x] Implement chunked file receiving and reassembly
-- [x] Implement per-chunk decryption
-- [x] Implement SHA-256 checksum verification on completed file
-- [x] Implement `file_complete` acknowledgment send/receive
-- [x] Implement chunk retransmission on failure
-- [x] Implement transfer resume (track last acknowledged chunk, resume on reconnect)
-- [x] Save received files to `files/` directory
-- [x] Store file metadata in database
-- [x] Implement file picker dialog (UI)
-- [x] Implement transfer progress tracking
-- [x] Test: A sends 5 MB file to B, B accepts, file transfers, checksum matches
-- [x] Test: B rejects file, no data sent
-- [x] Test: connection drops mid-transfer → reconnect → resumes from last chunk
-- [x] Test: corrupted file detected by checksum mismatch
+- After handshake, every payload is wrapped in `secure_frame` with:
+  - `nonce` (base64)
+  - `ciphertext` (base64)
+- AES-256-GCM key = negotiated session key.
 
-### Phase 8 Verification
-- `go test ./...` passes, including file transfer integration tests for accept/reject, retransmission/resume, and checksum validation.
-- `go vet ./...` passes.
+Handshake:
 
-## Phase 9: GUI
-- [x] Implement main window split layout (peer list left, chat view right, toolbar top)
-- [x] Implement peer list with online/offline indicators (● / ○)
-- [x] Implement peer list click to open chat view
-- [x] Implement "Add Peer" button
-- [x] Implement peer discovery dialog (available peers list, Add/Refresh/Close)
-- [x] Implement chat message list with left/right alignment
-- [x] Implement message timestamps
-- [x] Implement delivery status indicators (✓ sent, ✓✓ delivered, ✗ failed)
-- [x] Implement text input field (multiline)
-- [x] Implement send button
-- [x] Implement file attach button (📎) wired to file picker
-- [x] Implement file message display (filename, size, download)
-- [x] Implement file transfer progress bar in chat
-- [x] Implement file transfer accept/reject dialog
-- [x] Implement settings screen (device name, fingerprint, port, reset keys)
-- [x] Implement per-peer fingerprint display (🔑 button in chat header)
-- [x] Implement key change warning dialog (show old/new fingerprint, Trust/Disconnect)
-- [x] Implement peer add request notification/prompt
-- [x] Wire all UI callbacks to network/storage layers
-- [x] Handle threading: network events → UI updates via Fyne thread-safe methods
-- [ ] Full manual walkthrough: launch → discover → add → chat → send file → settings → restart → reconnect → verify fingerprints
+- `handshake` and `handshake_response` include Ed25519 public key, ephemeral X25519 public key, version, timestamp, signature.
+- Protocol version must equal `1`.
+- Key-change checks use TOFU-style pinned keys from storage.
 
-### Phase 9 Verification
-- `go test ./...` passes with the new GUI package compiled.
-- `GOCACHE=/tmp/go-build go vet ./...` passes.
-- Full GUI walkthrough remains manual (to be validated interactively across two app instances).
-- Port behavior: in `Automatic` mode the app binds an available port at launch and advertises that bound port via discovery; in `Fixed` mode it binds the configured `listening_port`.
+Message/control integrity checks:
 
-## Phase 10: Polish & Hardening
-- [ ] Add structured logging (connection events, errors, crypto failures)
-- [ ] Implement seen_message_ids pruning timer (hourly, remove >24h)
-- [ ] Implement message queue pruning on startup
-- [ ] Implement message queue pruning timer (periodic)
-- [ ] Handle port-in-use: detect, pick next available, update config
-- [ ] Handle corrupt database: detect, offer reset
-- [ ] Handle missing/corrupt key files: detect, regenerate, warn user
-- [ ] Handle oversized frames: reject at read
-- [ ] Implement graceful shutdown: send `peer_disconnect` to all peers
-- [ ] Implement graceful shutdown: close TCP listeners
-- [ ] Implement graceful shutdown: flush/close database
-- [ ] Cross-platform build: Linux
-- [ ] Cross-platform build: macOS
-- [ ] Cross-platform build: Windows
-- [ ] Integration test: 2 instances, full add → chat → file flow
-- [ ] Integration test: 3 instances, multiple peer connections simultaneously
-- [ ] Integration test: kill signal handled gracefully
-- [ ] Integration test: corrupt state recovery
+- `peer_add_request`: signed + timestamp skew checked.
+- `peer_add_response`: signed + timestamp skew checked.
+- `peer_remove`: signed + timestamp skew checked.
+- `message`: signed + timestamp skew checked + sequence checked + seen-ID dedupe.
+- `file_request`: signed + timestamp skew checked + sequence checked.
+- `file_response`: signed by sender in implementation; receiver verifies signature when present.
+- `ack`: not signed; accepted only when sender/route matches stored message ownership.
+
+Timestamp skew tolerance:
+
+- ±5 minutes (`maxTimestampSkew`).
+
+Keep-alive defaults:
+
+- Ping interval: `60s` idle.
+- Pong timeout: `15s`.
+
+## Messaging, Queue, and Reconnect Behavior
+
+Messaging:
+
+- Outbound chat messages are encrypted (payload), signed, and sent as `message`.
+- If send succeeds immediately: status `sent` then `delivered` after `ack`.
+- If peer is offline/unavailable: message is stored as `pending`.
+
+Queue enforcement:
+
+- Called during send and queue drain.
+- Prunes pending messages older than 7 days (marks them `failed`).
+- Enforces per-peer max pending count (500) and bytes (50 MB).
+- Oldest pending messages are marked `failed` when limits are exceeded.
+
+Reconnect:
+
+- Backoff sequence: `0s -> 5s -> 15s -> 60s -> 60s...`.
+- On disconnect: peer marked offline and reconnect worker starts (unless suppressed by manual remove/disconnect).
+- Discovery bridge (`NotifyPeerDiscovered`) updates stored endpoint and triggers reconnect for known non-blocked peers.
+
+## File Transfer Behavior
+
+Outbound:
+
+- `SendFile(peerID, path)` computes checksum, stores metadata (`pending`), and starts transfer if connected.
+- Sends `file_request`; waits for `accepted` or `rejected`.
+- On accept, resumes from `resume_from_chunk` if provided.
+- Chunks are read from source file and encrypted as `file_data` with per-chunk nonce.
+- Receiver responds with `chunk_ack` / `chunk_nack`.
+- Each chunk retries up to `MaxChunkRetries` (default 3).
+
+Inbound:
+
+- User accept/reject prompt via UI callback.
+- Accepted transfers write to `<files>/<file_id>_<basename>.part` with random-access chunk writes.
+- On `file_complete`, receiver verifies checksum and renames `.part` to final file.
+
+Completion/failure:
+
+- Success => both sides `transfer_status = complete`.
+- Reject => `rejected` on both sides.
+- Checksum mismatch/finalize failure => `failed` and sender receives failed completion.
+- Resume after reconnect is supported via `resume_from_chunk`.
+
+## SQLite Schema
+
+```sql
+CREATE TABLE peers (
+  device_id           TEXT PRIMARY KEY,
+  device_name         TEXT NOT NULL,
+  ed25519_public_key  TEXT NOT NULL,
+  key_fingerprint     TEXT NOT NULL,
+  status              TEXT CHECK(status IN ('online','offline','pending','blocked')) DEFAULT 'pending',
+  added_timestamp     INTEGER NOT NULL,
+  last_seen_timestamp INTEGER,
+  last_known_ip       TEXT,
+  last_known_port     INTEGER
+);
+
+CREATE TABLE messages (
+  message_id         TEXT PRIMARY KEY,
+  from_device_id     TEXT REFERENCES peers(device_id),
+  to_device_id       TEXT REFERENCES peers(device_id),
+  content            TEXT NOT NULL,
+  content_type       TEXT CHECK(content_type IN ('text','image','file')) DEFAULT 'text',
+  timestamp_sent     INTEGER NOT NULL,
+  timestamp_received INTEGER,
+  is_read            INTEGER DEFAULT 0,
+  delivery_status    TEXT CHECK(delivery_status IN ('pending','sent','delivered','failed')) DEFAULT 'pending',
+  signature          TEXT
+);
+
+CREATE TABLE files (
+  file_id            TEXT PRIMARY KEY,
+  message_id         TEXT REFERENCES messages(message_id),
+  from_device_id     TEXT,
+  to_device_id       TEXT,
+  filename           TEXT NOT NULL,
+  filesize           INTEGER NOT NULL,
+  filetype           TEXT,
+  stored_path        TEXT NOT NULL,
+  checksum           TEXT NOT NULL,
+  timestamp_received INTEGER,
+  transfer_status    TEXT CHECK(transfer_status IN ('pending','accepted','rejected','complete','failed')) DEFAULT 'pending'
+);
+
+CREATE TABLE seen_message_ids (
+  message_id  TEXT PRIMARY KEY,
+  received_at INTEGER NOT NULL
+);
+```
+
+Indexes:
+
+- `idx_messages_peer_time` on `(to_device_id, delivery_status, timestamp_sent)`
+- `idx_seen_message_received_at` on `(received_at)`
+
+## UI Summary
+
+Main window:
+
+- Left pane: known peers list from DB (self filtered out).
+- Right pane: selected peer chat transcript + file transfer rows.
+- Toolbar: Settings + Refresh Discovery.
+- Footer: status label for errors/events.
+
+Dialogs/prompts:
+
+- Discovery dialog with available peers and Add actions.
+- Incoming peer add confirmation.
+- Incoming file transfer accept/reject confirmation.
+- Key-change trust/deny dialog.
+- Settings dialog for device name, fingerprint display, port mode, fixed port, key reset.
+
+## Repository Layout
+
+```text
+.
+├── AGENTS.md
+├── Makefile
+├── README.md
+├── main.go
+├── tools.go
+├── go.mod
+├── go.sum
+├── bin/
+│   └── gosend
+├── config/
+│   ├── config.go
+│   └── config_test.go
+├── crypto/
+│   ├── ecdh.go
+│   ├── ecdh_session_test.go
+│   ├── encryption.go
+│   ├── encryption_test.go
+│   ├── keypair.go
+│   ├── keypair_test.go
+│   ├── signatures.go
+│   └── signatures_test.go
+├── discovery/
+│   ├── mdns.go
+│   ├── mdns_test.go
+│   ├── peer_scanner.go
+│   └── peer_scanner_test.go
+├── models/
+│   ├── file.go
+│   ├── message.go
+│   └── peer.go
+├── network/
+│   ├── client.go
+│   ├── connection.go
+│   ├── file_transfer.go
+│   ├── file_transfer_test.go
+│   ├── handshake.go
+│   ├── integration_test.go
+│   ├── messaging_test.go
+│   ├── peer_manager.go
+│   ├── peer_manager_test.go
+│   ├── protocol.go
+│   ├── protocol_test.go
+│   └── server.go
+├── storage/
+│   ├── database.go
+│   ├── database_test.go
+│   ├── files.go
+│   ├── files_test.go
+│   ├── messages.go
+│   ├── messages_test.go
+│   ├── peers.go
+│   ├── peers_test.go
+│   ├── seen_ids.go
+│   ├── seen_ids_test.go
+│   ├── testutil_test.go
+│   └── types.go
+└── ui/
+    ├── chat_window.go
+    ├── file_handler.go
+    ├── main_window.go
+    ├── peers_list.go
+    └── settings.go
+```
+
+## File-by-File Reference
+
+### Root Files
+
+- `main.go`: Startup entrypoint. Loads/normalizes config, ensures key material, persists fingerprint updates, opens SQLite store, constructs local identity, and starts UI runtime.
+- `Makefile`: Convenience commands for build and non-UI test flows, plus two client run targets with isolated data dirs.
+- `tools.go`: Build-tagged dependency anchors for `fyne`, `zeroconf`, and `go-sqlite3`.
+- `go.mod`: Module `gosend`, Go version `1.25.6`, direct dependencies (Fyne, UUID, zeroconf, sqlite3, x/crypto).
+- `go.sum`: Dependency checksum lockfile.
+- `AGENTS.md`: Local coding-agent instructions for this repository.
+- `README.md`: Project documentation.
+- `bin/gosend`: Built binary artifact (generated by `make build`).
+
+### `config/`
+
+- `config/config.go`: Data dir resolution, directory creation, config load/save, default config generation, and legacy config normalization (including `port_mode`).
+- `config/config_test.go`: Tests first-run creation, stable reload behavior, and legacy port mode normalization.
+
+### `crypto/`
+
+- `crypto/keypair.go`: Ed25519 keypair ensure/load/save, fingerprint generation, and fingerprint formatting.
+- `crypto/keypair_test.go`: Verifies Ed25519 and X25519 key persistence stability across repeated ensure calls.
+- `crypto/ecdh.go`: X25519 private key ensure/load/save, ephemeral keypair generation, shared secret computation, HKDF session key derivation.
+- `crypto/ecdh_session_test.go`: Validates both sides derive identical shared secrets and session keys.
+- `crypto/encryption.go`: AES-256-GCM encrypt/decrypt helpers with nonce generation and validation.
+- `crypto/encryption_test.go`: Round-trip encryption/decryption tests.
+- `crypto/signatures.go`: Ed25519 sign/verify helpers with input validation.
+- `crypto/signatures_test.go`: Tests valid signature verification and tamper rejection.
+
+### `discovery/`
+
+- `discovery/mdns.go`: mDNS config defaults, broadcaster setup, and combined discovery service startup/shutdown orchestration.
+- `discovery/mdns_test.go`: Tests TXT composition, service start/stop wiring, and stale-time default behavior from TTL.
+- `discovery/peer_scanner.go`: Background/manual scanning, in-memory peer cache, stale-peer aging, event emission, and self-filtering.
+- `discovery/peer_scanner_test.go`: Tests self filtering, manual refresh updates, polling/removal behavior, and timeout tolerance.
+
+### `models/`
+
+- `models/peer.go`: JSON model struct for peer payload shape.
+- `models/message.go`: JSON model struct for message payload shape.
+- `models/file.go`: JSON model struct for file metadata payload shape.
+
+Note: runtime logic currently uses `storage` structs directly; `models` package is present but not currently imported by active runtime code.
+
+### `storage/`
+
+- `storage/types.go`: Core storage data types, status/content constants, validators, null helpers, and shared errors.
+- `storage/database.go`: SQLite open/create helpers, migrations, schema versioning, and connection lifecycle.
+- `storage/database_test.go`: Verifies DB creation, migrations, schema version, and expected table presence.
+- `storage/peers.go`: Peer CRUD + endpoint/status update logic.
+- `storage/peers_test.go`: Peer CRUD and endpoint/status update tests.
+- `storage/messages.go`: Message insert/read/update APIs, pending queue reads, and expired queue pruning.
+- `storage/messages_test.go`: Message CRUD, ordering, status updates, pending retrieval, and prune behavior.
+- `storage/files.go`: File metadata insert/read and transfer-status updates.
+- `storage/files_test.go`: File metadata CRUD/status update tests.
+- `storage/seen_ids.go`: Seen-message ID insert/check/prune helpers.
+- `storage/seen_ids_test.go`: Seen ID insert/existence/prune tests.
+- `storage/testutil_test.go`: Shared test setup helpers for temp stores and seeded peers.
+
+### `network/`
+
+- `network/protocol.go`: Protocol constants/types, JSON helpers, frame read/write helpers, handshake build/sign/verify utilities.
+- `network/protocol_test.go`: Frame round-trip and oversized frame rejection tests.
+- `network/connection.go`: Encrypted framed peer connection, connection states, keepalive ping/pong, sequence tracking, read/send loops.
+- `network/handshake.go`: Handshake options/defaults, key-change decision flow, and session-key derivation helpers.
+- `network/client.go`: Outbound dial + handshake + session setup.
+- `network/server.go`: Listener accept loop and inbound handshake/session setup.
+- `network/peer_manager.go`: High-level peer lifecycle manager: add/approve/remove/disconnect, message send/receive, queue drain/limits, reconnect workers, discovery-triggered reconnect.
+- `network/file_transfer.go`: File transfer protocol implementation: request/response, chunk send/ack/nack, resume, checksum verification, status persistence, progress callbacks.
+- `network/integration_test.go`: Handshake/session/keepalive/ping-timeout/key-change decision integration tests.
+- `network/peer_manager_test.go`: Add/remove/restart/simultaneous-add/spoof-protection/pending-cleanup behavior tests.
+- `network/messaging_test.go`: Delivery updates, offline queue drain, replay rejection, sequence rejection, signature tamper rejection, spoofed ack rejection tests.
+- `network/file_transfer_test.go`: Accepted/rejected transfer flows, reconnect resume, and checksum mismatch failure tests.
+
+### `ui/`
+
+- `ui/main_window.go`: Application controller, service startup/shutdown, event loops, status updates, dialogs, and cross-layer wiring.
+- `ui/peers_list.go`: Peer list pane, discovery dialog rendering, discovered-peer add flow, and peer selection.
+- `ui/chat_window.go`: Chat pane rendering, message send flow, file attach flow, transcript composition, transfer row rendering/progress.
+- `ui/settings.go`: Settings dialog (device name, fingerprint, port mode/port) and key reset workflow.
+- `ui/file_handler.go`: Picker/progress helper used by UI for file selection and transfer progress state.
+
+## Known Gaps / Current Limitations
+
+- `seen_message_ids` pruning exists (`storage.PruneOldEntries`) but is not scheduled by runtime code.
+- Trusting a key change allows the current connection, but pinned peer key replacement is not persisted in storage yet.
+- `PeerManager.Stop()` closes connections directly; it does not broadcast `peer_disconnect` on app shutdown.
+- `Makefile` declares `.PHONY run_tests`, but no `run_tests` target is currently defined.
+- No dedicated UI test suite is present.
+
+# Discrepancies
+
+- Previous README listed `DESIGN.md` and `PHASES.md` as repository files. Current repo does not contain those files.
+- Previous README documented `make run_tests`. Current `Makefile` has no `run_tests` target.
+- Previous README implied default listening behavior was port `9999`. Current first-run config defaults to `port_mode=automatic` and `listening_port=0`.
+- Previous README described simultaneous add conflict resolution using lexicographic `device_id` winner logic. Current code auto-accepts when an outbound add is already pending, which allows both sides to accept.
+- Previous README stated file checksum failure triggers full retransmission. Current code marks transfer as `failed` and reports failure; no automatic whole-file retransmit is implemented.
+- Previous README treated seen-ID pruning as part of active runtime behavior. Current pruning helper exists but is only called in tests unless manually invoked.
+- Previous README described models as active network/UI models. Current runtime paths use `storage` models; `models/` structs are presently unused.
+- Previous README used a broad `Go 1.21+` statement. Current `go.mod` explicitly sets `go 1.25.6`.
+- Previous README implied post key-change trust is durably re-pinned. Current code accepts trusted key changes for handshake but does not persist replacement key material.
+- Previous README under-described file encryption layering. Current code encrypts each `file_data` chunk and also encrypts all post-handshake frames at the connection layer.
