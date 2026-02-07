@@ -1,0 +1,38 @@
+# Binaries and build output
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test and coverage
+*.test
+*.out
+coverage.html
+coverage.txt
+
+# Go workspace (go.work)
+go.work
+go.work.sum
+
+# Dependency directories
+vendor/
+
+# IDE and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local config or secrets (uncomment if you use them)
+# *.env
+# .env.local
+
+# Debug binaries
+__debug_bin
