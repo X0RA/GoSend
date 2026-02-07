@@ -7,7 +7,7 @@
 - `tools.go`: Build-tagged imports that keep planned dependencies (`fyne`, `zeroconf`, `go-sqlite3`) pinned in `go.mod`.
 - `go.mod`: Go module definition and direct/indirect dependency versions.
 - `go.sum`: Dependency checksum lock file.
-- `config/config.go`: Data directory resolution, first-run directory creation, config load/create/save, and default config normalization.
+- `config/config.go`: Data directory resolution, first-run directory creation, config load/create/save, and default config normalization (including `port_mode` behavior for automatic vs fixed listening ports).
 - `config/config_test.go`: Tests first-run config creation and second-run reload stability.
 - `crypto/keypair.go`: Ed25519 keypair generation/load/save, fingerprint generation, and display formatting.
 - `crypto/keypair_test.go`: Tests Ed25519/X25519 key persistence stability across repeated loads.
@@ -48,7 +48,7 @@
 - `ui/main_window.go`: GUI runtime controller; window shell, service lifecycle (discovery + peer manager), background event loops, and thread-safe dialog prompts for peer add/file accept/key change.
 - `ui/peers_list.go`: Left-pane peers list with online/offline indicators and selection, plus the discovery/add dialog (`Add`, `Refresh`, `Close`).
 - `ui/chat_window.go`: Per-peer chat view; message timeline (left/right alignment, timestamps, delivery marks), multiline input/send, attachment flow, and file transfer progress rendering.
-- `ui/settings.go`: Settings dialog for device name, fingerprint visibility, listening port, and key reset workflow.
+- `ui/settings.go`: Settings dialog for device name, fingerprint visibility, listening port mode (`Automatic`/`Fixed`), fixed-port value, and key reset workflow.
 - `ui/file_handler.go`: UI-facing file picker and transfer progress tracking helper.
 - `storage/seen_ids.go`: Replay-protection ID methods (`InsertSeenID`, `HasSeenID`, `PruneOldEntries`).
 - `storage/seen_ids_test.go`: Seen-message ID insert/check/prune tests.
@@ -271,6 +271,7 @@
 - `go test ./...` passes with the new GUI package compiled.
 - `GOCACHE=/tmp/go-build go vet ./...` passes.
 - Full GUI walkthrough remains manual (to be validated interactively across two app instances).
+- Port behavior: in `Automatic` mode the app binds an available port at launch and advertises that bound port via discovery; in `Fixed` mode it binds the configured `listening_port`.
 
 ## Phase 10: Polish & Hardening
 - [ ] Add structured logging (connection events, errors, crypto failures)

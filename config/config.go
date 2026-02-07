@@ -17,6 +17,10 @@ const (
 	AppDirectoryName = "p2p-chat"
 	// DefaultListeningPort is the TCP port used when no user override exists.
 	DefaultListeningPort = 9999
+	// PortModeAutomatic picks an available port at launch.
+	PortModeAutomatic = "automatic"
+	// PortModeFixed uses the configured listening port value.
+	PortModeFixed = "fixed"
 	// configFileName is the persisted configuration file.
 	configFileName = "config.json"
 )
@@ -25,6 +29,7 @@ const (
 type DeviceConfig struct {
 	DeviceID              string `json:"device_id"`
 	DeviceName            string `json:"device_name"`
+	PortMode              string `json:"port_mode"`
 	ListeningPort         int    `json:"listening_port"`
 	Ed25519PrivateKeyPath string `json:"ed25519_private_key_path"`
 	Ed25519PublicKeyPath  string `json:"ed25519_public_key_path"`
@@ -162,7 +167,8 @@ func defaultConfig(dataDir string) (*DeviceConfig, error) {
 	return &DeviceConfig{
 		DeviceID:              uuid.NewString(),
 		DeviceName:            deviceName,
-		ListeningPort:         DefaultListeningPort,
+		PortMode:              PortModeAutomatic,
+		ListeningPort:         0,
 		Ed25519PrivateKeyPath: filepath.Join(keysDir, "ed25519_private.pem"),
 		Ed25519PublicKeyPath:  filepath.Join(keysDir, "ed25519_public.pem"),
 		X25519PrivateKeyPath:  filepath.Join(keysDir, "x25519_private.pem"),
@@ -188,8 +194,25 @@ func normalizeDefaults(cfg *DeviceConfig, dataDir string) bool {
 		updated = true
 	}
 
-	if cfg.ListeningPort == 0 {
+	mode := normalizePortMode(cfg.PortMode)
+	if mode == "" {
+		if cfg.ListeningPort > 0 {
+			mode = PortModeFixed
+		} else {
+			mode = PortModeAutomatic
+		}
+	}
+	if cfg.PortMode != mode {
+		cfg.PortMode = mode
+		updated = true
+	}
+
+	if cfg.PortMode == PortModeFixed && cfg.ListeningPort == 0 {
 		cfg.ListeningPort = DefaultListeningPort
+		updated = true
+	}
+	if cfg.PortMode == PortModeAutomatic && cfg.ListeningPort < 0 {
+		cfg.ListeningPort = 0
 		updated = true
 	}
 
@@ -209,4 +232,15 @@ func normalizeDefaults(cfg *DeviceConfig, dataDir string) bool {
 	}
 
 	return updated
+}
+
+func normalizePortMode(mode string) string {
+	switch mode {
+	case PortModeAutomatic:
+		return PortModeAutomatic
+	case PortModeFixed:
+		return PortModeFixed
+	default:
+		return ""
+	}
 }

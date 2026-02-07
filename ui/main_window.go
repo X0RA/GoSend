@@ -85,6 +85,8 @@ type controller struct {
 
 	refreshMu      sync.Mutex
 	refreshRunning bool
+
+	activeListenPort int
 }
 
 // Run starts the Phase 9 GUI.
@@ -156,27 +158,25 @@ func newController(app fyne.App, options RunOptions) (*controller, error) {
 	ctrl.refreshPeersFromStore()
 	ctrl.syncDiscoveredFromScanner()
 	ctrl.refreshChatView()
-	ctrl.setStatus("Ready")
+	if ctrl.activeListenPort > 0 {
+		ctrl.setStatus(fmt.Sprintf("Ready (listening on %d)", ctrl.activeListenPort))
+	} else {
+		ctrl.setStatus("Ready")
+	}
 
 	return ctrl, nil
 }
 
 func (c *controller) startServices() error {
-	discoveryService, err := discovery.Start(discovery.Config{
-		SelfDeviceID:   c.cfg.DeviceID,
-		DeviceName:     c.cfg.DeviceName,
-		ListeningPort:  c.cfg.ListeningPort,
-		KeyFingerprint: c.cfg.KeyFingerprint,
-	})
-	if err != nil {
-		return fmt.Errorf("start discovery: %w", err)
+	requestedPort := c.cfg.ListeningPort
+	if c.cfg.PortMode == config.PortModeAutomatic || requestedPort <= 0 {
+		requestedPort = 0
 	}
-	c.discovery = discoveryService
 
 	manager, err := network.NewPeerManager(network.PeerManagerOptions{
 		Identity:      c.identity,
 		Store:         c.store,
-		ListenAddress: net.JoinHostPort("0.0.0.0", strconv.Itoa(c.cfg.ListeningPort)),
+		ListenAddress: net.JoinHostPort("0.0.0.0", strconv.Itoa(requestedPort)),
 		OnKeyChange:   c.promptKeyChangeDecision,
 		OnMessageReceived: func(_ storage.Message) {
 			c.refreshChatView()
@@ -191,18 +191,35 @@ func (c *controller) startServices() error {
 		OnFileProgress: c.handleFileProgress,
 	})
 	if err != nil {
-		c.discovery.Stop()
-		c.discovery = nil
 		return fmt.Errorf("create peer manager: %w", err)
 	}
 	c.manager = manager
 
 	if err := c.manager.Start(); err != nil {
-		c.discovery.Stop()
-		c.discovery = nil
 		c.manager = nil
 		return fmt.Errorf("start peer manager: %w", err)
 	}
+
+	activePort, err := listeningPortFromAddr(c.manager.Addr())
+	if err != nil {
+		c.manager.Stop()
+		c.manager = nil
+		return fmt.Errorf("resolve active listening port: %w", err)
+	}
+	c.activeListenPort = activePort
+
+	discoveryService, err := discovery.Start(discovery.Config{
+		SelfDeviceID:   c.cfg.DeviceID,
+		DeviceName:     c.cfg.DeviceName,
+		ListeningPort:  activePort,
+		KeyFingerprint: c.cfg.KeyFingerprint,
+	})
+	if err != nil {
+		c.manager.Stop()
+		c.manager = nil
+		return fmt.Errorf("start discovery: %w", err)
+	}
+	c.discovery = discoveryService
 	return nil
 }
 
@@ -606,6 +623,22 @@ func (c *controller) listDiscoveredSnapshot() []discovery.DiscoveredPeer {
 		return out[i].DeviceName < out[j].DeviceName
 	})
 	return out
+}
+
+func listeningPortFromAddr(addr net.Addr) (int, error) {
+	if addr == nil {
+		return 0, errors.New("missing listen address")
+	}
+	host, portText, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return 0, fmt.Errorf("parse listen address %q: %w", addr.String(), err)
+	}
+	_ = host
+	port, err := strconv.Atoi(portText)
+	if err != nil || port <= 0 {
+		return 0, fmt.Errorf("invalid listen port %q", portText)
+	}
+	return port, nil
 }
 
 func fingerprintFromBase64(publicKeyBase64 string) string {

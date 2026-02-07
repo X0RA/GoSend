@@ -21,7 +21,29 @@ func (c *controller) showSettingsDialog() {
 	nameEntry.SetText(c.cfg.DeviceName)
 
 	portEntry := widget.NewEntry()
-	portEntry.SetText(strconv.Itoa(c.cfg.ListeningPort))
+	if c.cfg.ListeningPort > 0 {
+		portEntry.SetText(strconv.Itoa(c.cfg.ListeningPort))
+	}
+
+	portModeOptions := []string{"Automatic", "Fixed"}
+	portModeGroup := widget.NewRadioGroup(portModeOptions, func(selected string) {
+		if selected == "Fixed" {
+			portEntry.Enable()
+			return
+		}
+		portEntry.Disable()
+	})
+	switch c.cfg.PortMode {
+	case config.PortModeFixed:
+		portModeGroup.SetSelected("Fixed")
+	default:
+		portModeGroup.SetSelected("Automatic")
+	}
+	if portModeGroup.Selected == "Fixed" {
+		portEntry.Enable()
+	} else {
+		portEntry.Disable()
+	}
 
 	fingerprintLabel := widget.NewLabel(appcrypto.FormatFingerprint(c.cfg.KeyFingerprint))
 	deviceIDLabel := widget.NewLabel(c.cfg.DeviceID)
@@ -37,6 +59,8 @@ func (c *controller) showSettingsDialog() {
 		deviceIDLabel,
 		widget.NewLabel("Fingerprint"),
 		fingerprintLabel,
+		widget.NewLabel("Port Mode"),
+		portModeGroup,
 		widget.NewLabel("Listening Port"),
 		portEntry,
 		resetKeysBtn,
@@ -53,14 +77,28 @@ func (c *controller) showSettingsDialog() {
 			return
 		}
 
-		port, err := strconv.Atoi(strings.TrimSpace(portEntry.Text))
-		if err != nil || port <= 0 {
-			dialog.ShowError(fmt.Errorf("port must be a positive number"), c.window)
-			return
+		portMode := config.PortModeAutomatic
+		if portModeGroup.Selected == "Fixed" {
+			portMode = config.PortModeFixed
 		}
 
-		changed := c.cfg.DeviceName != name || c.cfg.ListeningPort != port
+		port := 0
+		if portMode == config.PortModeFixed {
+			parsed, err := strconv.Atoi(strings.TrimSpace(portEntry.Text))
+			if err != nil || parsed <= 0 {
+				dialog.ShowError(fmt.Errorf("port must be a positive number when mode is Fixed"), c.window)
+				return
+			}
+			port = parsed
+		}
+
+		changed := c.cfg.DeviceName != name || c.cfg.PortMode != portMode || c.cfg.ListeningPort != port
+		if !changed {
+			c.setStatus("Settings saved")
+			return
+		}
 		c.cfg.DeviceName = name
+		c.cfg.PortMode = portMode
 		c.cfg.ListeningPort = port
 
 		if err := config.Save(c.cfgPath, c.cfg); err != nil {
@@ -68,12 +106,8 @@ func (c *controller) showSettingsDialog() {
 			return
 		}
 
-		if changed {
-			c.setStatus("Settings saved. Restart required to apply name/port changes.")
-			dialog.ShowInformation("Restart Required", "Settings were saved. Restart the app to apply device name/port changes.", c.window)
-			return
-		}
-		c.setStatus("Settings saved")
+		c.setStatus("Settings saved. Restart required to apply name/port changes.")
+		dialog.ShowInformation("Restart Required", "Settings were saved. Restart the app to apply device name/port changes.", c.window)
 	}, c.window)
 
 	dlg.Resize(fyne.NewSize(520, 420))
