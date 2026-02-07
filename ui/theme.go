@@ -8,6 +8,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -145,4 +146,26 @@ func themedColor(name fyne.ThemeColorName) color.Color {
 		return colorIncomingMsg
 	}
 	return app.Settings().Theme().Color(name, app.Settings().ThemeVariant())
+}
+
+// gosendTheme wraps the default theme so popups (e.g. tooltips) use the dark
+// palette instead of the default slate overlay.
+type gosendTheme struct {
+	fyne.Theme
+}
+
+func (t *gosendTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	switch name {
+	case theme.ColorNameOverlayBackground:
+		return colorDialogPanel
+	case theme.ColorNameShadow:
+		return color.NRGBA{R: 0, G: 0, B: 0, A: 128}
+	default:
+		return t.Theme.Color(name, variant)
+	}
+}
+
+// newGoSendTheme returns a theme that matches the app's dark UI for overlays and tooltips.
+func newGoSendTheme() fyne.Theme {
+	return &gosendTheme{Theme: theme.DefaultTheme()}
 }
