@@ -83,12 +83,42 @@ func TestMessageCRUD(t *testing.T) {
 		t.Fatalf("expected msg-new to be delivered, got %q", marked.DeliveryStatus)
 	}
 
+	byID, err := store.GetMessageByID("msg-new")
+	if err != nil {
+		t.Fatalf("GetMessageByID failed: %v", err)
+	}
+	if byID.MessageID != "msg-new" {
+		t.Fatalf("unexpected message from GetMessageByID: %+v", byID)
+	}
+
+	if err := store.UpdateDeliveryStatus("msg-old", deliveryStatusFailed); err != nil {
+		t.Fatalf("UpdateDeliveryStatus failed: %v", err)
+	}
+	updatedOld, err := store.GetMessageByID("msg-old")
+	if err != nil {
+		t.Fatalf("GetMessageByID msg-old failed: %v", err)
+	}
+	if updatedOld.DeliveryStatus != deliveryStatusFailed {
+		t.Fatalf("expected msg-old status failed, got %q", updatedOld.DeliveryStatus)
+	}
+
 	pending, err := store.GetPendingMessages("peer-1")
 	if err != nil {
 		t.Fatalf("GetPendingMessages failed: %v", err)
 	}
+	if len(pending) != 0 {
+		t.Fatalf("expected no pending messages after UpdateDeliveryStatus, got %+v", pending)
+	}
+
+	if err := store.UpdateDeliveryStatus("msg-old", deliveryStatusPending); err != nil {
+		t.Fatalf("UpdateDeliveryStatus pending failed: %v", err)
+	}
+	pending, err = store.GetPendingMessages("peer-1")
+	if err != nil {
+		t.Fatalf("GetPendingMessages after pending reset failed: %v", err)
+	}
 	if len(pending) != 1 || pending[0].MessageID != "msg-old" {
-		t.Fatalf("expected only msg-old pending, got %+v", pending)
+		t.Fatalf("expected only msg-old pending after reset, got %+v", pending)
 	}
 
 	pruned, err := store.PruneExpiredQueue(nowUnixMilli() - 5_000)

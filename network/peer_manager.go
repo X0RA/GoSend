@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	appcrypto "gosend/crypto"
 	"gosend/storage"
 )
@@ -21,6 +23,18 @@ const (
 	peerStatusOffline = "offline"
 	peerStatusPending = "pending"
 	peerStatusBlocked = "blocked"
+
+	messageContentTypeText = "text"
+
+	deliveryStatusPending   = "pending"
+	deliveryStatusSent      = "sent"
+	deliveryStatusDelivered = "delivered"
+	deliveryStatusFailed    = "failed"
+
+	maxTimestampSkew      = 5 * time.Minute
+	maxQueueAge           = 7 * 24 * time.Hour
+	maxQueuedMessages     = 500
+	maxQueuedBytesPerPeer = 50 * 1024 * 1024
 )
 
 var defaultReconnectBackoff = []time.Duration{
@@ -54,6 +68,9 @@ type PeerManagerOptions struct {
 	KeepAliveTimeout  time.Duration
 	FrameReadTimeout  time.Duration
 	AutoRespondPing   *bool
+
+	OnMessageReceived func(storage.Message)
+	OnQueueOverflow   func(peerDeviceID string, droppedCount int)
 }
 
 // PeerManager manages peer add/remove/disconnect flows plus reconnect behavior.
@@ -87,6 +104,9 @@ type PeerManager struct {
 
 	suppressMu        sync.Mutex
 	suppressReconnect map[string]bool
+
+	drainMu      sync.Mutex
+	activeDrains map[string]bool
 
 	errors chan error
 }
@@ -125,6 +145,7 @@ func NewPeerManager(options PeerManagerOptions) (*PeerManager, error) {
 		addRequests:         make(chan AddRequestNotification, 64),
 		reconnectWorkers:    make(map[string]context.CancelFunc),
 		suppressReconnect:   make(map[string]bool),
+		activeDrains:        make(map[string]bool),
 		errors:              make(chan error, 64),
 	}
 
@@ -138,6 +159,10 @@ func (m *PeerManager) Start() error {
 	}
 
 	m.ctx, m.cancel = context.WithCancel(context.Background())
+
+	if err := m.ensureLocalPeerRecord(); err != nil {
+		return err
+	}
 
 	if err := m.loadKnownPeers(); err != nil {
 		return err
@@ -155,6 +180,9 @@ func (m *PeerManager) Start() error {
 	peers, err := m.options.Store.ListPeers()
 	if err == nil {
 		for _, peer := range peers {
+			if peer.DeviceID == m.options.Identity.DeviceID {
+				continue
+			}
 			if peer.Status == peerStatusOnline {
 				m.startReconnect(peer.DeviceID)
 			}
@@ -297,6 +325,7 @@ func (m *PeerManager) SendPeerAddRequest(peerDeviceID string) (bool, error) {
 // SendPeerRemove sends peer_remove, removes local peer state, and closes connection.
 func (m *PeerManager) SendPeerRemove(peerDeviceID string) error {
 	conn := m.getConnection(peerDeviceID)
+	var sendErr error
 	if conn != nil {
 		msg := PeerRemove{
 			Type:         TypePeerRemove,
@@ -304,7 +333,10 @@ func (m *PeerManager) SendPeerRemove(peerDeviceID string) error {
 			Timestamp:    time.Now().UnixMilli(),
 		}
 		_ = m.signPeerRemove(&msg)
-		_ = conn.SendMessage(msg)
+		sendErr = conn.SendMessage(msg)
+		if sendErr != nil {
+			m.reportError(sendErr)
+		}
 	}
 
 	m.markSuppressReconnect(peerDeviceID)
@@ -312,7 +344,20 @@ func (m *PeerManager) SendPeerRemove(peerDeviceID string) error {
 	_ = m.options.Store.RemovePeer(peerDeviceID)
 	m.removeKnownKey(peerDeviceID)
 	if conn != nil {
-		_ = conn.Close()
+		if sendErr != nil {
+			_ = conn.Close()
+		} else {
+			go func(c *PeerConnection) {
+				timer := time.NewTimer(200 * time.Millisecond)
+				defer timer.Stop()
+				select {
+				case <-c.Done():
+				case <-timer.C:
+					_ = c.Close()
+				case <-m.ctx.Done():
+				}
+			}(conn)
+		}
 	}
 	return nil
 }
@@ -330,6 +375,19 @@ func (m *PeerManager) SendPeerDisconnect(peerDeviceID string) error {
 	}
 	_ = m.options.Store.UpdatePeerStatus(peerDeviceID, peerStatusOffline, time.Now().UnixMilli())
 	return nil
+}
+
+// SendTextMessage sends a text message to a peer or queues it if offline.
+func (m *PeerManager) SendTextMessage(peerDeviceID, content string) (string, error) {
+	if peerDeviceID == "" {
+		return "", errors.New("peer device ID is required")
+	}
+	if content == "" {
+		return "", errors.New("content is required")
+	}
+
+	messageID := uuid.NewString()
+	return messageID, m.sendTextMessageWithID(peerDeviceID, messageID, content, time.Now().UnixMilli())
 }
 
 func (m *PeerManager) serverLoop() {
@@ -370,6 +428,8 @@ func (m *PeerManager) registerConnection(conn *PeerConnection) {
 	if err := m.persistPeerConnection(conn, peerStatusOnline); err != nil && !errors.Is(err, storage.ErrNotFound) {
 		m.reportError(err)
 	}
+
+	m.startQueueDrain(peerID, conn)
 
 	m.wg.Add(1)
 	go m.connectionLoop(conn)
@@ -414,6 +474,27 @@ loop:
 			}
 			m.handlePeerRemove(conn, removeMsg)
 			break loop
+		case TypeMessage:
+			var message EncryptedMessage
+			if err := json.Unmarshal(payload, &message); err != nil {
+				m.reportError(err)
+				continue
+			}
+			m.handleIncomingEncryptedMessage(conn, message)
+		case TypeAck:
+			var ack AckMessage
+			if err := json.Unmarshal(payload, &ack); err != nil {
+				m.reportError(err)
+				continue
+			}
+			m.handleAck(ack)
+		case TypeError:
+			var msg ErrorMessage
+			if err := json.Unmarshal(payload, &msg); err != nil {
+				m.reportError(err)
+				continue
+			}
+			m.handleProtocolError(msg)
 		}
 	}
 
@@ -532,6 +613,334 @@ func (m *PeerManager) handlePeerRemove(conn *PeerConnection, removeMsg PeerRemov
 	_ = m.options.Store.RemovePeer(peerID)
 	m.removeKnownKey(peerID)
 	_ = conn.Close()
+}
+
+func (m *PeerManager) sendTextMessageWithID(peerDeviceID, messageID, content string, timestampSent int64) error {
+	status := deliveryStatusPending
+	signature := ""
+
+	conn := m.getConnection(peerDeviceID)
+	if conn != nil && conn.State() != StateDisconnected {
+		wireMessage, wireSignature, err := m.buildEncryptedMessage(conn, messageID, content, timestampSent)
+		if err != nil {
+			return err
+		}
+		if err := conn.SendMessage(wireMessage); err == nil {
+			status = deliveryStatusSent
+			signature = wireSignature
+		} else {
+			m.reportError(fmt.Errorf("send message %q to %q failed, queueing: %w", messageID, peerDeviceID, err))
+		}
+	}
+
+	message := storage.Message{
+		MessageID:      messageID,
+		FromDeviceID:   m.options.Identity.DeviceID,
+		ToDeviceID:     peerDeviceID,
+		Content:        content,
+		ContentType:    messageContentTypeText,
+		TimestampSent:  timestampSent,
+		DeliveryStatus: status,
+		Signature:      signature,
+	}
+	if err := m.options.Store.SaveMessage(message); err != nil {
+		return err
+	}
+
+	if status == deliveryStatusPending {
+		if err := m.enforceQueueLimits(peerDeviceID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *PeerManager) handleIncomingEncryptedMessage(conn *PeerConnection, message EncryptedMessage) {
+	if message.MessageID == "" || message.FromDeviceID == "" || message.ToDeviceID == "" {
+		return
+	}
+	if message.FromDeviceID != conn.PeerDeviceID() {
+		m.reportError(fmt.Errorf("rejecting message %q: sender mismatch %q != %q", message.MessageID, message.FromDeviceID, conn.PeerDeviceID()))
+		return
+	}
+	if message.ToDeviceID != m.options.Identity.DeviceID {
+		return
+	}
+	if !withinTimestampSkew(message.Timestamp) {
+		m.reportError(fmt.Errorf("rejecting message %q from %q: timestamp outside skew window", message.MessageID, message.FromDeviceID))
+		_ = m.sendErrorMessage(conn, "timestamp_out_of_range", "message timestamp outside allowed skew", message.MessageID)
+		return
+	}
+	if err := conn.ValidateSequence(message.Sequence); err != nil {
+		m.reportError(fmt.Errorf("rejecting message %q from %q: %w", message.MessageID, message.FromDeviceID, err))
+		return
+	}
+
+	seen, err := m.options.Store.HasSeenID(message.MessageID)
+	if err != nil {
+		m.reportError(err)
+		return
+	}
+	if seen {
+		m.reportError(fmt.Errorf("rejecting duplicate message_id %q from %q", message.MessageID, message.FromDeviceID))
+		return
+	}
+
+	ciphertext, err := base64.StdEncoding.DecodeString(message.EncryptedContent)
+	if err != nil {
+		m.reportError(err)
+		return
+	}
+	iv, err := base64.StdEncoding.DecodeString(message.IV)
+	if err != nil {
+		m.reportError(err)
+		return
+	}
+	signature, err := base64.StdEncoding.DecodeString(message.Signature)
+	if err != nil {
+		m.reportError(err)
+		return
+	}
+
+	peerPublicKey, err := decodePeerPublicKey(conn.PeerPublicKey())
+	if err != nil {
+		m.reportError(err)
+		return
+	}
+	if !appcrypto.Verify(peerPublicKey, ciphertext, signature) {
+		m.reportError(fmt.Errorf("rejecting message %q from %q: invalid signature", message.MessageID, message.FromDeviceID))
+		_ = m.sendErrorMessage(conn, "invalid_signature", "message signature verification failed", message.MessageID)
+		return
+	}
+
+	plaintext, err := appcrypto.Decrypt(conn.SessionKey(), iv, ciphertext)
+	if err != nil {
+		m.reportError(fmt.Errorf("decrypt message %q: %w", message.MessageID, err))
+		_ = m.sendErrorMessage(conn, "decryption_failed", "message decryption failed", message.MessageID)
+		return
+	}
+
+	receivedAt := time.Now().UnixMilli()
+	contentType := message.ContentType
+	if contentType == "" {
+		contentType = messageContentTypeText
+	}
+
+	storedMessage := storage.Message{
+		MessageID:         message.MessageID,
+		FromDeviceID:      message.FromDeviceID,
+		ToDeviceID:        message.ToDeviceID,
+		Content:           string(plaintext),
+		ContentType:       contentType,
+		TimestampSent:     message.Timestamp,
+		TimestampReceived: &receivedAt,
+		DeliveryStatus:    deliveryStatusDelivered,
+		Signature:         message.Signature,
+	}
+	if err := m.options.Store.SaveMessage(storedMessage); err != nil {
+		m.reportError(err)
+		return
+	}
+	if err := m.options.Store.InsertSeenID(message.MessageID, receivedAt); err != nil {
+		m.reportError(err)
+	}
+
+	if m.options.OnMessageReceived != nil {
+		m.options.OnMessageReceived(storedMessage)
+	}
+
+	ack := AckMessage{
+		Type:         TypeAck,
+		MessageID:    message.MessageID,
+		FromDeviceID: m.options.Identity.DeviceID,
+		Status:       deliveryStatusDelivered,
+		Timestamp:    receivedAt,
+	}
+	if err := conn.SendMessage(ack); err != nil {
+		m.reportError(err)
+	}
+}
+
+func (m *PeerManager) handleAck(ack AckMessage) {
+	if ack.MessageID == "" {
+		return
+	}
+
+	status := ack.Status
+	if status == "" {
+		status = deliveryStatusDelivered
+	}
+
+	var err error
+	if status == deliveryStatusDelivered {
+		err = m.options.Store.MarkDelivered(ack.MessageID)
+	} else {
+		err = m.options.Store.UpdateDeliveryStatus(ack.MessageID, status)
+	}
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		m.reportError(err)
+	}
+}
+
+func (m *PeerManager) handleProtocolError(protocolError ErrorMessage) {
+	if protocolError.RelatedMessageID != "" {
+		if err := m.options.Store.UpdateDeliveryStatus(protocolError.RelatedMessageID, deliveryStatusFailed); err != nil && !errors.Is(err, storage.ErrNotFound) {
+			m.reportError(err)
+		}
+	}
+	m.reportError(fmt.Errorf("peer protocol error [%s]: %s", protocolError.Code, protocolError.Message))
+}
+
+func (m *PeerManager) startQueueDrain(peerID string, conn *PeerConnection) {
+	if peerID == "" || conn == nil {
+		return
+	}
+
+	m.drainMu.Lock()
+	if m.activeDrains[peerID] {
+		m.drainMu.Unlock()
+		return
+	}
+	m.activeDrains[peerID] = true
+	m.drainMu.Unlock()
+
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		defer func() {
+			m.drainMu.Lock()
+			delete(m.activeDrains, peerID)
+			m.drainMu.Unlock()
+		}()
+		if err := m.drainPendingMessages(peerID, conn); err != nil {
+			m.reportError(err)
+		}
+	}()
+}
+
+func (m *PeerManager) drainPendingMessages(peerID string, conn *PeerConnection) error {
+	if err := m.enforceQueueLimits(peerID); err != nil {
+		return err
+	}
+
+	pending, err := m.options.Store.GetPendingMessages(peerID)
+	if err != nil {
+		return err
+	}
+	for _, pendingMessage := range pending {
+		select {
+		case <-m.ctx.Done():
+			return nil
+		default:
+		}
+
+		if conn.State() == StateDisconnected {
+			return nil
+		}
+		if err := m.sendPendingMessage(conn, pendingMessage); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *PeerManager) sendPendingMessage(conn *PeerConnection, message storage.Message) error {
+	wireMessage, _, err := m.buildEncryptedMessage(conn, message.MessageID, message.Content, message.TimestampSent)
+	if err != nil {
+		return err
+	}
+	if err := conn.SendMessage(wireMessage); err != nil {
+		return err
+	}
+
+	if err := m.options.Store.UpdateDeliveryStatus(message.MessageID, deliveryStatusSent); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		return err
+	}
+	return nil
+}
+
+func (m *PeerManager) enforceQueueLimits(peerID string) error {
+	if peerID == "" {
+		return nil
+	}
+
+	_, err := m.options.Store.PruneExpiredQueue(time.Now().Add(-maxQueueAge).UnixMilli())
+	if err != nil {
+		return err
+	}
+
+	pending, err := m.options.Store.GetPendingMessages(peerID)
+	if err != nil {
+		return err
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+
+	var totalBytes int64
+	for _, pendingMessage := range pending {
+		totalBytes += int64(len(pendingMessage.Content))
+	}
+
+	dropped := 0
+	for len(pending)-dropped > maxQueuedMessages || totalBytes > maxQueuedBytesPerPeer {
+		oldest := pending[dropped]
+		if err := m.options.Store.UpdateDeliveryStatus(oldest.MessageID, deliveryStatusFailed); err != nil && !errors.Is(err, storage.ErrNotFound) {
+			return err
+		}
+		totalBytes -= int64(len(oldest.Content))
+		dropped++
+	}
+
+	if dropped > 0 && m.options.OnQueueOverflow != nil {
+		m.options.OnQueueOverflow(peerID, dropped)
+	}
+
+	return nil
+}
+
+func (m *PeerManager) buildEncryptedMessage(conn *PeerConnection, messageID, content string, timestamp int64) (EncryptedMessage, string, error) {
+	if timestamp == 0 {
+		timestamp = time.Now().UnixMilli()
+	}
+
+	ciphertext, iv, err := appcrypto.Encrypt(conn.SessionKey(), []byte(content))
+	if err != nil {
+		return EncryptedMessage{}, "", err
+	}
+
+	signatureBytes, err := appcrypto.Sign(m.options.Identity.Ed25519PrivateKey, ciphertext)
+	if err != nil {
+		return EncryptedMessage{}, "", err
+	}
+	signature := base64.StdEncoding.EncodeToString(signatureBytes)
+
+	return EncryptedMessage{
+		Type:             TypeMessage,
+		MessageID:        messageID,
+		FromDeviceID:     m.options.Identity.DeviceID,
+		ToDeviceID:       conn.PeerDeviceID(),
+		ContentType:      messageContentTypeText,
+		Sequence:         conn.NextSendSequence(),
+		EncryptedContent: base64.StdEncoding.EncodeToString(ciphertext),
+		IV:               base64.StdEncoding.EncodeToString(iv),
+		Timestamp:        timestamp,
+		Signature:        signature,
+	}, signature, nil
+}
+
+func (m *PeerManager) sendErrorMessage(conn *PeerConnection, code, message, relatedMessageID string) error {
+	if conn == nil {
+		return nil
+	}
+	errorMessage := ErrorMessage{
+		Type:             TypeError,
+		Code:             code,
+		Message:          message,
+		RelatedMessageID: relatedMessageID,
+		Timestamp:        time.Now().UnixMilli(),
+	}
+	return conn.SendMessage(errorMessage)
 }
 
 func (m *PeerManager) startReconnect(peerID string) {
@@ -723,6 +1132,31 @@ func (m *PeerManager) loadKnownPeers() error {
 	return nil
 }
 
+func (m *PeerManager) ensureLocalPeerRecord() error {
+	_, err := m.options.Store.GetPeer(m.options.Identity.DeviceID)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, storage.ErrNotFound) {
+		return err
+	}
+
+	pubKeyBase64 := base64.StdEncoding.EncodeToString(m.options.Identity.Ed25519PublicKey)
+	fingerprint := appcrypto.KeyFingerprint(m.options.Identity.Ed25519PublicKey)
+	now := time.Now().UnixMilli()
+
+	localPeer := storage.Peer{
+		DeviceID:          m.options.Identity.DeviceID,
+		DeviceName:        m.options.Identity.DeviceName,
+		Ed25519PublicKey:  pubKeyBase64,
+		KeyFingerprint:    fingerprint,
+		Status:            peerStatusBlocked,
+		AddedTimestamp:    now,
+		LastSeenTimestamp: &now,
+	}
+	return m.options.Store.AddPeer(localPeer)
+}
+
 func (m *PeerManager) knownKeysSnapshot() map[string]string {
 	m.knownKeyMu.RLock()
 	defer m.knownKeyMu.RUnlock()
@@ -783,6 +1217,28 @@ func (m *PeerManager) reportError(err error) {
 	case m.errors <- err:
 	default:
 	}
+}
+
+func decodePeerPublicKey(keyBase64 string) (ed25519.PublicKey, error) {
+	raw, err := base64.StdEncoding.DecodeString(keyBase64)
+	if err != nil {
+		return nil, fmt.Errorf("decode peer Ed25519 public key: %w", err)
+	}
+	if len(raw) != ed25519.PublicKeySize {
+		return nil, errors.New("invalid peer Ed25519 public key size")
+	}
+	return ed25519.PublicKey(raw), nil
+}
+
+func withinTimestampSkew(timestamp int64) bool {
+	if timestamp == 0 {
+		return false
+	}
+	delta := time.Since(time.UnixMilli(timestamp))
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= maxTimestampSkew
 }
 
 func remoteEndpoint(addr net.Addr) (string, int) {

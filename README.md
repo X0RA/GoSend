@@ -25,10 +25,11 @@
 - `network/handshake.go`: Shared handshake options/defaults, key-change decision hook, and session-key derivation helpers.
 - `network/client.go`: Outbound TCP dial and handshake flow, including session-key derivation and key-change checks.
 - `network/server.go`: TCP listener/accept loop, inbound handshake verification/response, and connection handoff.
-- `network/peer_manager.go`: Peer lifecycle manager for add/accept/reject/remove/disconnect flows, reconnect backoff, startup reconnection, and DB synchronization.
+- `network/peer_manager.go`: Peer lifecycle manager for add/accept/reject/remove/disconnect plus encrypted message send/receive, ack/error handling, replay protection checks, offline queue drain, and reconnect backoff.
 - `network/protocol_test.go`: Framing tests (round-trip and oversized frame rejection).
 - `network/integration_test.go`: Integration tests for handshake/session key matching, idle keep-alive stability, dead connection timeout detection, and key-change decision blocking.
 - `network/peer_manager_test.go`: Integration tests for peer add approval queue, restart reconnection, peer removal cleanup, and simultaneous add resolution.
+- `network/messaging_test.go`: Integration tests for delivered-ack updates, offline queue drain after reconnect, duplicate message replay rejection, out-of-sequence rejection, and tampered-signature rejection.
 - `discovery/mdns.go`: mDNS broadcaster setup plus combined discovery service startup/shutdown orchestration.
 - `discovery/peer_scanner.go`: Background peer scanner with self-filtering, in-memory peer list, event channel, and manual refresh support.
 - `discovery/mdns_test.go`: Tests broadcaster TXT record generation and service startup/shutdown wiring.
@@ -38,8 +39,8 @@
 - `storage/database_test.go`: Migration/open tests that verify DB file creation, schema version, and required tables.
 - `storage/peers.go`: Peer CRUD methods (`AddPeer`, `GetPeer`, `ListPeers`, `UpdatePeerStatus`, `RemovePeer`).
 - `storage/peers_test.go`: Peer CRUD tests.
-- `storage/messages.go`: Message CRUD and queue methods (`SaveMessage`, `GetMessages`, `MarkDelivered`, `GetPendingMessages`, `PruneExpiredQueue`).
-- `storage/messages_test.go`: Message CRUD and queue-pruning tests.
+- `storage/messages.go`: Message CRUD and queue methods (`SaveMessage`, `GetMessages`, `MarkDelivered`, `UpdateDeliveryStatus`, `GetMessageByID`, `GetPendingMessages`, `PruneExpiredQueue`).
+- `storage/messages_test.go`: Message CRUD tests including delivery status updates, message lookup by ID, and queue-pruning behavior.
 - `storage/files.go`: File metadata CRUD methods (`SaveFileMetadata`, `UpdateTransferStatus`, `GetFileByID`).
 - `storage/files_test.go`: File metadata CRUD tests.
 - `storage/seen_ids.go`: Replay-protection ID methods (`InsertSeenID`, `HasSeenID`, `PruneOldEntries`).
@@ -176,25 +177,29 @@
 - `go vet ./...` passes.
 
 ## Phase 7: Messaging
-- [ ] Implement send flow: encrypt with session key → sign → frame → send → store locally
-- [ ] Implement receive flow: validate sequence → check seen_message_ids → verify signature → decrypt → store → display
-- [ ] Implement `ack` message send on receive
-- [ ] Implement `ack` message handling (update delivery_status to "delivered")
-- [ ] Implement replay protection: sequence number validation (reject if ≤ last seen)
-- [ ] Implement replay protection: message_id deduplication via seen_message_ids table
-- [ ] Implement replay protection: timestamp skew rejection (±5 min)
-- [ ] Implement offline message queue (store as "pending" in DB)
-- [ ] Implement queue drain on reconnect (send pending messages in order)
-- [ ] Implement queue limits: max 500 messages per peer
-- [ ] Implement queue limits: max 7 days age
-- [ ] Implement queue limits: max 50 MB per peer
-- [ ] Implement queue overflow handling (oldest marked "failed", user notified)
-- [ ] Implement error responses for decryption/signature failures
-- [ ] Test: A sends to B, B receives and decrypts, A sees ✓✓
-- [ ] Test: B offline → A queues → B reconnects → messages delivered
-- [ ] Test: replayed message rejected (duplicate message_id)
-- [ ] Test: out-of-sequence message rejected
-- [ ] Test: tampered signature rejected
+- [x] Implement send flow: encrypt with session key → sign → frame → send → store locally
+- [x] Implement receive flow: validate sequence → check seen_message_ids → verify signature → decrypt → store → display
+- [x] Implement `ack` message send on receive
+- [x] Implement `ack` message handling (update delivery_status to "delivered")
+- [x] Implement replay protection: sequence number validation (reject if ≤ last seen)
+- [x] Implement replay protection: message_id deduplication via seen_message_ids table
+- [x] Implement replay protection: timestamp skew rejection (±5 min)
+- [x] Implement offline message queue (store as "pending" in DB)
+- [x] Implement queue drain on reconnect (send pending messages in order)
+- [x] Implement queue limits: max 500 messages per peer
+- [x] Implement queue limits: max 7 days age
+- [x] Implement queue limits: max 50 MB per peer
+- [x] Implement queue overflow handling (oldest marked "failed", user notified)
+- [x] Implement error responses for decryption/signature failures
+- [x] Test: A sends to B, B receives and decrypts, A sees ✓✓
+- [x] Test: B offline → A queues → B reconnects → messages delivered
+- [x] Test: replayed message rejected (duplicate message_id)
+- [x] Test: out-of-sequence message rejected
+- [x] Test: tampered signature rejected
+
+### Phase 7 Verification
+- `go test ./...` passes, including messaging integration tests for ack delivery, replay protection, and offline queue drain.
+- `go vet ./...` passes.
 
 ## Phase 8: File Transfer
 - [ ] Implement `file_request` send with metadata and SHA-256 checksum

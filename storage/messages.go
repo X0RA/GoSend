@@ -154,6 +154,70 @@ func (s *Store) MarkDelivered(messageID string) error {
 	return nil
 }
 
+// UpdateDeliveryStatus updates delivery_status for a message.
+func (s *Store) UpdateDeliveryStatus(messageID, status string) error {
+	if messageID == "" {
+		return errors.New("message_id is required")
+	}
+	if err := validateDeliveryStatus(status); err != nil {
+		return err
+	}
+
+	res, err := s.db.Exec(
+		`UPDATE messages
+		SET delivery_status = ?
+		WHERE message_id = ?`,
+		status,
+		messageID,
+	)
+	if err != nil {
+		return fmt.Errorf("update delivery status for message %q: %w", messageID, err)
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read rows affected for update delivery status %q: %w", messageID, err)
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+
+	return nil
+}
+
+// GetMessageByID fetches one message by message ID.
+func (s *Store) GetMessageByID(messageID string) (*Message, error) {
+	if messageID == "" {
+		return nil, errors.New("message_id is required")
+	}
+
+	row := s.db.QueryRow(
+		`SELECT
+			message_id,
+			from_device_id,
+			to_device_id,
+			content,
+			content_type,
+			timestamp_sent,
+			timestamp_received,
+			is_read,
+			delivery_status,
+			signature
+		FROM messages
+		WHERE message_id = ?`,
+		messageID,
+	)
+
+	message, err := scanMessage(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get message %q: %w", messageID, err)
+	}
+	return message, nil
+}
+
 // GetPendingMessages returns outbound pending messages for a peer.
 func (s *Store) GetPendingMessages(peerID string) ([]Message, error) {
 	if peerID == "" {
