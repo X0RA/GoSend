@@ -277,12 +277,15 @@ Main window:
 
 - Left pane: known peers list from DB (self filtered out).
 - Right pane: selected peer chat transcript + file transfer rows.
+- Chat composer is hidden until a peer is selected.
+- Chat composer layout: message box on the left, with `Send` above `Attach` in a vertical action group on the right.
 - Toolbar: Settings + Refresh Discovery.
 - Footer: status label for errors/events.
+- Hovering key action buttons (peer info/settings/refresh/discover/send/attach) shows a short hint in the status bar.
 
 Dialogs/prompts:
 
-- Discovery dialog with available peers and Add actions.
+- Discovery dialog with available peers and Add actions, styled to match the app dark panels.
 - Incoming peer add confirmation.
 - Incoming file transfer accept/reject confirmation.
 - Key-change trust/deny dialog.

@@ -81,10 +81,14 @@ type controller struct {
 	chatMessagesBox *fyne.Container
 	chatScroll      *container.Scroll
 	messageInput    *widget.Entry
+	chatComposer    fyne.CanvasObject
 	statusLabel     *widget.Label
 
 	refreshMu      sync.Mutex
 	refreshRunning bool
+	statusMu       sync.RWMutex
+	statusMessage  string
+	hoverHint      string
 
 	activeListenPort int
 }
@@ -368,10 +372,13 @@ func (c *controller) buildMainWindow() {
 	refreshBtn := widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() {
 		go c.refreshDiscovery()
 	})
-	toolbar := container.NewHBox(appTitle, layout.NewSpacer(), refreshBtn, settingsBtn)
+	refreshBtnWithHint := withHoverStatusHint(refreshBtn, "Refresh discovery", c.setHoverHint)
+	settingsBtnWithHint := withHoverStatusHint(settingsBtn, "Open settings", c.setHoverHint)
+	toolbar := container.NewHBox(appTitle, layout.NewSpacer(), refreshBtnWithHint, settingsBtnWithHint)
 
 	c.statusLabel = widget.NewLabel("Starting...")
 	c.statusLabel.Importance = widget.LowImportance
+	c.statusMessage = "Starting..."
 	content := container.NewBorder(
 		container.NewVBox(container.NewPadded(toolbar), widget.NewSeparator()),
 		container.NewVBox(widget.NewSeparator(), container.NewPadded(c.statusLabel)),
@@ -381,6 +388,39 @@ func (c *controller) buildMainWindow() {
 }
 
 func (c *controller) setStatus(message string) {
+	if strings.TrimSpace(message) == "" {
+		message = "Ready"
+	}
+	c.statusMu.Lock()
+	c.statusMessage = message
+	hoverHint := c.hoverHint
+	c.statusMu.Unlock()
+
+	labelText := message
+	if strings.TrimSpace(hoverHint) != "" {
+		labelText = hoverHint
+	}
+	c.applyStatusLabel(labelText)
+}
+
+func (c *controller) setHoverHint(message string) {
+	c.statusMu.Lock()
+	c.hoverHint = strings.TrimSpace(message)
+	statusMessage := c.statusMessage
+	hoverHint := c.hoverHint
+	c.statusMu.Unlock()
+
+	labelText := statusMessage
+	if strings.TrimSpace(labelText) == "" {
+		labelText = "Ready"
+	}
+	if hoverHint != "" {
+		labelText = hoverHint
+	}
+	c.applyStatusLabel(labelText)
+}
+
+func (c *controller) applyStatusLabel(message string) {
 	if strings.TrimSpace(message) == "" {
 		message = "Ready"
 	}

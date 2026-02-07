@@ -41,7 +41,8 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 	c.chatHeader.TextStyle = fyne.TextStyle{Bold: true}
 	c.chatKeyButton = widget.NewButtonWithIcon("", theme.InfoIcon(), c.showSelectedPeerFingerprint)
 	c.chatKeyButton.Disable()
-	header := container.NewBorder(nil, nil, nil, c.chatKeyButton, c.chatHeader)
+	peerInfoBtnWithHint := withHoverStatusHint(c.chatKeyButton, "View selected peer fingerprint", c.setHoverHint)
+	header := container.NewBorder(nil, nil, nil, peerInfoBtnWithHint, c.chatHeader)
 
 	emptyLabel := widget.NewLabel("No messages yet")
 	emptyLabel.Alignment = fyne.TextAlignCenter
@@ -57,12 +58,16 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 	attachBtn := widget.NewButtonWithIcon("", theme.MailAttachmentIcon(), c.attachFileToCurrentPeer)
 	sendBtn := widget.NewButton("Send", c.sendCurrentMessage)
 	sendBtn.Importance = widget.HighImportance
-	controls := container.NewHBox(attachBtn, layout.NewSpacer(), sendBtn)
-	inputPane := container.NewBorder(nil, controls, nil, nil, c.messageInput)
+	sendBtnWithHint := withHoverStatusHint(sendBtn, "Send message", c.setHoverHint)
+	attachBtnWithHint := withHoverStatusHint(attachBtn, "Attach file", c.setHoverHint)
+	controls := container.NewVBox(sendBtnWithHint, attachBtnWithHint)
+	inputPane := container.NewBorder(nil, nil, nil, container.NewPadded(controls), c.messageInput)
+	c.chatComposer = container.NewPadded(inputPane)
+	c.chatComposer.Hide()
 
 	return container.NewBorder(
 		container.NewVBox(container.NewPadded(header), widget.NewSeparator()),
-		container.NewVBox(widget.NewSeparator(), container.NewPadded(inputPane)),
+		container.NewVBox(widget.NewSeparator(), c.chatComposer),
 		nil, nil, c.chatScroll,
 	)
 }
@@ -87,6 +92,16 @@ func (c *controller) updateChatHeader() {
 				c.chatKeyButton.Enable()
 			} else {
 				c.chatKeyButton.Disable()
+			}
+		}
+		if c.chatComposer != nil {
+			if hasPeer {
+				c.chatComposer.Show()
+			} else {
+				c.chatComposer.Hide()
+				if c.messageInput != nil {
+					c.messageInput.SetText("")
+				}
 			}
 		}
 	})

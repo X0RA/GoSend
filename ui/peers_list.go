@@ -75,7 +75,8 @@ func (c *controller) buildPeersListPane() fyne.CanvasObject {
 	heading := widget.NewLabel("Peers")
 	heading.TextStyle = fyne.TextStyle{Bold: true}
 	addBtn := widget.NewButtonWithIcon("", theme.ContentAddIcon(), c.showDiscoveryDialog)
-	topBar := container.NewBorder(nil, nil, heading, addBtn)
+	addBtnWithHint := withHoverStatusHint(addBtn, "Discover peers", c.setHoverHint)
+	topBar := container.NewBorder(nil, nil, heading, addBtnWithHint)
 
 	return container.NewBorder(
 		container.NewVBox(container.NewPadded(topBar), widget.NewSeparator()),
@@ -252,13 +253,16 @@ func (c *controller) showDiscoveryDialog() {
 		go c.refreshDiscovery()
 	})
 	refreshBtn.Importance = widget.HighImportance
-	header := container.NewBorder(nil, nil, subtitle, refreshBtn)
+	refreshBtnWithHint := withHoverStatusHint(refreshBtn, "Refresh discovered peers", c.setHoverHint)
+	header := container.NewBorder(nil, nil, subtitle, refreshBtnWithHint)
+	discoveryListPanel := newRoundedBg(colorPanelBg, 10, c.discoveryList)
 	content := container.NewBorder(
 		container.NewVBox(container.NewPadded(header), widget.NewSeparator()),
-		nil, nil, nil, c.discoveryList,
+		nil, nil, nil, container.NewPadded(discoveryListPanel),
 	)
+	themedContent := container.NewPadded(newRoundedBg(colorIncomingMsg, 12, content))
 
-	c.discoveryDialog = dialog.NewCustom("Discover Peers", "Close", content, c.window)
+	c.discoveryDialog = dialog.NewCustom("Discover Peers", "Close", themedContent, c.window)
 	c.discoveryDialog.SetOnClosed(func() {
 		c.discoveryDialog = nil
 		c.discoveryList = nil
