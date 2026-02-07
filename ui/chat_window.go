@@ -316,7 +316,12 @@ func renderMessageRow(message storage.Message, localDeviceID string) fyne.Canvas
 	}
 
 	content := container.NewVBox(body, ts)
-	return newRoundedBg(bgColor, 10, content)
+	bubble := newRoundedBg(bgColor, 10, content)
+
+	if outgoing {
+		return container.NewGridWithColumns(2, layout.NewSpacer(), bubble)
+	}
+	return container.NewGridWithColumns(2, bubble, layout.NewSpacer())
 }
 
 func isOutgoingMessage(message storage.Message, localDeviceID string) bool {
@@ -329,6 +334,19 @@ func renderFileRow(file chatFileEntry, parentWindow fyne.Window) fyne.CanvasObje
 	title.TextStyle = fyne.TextStyle{Bold: true}
 	title.Truncation = fyne.TextTruncateEllipsis
 
+	items := []fyne.CanvasObject{title}
+
+	// Image preview for image files with an available path.
+	storedPath := strings.TrimSpace(file.StoredPath)
+	if storedPath != "" && isImageFile(file.Filename) {
+		if _, err := os.Stat(storedPath); err == nil {
+			img := canvas.NewImageFromFile(storedPath)
+			img.FillMode = canvas.ImageFillContain
+			img.SetMinSize(fyne.NewSize(200, 150))
+			items = append(items, img)
+		}
+	}
+
 	statusText := fileTransferStatusText(file)
 	meta := canvas.NewText(
 		fmt.Sprintf("%s · %s · %s", formatTimestamp(file.AddedAt), formatBytes(file.Filesize), statusText),
@@ -336,26 +354,40 @@ func renderFileRow(file chatFileEntry, parentWindow fyne.Window) fyne.CanvasObje
 	)
 	meta.TextSize = 11
 	meta.Alignment = fyne.TextAlignTrailing
+	items = append(items, meta)
 
-	items := []fyne.CanvasObject{title, meta}
 	if !file.TransferCompleted && file.Status != "failed" && file.Status != "rejected" && file.TotalBytes > 0 {
 		progress := widget.NewProgressBar()
 		progress.SetValue(float64(file.BytesTransferred) / float64(file.TotalBytes))
 		items = append(items, progress)
 	}
-	if file.TransferCompleted && strings.TrimSpace(file.StoredPath) != "" {
-		path := file.StoredPath
+	if file.TransferCompleted && storedPath != "" {
 		showPathBtn := widget.NewButton("Show Path", func() {
-			dialog.ShowInformation("File Path", path, parentWindow)
+			dialog.ShowInformation("File Path", storedPath, parentWindow)
 		})
 		items = append(items, showPathBtn)
 	}
 
+	outgoing := strings.EqualFold(file.Direction, "send")
 	bgColor := colorIncomingMsg
-	if strings.EqualFold(file.Direction, "send") {
+	if outgoing {
 		bgColor = colorOutgoingMsg
 	}
-	return newRoundedBg(bgColor, 10, container.NewVBox(items...))
+	bubble := newRoundedBg(bgColor, 10, container.NewVBox(items...))
+
+	if outgoing {
+		return container.NewGridWithColumns(2, layout.NewSpacer(), bubble)
+	}
+	return container.NewGridWithColumns(2, bubble, layout.NewSpacer())
+}
+
+func isImageFile(filename string) bool {
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".webp", ".tiff", ".tif":
+		return true
+	}
+	return false
 }
 
 func fileTransferStatusText(file chatFileEntry) string {

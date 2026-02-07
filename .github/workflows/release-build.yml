@@ -20,14 +20,18 @@ jobs:
             goos: linux
             goarch: amd64
             ext: ""
-          - runner: macos-latest
+          # - runner: macos-latest
+          #   goos: darwin
+          #   goarch: amd64
+          #   ext: ""
+          - runner: macos-14
             goos: darwin
-            goarch: amd64
+            goarch: arm64
             ext: ""
-          - runner: windows-latest
-            goos: windows
-            goarch: amd64
-            ext: ".exe"
+          # - runner: windows-latest
+          #   goos: windows
+          #   goarch: amd64
+          #   ext: ".exe"
 
     steps:
       - name: Check out repository
@@ -37,6 +41,8 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
 
       - name: Install Linux GUI build dependencies
         if: matrix.goos == 'linux'
@@ -44,7 +50,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgl1-mesa-dev xorg-dev
 
-      - name: Build release binary
+      - name: Build release artifact
         shell: bash
         run: |
           set -euo pipefail
@@ -53,13 +59,57 @@ jobs:
           safe_tag="${raw_tag//\//-}"
           safe_tag="${safe_tag// /-}"
 
-          asset_name="gosend-${safe_tag}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
           mkdir -p dist
 
-          CGO_ENABLED=1 GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" \
-            go build -trimpath -o "dist/${asset_name}" .
+          if [[ "${{ matrix.goos }}" == "darwin" ]]; then
+            app_name="GoSend.app"
+            app_root="dist/${app_name}/Contents"
+            bin_name="gosend"
 
-      - name: Upload binary to GitHub release
+            CGO_ENABLED=1 GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" \
+              go build -trimpath -o "dist/${bin_name}" .
+
+            mkdir -p "${app_root}/MacOS"
+            mv "dist/${bin_name}" "${app_root}/MacOS/${bin_name}"
+
+          cat > "${app_root}/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+            <dict>
+              <key>CFBundleDisplayName</key>
+              <string>GoSend</string>
+              <key>CFBundleExecutable</key>
+              <string>gosend</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.gosend.app</string>
+              <key>CFBundleName</key>
+              <string>GoSend</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${raw_tag}</string>
+              <key>CFBundleVersion</key>
+              <string>${{ github.run_number }}</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>11.0</string>
+            </dict>
+          </plist>
+          PLIST
+
+            (
+              cd dist
+              zip -qry "gosend-${safe_tag}-${{ matrix.goos }}-${{ matrix.goarch }}.app.zip" "${app_name}"
+            )
+            rm -rf "dist/${app_name}"
+          else
+            asset_name="gosend-${safe_tag}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
+
+            CGO_ENABLED=1 GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" \
+              go build -trimpath -o "dist/${asset_name}" .
+          fi
+
+      - name: Upload artifact to GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
