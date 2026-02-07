@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -35,6 +36,10 @@ const (
 	maxQueueAge           = 7 * 24 * time.Hour
 	maxQueuedMessages     = 500
 	maxQueuedBytesPerPeer = 50 * 1024 * 1024
+
+	defaultFileChunkSize      = 256 * 1024
+	defaultFileResponseTimout = 10 * time.Second
+	defaultFileChunkRetries   = 3
 )
 
 var defaultReconnectBackoff = []time.Duration{
@@ -48,6 +53,28 @@ var defaultReconnectBackoff = []time.Duration{
 type AddRequestNotification struct {
 	PeerDeviceID   string
 	PeerDeviceName string
+}
+
+// FileRequestNotification is emitted when a peer requests sending a file.
+type FileRequestNotification struct {
+	FileID       string
+	FromDeviceID string
+	Filename     string
+	Filesize     int64
+	Filetype     string
+	Checksum     string
+}
+
+// FileProgress captures transfer progress for one file.
+type FileProgress struct {
+	FileID            string
+	PeerDeviceID      string
+	Direction         string
+	BytesTransferred  int64
+	TotalBytes        int64
+	ChunkIndex        int
+	TotalChunks       int
+	TransferCompleted bool
 }
 
 // PeerManagerOptions configures peer lifecycle management.
@@ -71,6 +98,13 @@ type PeerManagerOptions struct {
 
 	OnMessageReceived func(storage.Message)
 	OnQueueOverflow   func(peerDeviceID string, droppedCount int)
+
+	FilesDir            string
+	FileChunkSize       int
+	FileResponseTimeout time.Duration
+	MaxChunkRetries     int
+	OnFileRequest       func(FileRequestNotification) (bool, error)
+	OnFileProgress      func(FileProgress)
 }
 
 // PeerManager manages peer add/remove/disconnect flows plus reconnect behavior.
@@ -108,6 +142,11 @@ type PeerManager struct {
 	drainMu      sync.Mutex
 	activeDrains map[string]bool
 
+	fileMu                 sync.Mutex
+	outboundFileTransfers  map[string]*outboundFileTransfer
+	inboundFileTransfers   map[string]*inboundFileTransfer
+	outboundFileEventChans map[string]chan fileTransferEvent
+
 	errors chan error
 }
 
@@ -134,19 +173,34 @@ func NewPeerManager(options PeerManagerOptions) (*PeerManager, error) {
 	if len(options.ReconnectBackoff) == 0 {
 		options.ReconnectBackoff = append([]time.Duration(nil), defaultReconnectBackoff...)
 	}
+	if options.FileChunkSize <= 0 {
+		options.FileChunkSize = defaultFileChunkSize
+	}
+	if options.FileResponseTimeout <= 0 {
+		options.FileResponseTimeout = defaultFileResponseTimout
+	}
+	if options.MaxChunkRetries <= 0 {
+		options.MaxChunkRetries = defaultFileChunkRetries
+	}
+	if options.FilesDir == "" {
+		options.FilesDir = "./files"
+	}
 
 	manager := &PeerManager{
-		options:             options,
-		connections:         make(map[string]*PeerConnection),
-		knownKeys:           make(map[string]string),
-		outboundAddPending:  make(map[string]bool),
-		outboundAddResponse: make(map[string]chan PeerAddResponse),
-		inboundAddPending:   make(map[string]chan bool),
-		addRequests:         make(chan AddRequestNotification, 64),
-		reconnectWorkers:    make(map[string]context.CancelFunc),
-		suppressReconnect:   make(map[string]bool),
-		activeDrains:        make(map[string]bool),
-		errors:              make(chan error, 64),
+		options:                options,
+		connections:            make(map[string]*PeerConnection),
+		knownKeys:              make(map[string]string),
+		outboundAddPending:     make(map[string]bool),
+		outboundAddResponse:    make(map[string]chan PeerAddResponse),
+		inboundAddPending:      make(map[string]chan bool),
+		addRequests:            make(chan AddRequestNotification, 64),
+		reconnectWorkers:       make(map[string]context.CancelFunc),
+		suppressReconnect:      make(map[string]bool),
+		activeDrains:           make(map[string]bool),
+		outboundFileTransfers:  make(map[string]*outboundFileTransfer),
+		inboundFileTransfers:   make(map[string]*inboundFileTransfer),
+		outboundFileEventChans: make(map[string]chan fileTransferEvent),
+		errors:                 make(chan error, 64),
 	}
 
 	return manager, nil
@@ -159,6 +213,10 @@ func (m *PeerManager) Start() error {
 	}
 
 	m.ctx, m.cancel = context.WithCancel(context.Background())
+
+	if err := os.MkdirAll(m.options.FilesDir, 0o700); err != nil {
+		return fmt.Errorf("create files dir: %w", err)
+	}
 
 	if err := m.ensureLocalPeerRecord(); err != nil {
 		return err
@@ -430,6 +488,7 @@ func (m *PeerManager) registerConnection(conn *PeerConnection) {
 	}
 
 	m.startQueueDrain(peerID, conn)
+	m.startOutboundFileTransferDrain(peerID, conn)
 
 	m.wg.Add(1)
 	go m.connectionLoop(conn)
@@ -495,6 +554,34 @@ loop:
 				continue
 			}
 			m.handleProtocolError(msg)
+		case TypeFileRequest:
+			var request FileRequest
+			if err := json.Unmarshal(payload, &request); err != nil {
+				m.reportError(err)
+				continue
+			}
+			m.handleFileRequest(conn, request)
+		case TypeFileResponse:
+			var response FileResponse
+			if err := json.Unmarshal(payload, &response); err != nil {
+				m.reportError(err)
+				continue
+			}
+			m.handleFileResponse(conn, response)
+		case TypeFileData:
+			var data FileData
+			if err := json.Unmarshal(payload, &data); err != nil {
+				m.reportError(err)
+				continue
+			}
+			m.handleFileData(conn, data)
+		case TypeFileComplete:
+			var complete FileComplete
+			if err := json.Unmarshal(payload, &complete); err != nil {
+				m.reportError(err)
+				continue
+			}
+			m.handleFileComplete(conn, complete)
 		}
 	}
 

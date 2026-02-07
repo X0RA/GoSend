@@ -26,10 +26,12 @@
 - `network/client.go`: Outbound TCP dial and handshake flow, including session-key derivation and key-change checks.
 - `network/server.go`: TCP listener/accept loop, inbound handshake verification/response, and connection handoff.
 - `network/peer_manager.go`: Peer lifecycle manager for add/accept/reject/remove/disconnect plus encrypted message send/receive, ack/error handling, replay protection checks, offline queue drain, and reconnect backoff.
+- `network/file_transfer.go`: File transfer engine for `file_request`/`file_response`/`file_data`/`file_complete`, chunk encryption/decryption, checksum verification, retransmission retries, and reconnect resume.
 - `network/protocol_test.go`: Framing tests (round-trip and oversized frame rejection).
 - `network/integration_test.go`: Integration tests for handshake/session key matching, idle keep-alive stability, dead connection timeout detection, and key-change decision blocking.
 - `network/peer_manager_test.go`: Integration tests for peer add approval queue, restart reconnection, peer removal cleanup, and simultaneous add resolution.
 - `network/messaging_test.go`: Integration tests for delivered-ack updates, offline queue drain after reconnect, duplicate message replay rejection, out-of-sequence rejection, and tampered-signature rejection.
+- `network/file_transfer_test.go`: Integration tests for accepted transfers, reject flow, reconnect resume, and checksum mismatch failure handling.
 - `discovery/mdns.go`: mDNS broadcaster setup plus combined discovery service startup/shutdown orchestration.
 - `discovery/peer_scanner.go`: Background peer scanner with self-filtering, in-memory peer list, event channel, and manual refresh support.
 - `discovery/mdns_test.go`: Tests broadcaster TXT record generation and service startup/shutdown wiring.
@@ -41,8 +43,9 @@
 - `storage/peers_test.go`: Peer CRUD tests.
 - `storage/messages.go`: Message CRUD and queue methods (`SaveMessage`, `GetMessages`, `MarkDelivered`, `UpdateDeliveryStatus`, `GetMessageByID`, `GetPendingMessages`, `PruneExpiredQueue`).
 - `storage/messages_test.go`: Message CRUD tests including delivery status updates, message lookup by ID, and queue-pruning behavior.
-- `storage/files.go`: File metadata CRUD methods (`SaveFileMetadata`, `UpdateTransferStatus`, `GetFileByID`).
+- `storage/files.go`: File metadata CRUD methods (`SaveFileMetadata`, `UpdateTransferStatus`, `GetFileByID`) with nullable ID/peer fields for flexible transfer lifecycle persistence.
 - `storage/files_test.go`: File metadata CRUD tests.
+- `ui/file_handler.go`: UI-facing file picker and transfer progress tracking helper.
 - `storage/seen_ids.go`: Replay-protection ID methods (`InsertSeenID`, `HasSeenID`, `PruneOldEntries`).
 - `storage/seen_ids_test.go`: Seen-message ID insert/check/prune tests.
 - `storage/testutil_test.go`: Shared test helpers for creating a temporary store and seed peers.
@@ -202,27 +205,31 @@
 - `go vet ./...` passes.
 
 ## Phase 8: File Transfer
-- [ ] Implement `file_request` send with metadata and SHA-256 checksum
-- [ ] Implement `file_request` receive and present accept/reject prompt
-- [ ] Implement `file_response` send (accepted/rejected)
-- [ ] Implement `file_response` handling (proceed or abort)
-- [ ] Implement chunked file reading (256 KB chunks)
-- [ ] Implement per-chunk AES-256-GCM encryption with unique IV
-- [ ] Implement `file_data` send with chunk_index and total_chunks
-- [ ] Implement chunked file receiving and reassembly
-- [ ] Implement per-chunk decryption
-- [ ] Implement SHA-256 checksum verification on completed file
-- [ ] Implement `file_complete` acknowledgment send/receive
-- [ ] Implement chunk retransmission on failure
-- [ ] Implement transfer resume (track last acknowledged chunk, resume on reconnect)
-- [ ] Save received files to `files/` directory
-- [ ] Store file metadata in database
-- [ ] Implement file picker dialog (UI)
-- [ ] Implement transfer progress tracking
-- [ ] Test: A sends 5 MB file to B, B accepts, file transfers, checksum matches
-- [ ] Test: B rejects file, no data sent
-- [ ] Test: connection drops mid-transfer → reconnect → resumes from last chunk
-- [ ] Test: corrupted file detected by checksum mismatch
+- [x] Implement `file_request` send with metadata and SHA-256 checksum
+- [x] Implement `file_request` receive and present accept/reject prompt
+- [x] Implement `file_response` send (accepted/rejected)
+- [x] Implement `file_response` handling (proceed or abort)
+- [x] Implement chunked file reading (256 KB chunks)
+- [x] Implement per-chunk AES-256-GCM encryption with unique IV
+- [x] Implement `file_data` send with chunk_index and total_chunks
+- [x] Implement chunked file receiving and reassembly
+- [x] Implement per-chunk decryption
+- [x] Implement SHA-256 checksum verification on completed file
+- [x] Implement `file_complete` acknowledgment send/receive
+- [x] Implement chunk retransmission on failure
+- [x] Implement transfer resume (track last acknowledged chunk, resume on reconnect)
+- [x] Save received files to `files/` directory
+- [x] Store file metadata in database
+- [x] Implement file picker dialog (UI)
+- [x] Implement transfer progress tracking
+- [x] Test: A sends 5 MB file to B, B accepts, file transfers, checksum matches
+- [x] Test: B rejects file, no data sent
+- [x] Test: connection drops mid-transfer → reconnect → resumes from last chunk
+- [x] Test: corrupted file detected by checksum mismatch
+
+### Phase 8 Verification
+- `go test ./...` passes, including file transfer integration tests for accept/reject, retransmission/resume, and checksum validation.
+- `go vet ./...` passes.
 
 ## Phase 9: GUI
 - [ ] Implement main window split layout (peer list left, chat view right, toolbar top)

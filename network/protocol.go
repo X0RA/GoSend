@@ -174,12 +174,15 @@ type FileRequest struct {
 
 // FileResponse accepts or rejects a transfer.
 type FileResponse struct {
-	Type         string `json:"type"`
-	FileID       string `json:"file_id"`
-	Status       string `json:"status"`
-	FromDeviceID string `json:"from_device_id"`
-	Timestamp    int64  `json:"timestamp"`
-	Signature    string `json:"signature"`
+	Type            string `json:"type"`
+	FileID          string `json:"file_id"`
+	Status          string `json:"status"`
+	FromDeviceID    string `json:"from_device_id"`
+	ChunkIndex      int    `json:"chunk_index,omitempty"`
+	ResumeFromChunk int    `json:"resume_from_chunk,omitempty"`
+	Message         string `json:"message,omitempty"`
+	Timestamp       int64  `json:"timestamp"`
+	Signature       string `json:"signature"`
 }
 
 // FileData contains one encrypted chunk.
@@ -199,6 +202,7 @@ type FileComplete struct {
 	Type      string `json:"type"`
 	FileID    string `json:"file_id"`
 	Status    string `json:"status"`
+	Message   string `json:"message,omitempty"`
 	Timestamp int64  `json:"timestamp"`
 }
 

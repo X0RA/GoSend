@@ -42,9 +42,9 @@ func (s *Store) SaveFileMetadata(file FileMetadata) error {
 			transfer_status
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		file.FileID,
-		file.MessageID,
-		file.FromDeviceID,
-		file.ToDeviceID,
+		nullString(stringPointer(file.MessageID)),
+		nullString(stringPointer(file.FromDeviceID)),
+		nullString(stringPointer(file.ToDeviceID)),
 		file.Filename,
 		file.Filesize,
 		nullString(stringPointer(file.Filetype)),

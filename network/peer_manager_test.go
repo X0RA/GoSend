@@ -225,9 +225,13 @@ func (m *testManager) stop() {
 }
 
 type testManagerConfig struct {
-	deviceID string
-	name     string
-	approve  func(notification AddRequestNotification) (bool, error)
+	deviceID       string
+	name           string
+	approve        func(notification AddRequestNotification) (bool, error)
+	approveFile    func(notification FileRequestNotification) (bool, error)
+	onFileProgress func(progress FileProgress)
+	filesDir       string
+	fileChunkSize  int
 }
 
 func newTestManager(t *testing.T, cfg testManagerConfig) *testManager {
@@ -240,30 +244,47 @@ func newTestManager(t *testing.T, cfg testManagerConfig) *testManager {
 	}
 
 	identity := generateIdentity(t, cfg.deviceID, cfg.name)
-	return newTestManagerWithConfig(t, store, identity, "127.0.0.1:0", cfg.approve, true)
+	return newTestManagerWithConfig(t, store, identity, "127.0.0.1:0", cfg, true)
 }
 
 func newTestManagerWithParts(t *testing.T, store *storage.Store, identity LocalIdentity, listenAddress string) *testManager {
 	t.Helper()
-	return newTestManagerWithConfig(t, store, identity, listenAddress, func(notification AddRequestNotification) (bool, error) {
-		return true, nil
+	return newTestManagerWithConfig(t, store, identity, listenAddress, testManagerConfig{
+		approve: func(notification AddRequestNotification) (bool, error) {
+			return true, nil
+		},
 	}, false)
 }
 
-func newTestManagerWithConfig(t *testing.T, store *storage.Store, identity LocalIdentity, listenAddress string, approve func(notification AddRequestNotification) (bool, error), ownStore bool) *testManager {
+func newTestManagerWithConfig(t *testing.T, store *storage.Store, identity LocalIdentity, listenAddress string, cfg testManagerConfig, ownStore bool) *testManager {
 	t.Helper()
 
+	filesDir := cfg.filesDir
+	if filesDir == "" {
+		filesDir = filepath.Join(t.TempDir(), "files", identity.DeviceID)
+	}
+	chunkSize := cfg.fileChunkSize
+	if chunkSize <= 0 {
+		chunkSize = 32 * 1024
+	}
+
 	manager, err := NewPeerManager(PeerManagerOptions{
-		Identity:           identity,
-		Store:              store,
-		ListenAddress:      listenAddress,
-		ApproveAddRequest:  approve,
-		ReconnectBackoff:   []time.Duration{0, 50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond},
-		AddResponseTimeout: 3 * time.Second,
-		ConnectionTimeout:  2 * time.Second,
-		KeepAliveInterval:  80 * time.Millisecond,
-		KeepAliveTimeout:   80 * time.Millisecond,
-		FrameReadTimeout:   30 * time.Millisecond,
+		Identity:            identity,
+		Store:               store,
+		ListenAddress:       listenAddress,
+		ApproveAddRequest:   cfg.approve,
+		OnFileRequest:       cfg.approveFile,
+		OnFileProgress:      cfg.onFileProgress,
+		FilesDir:            filesDir,
+		FileChunkSize:       chunkSize,
+		FileResponseTimeout: 2 * time.Second,
+		MaxChunkRetries:     3,
+		ReconnectBackoff:    []time.Duration{0, 50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond},
+		AddResponseTimeout:  3 * time.Second,
+		ConnectionTimeout:   2 * time.Second,
+		KeepAliveInterval:   80 * time.Millisecond,
+		KeepAliveTimeout:    80 * time.Millisecond,
+		FrameReadTimeout:    30 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewPeerManager failed: %v", err)
