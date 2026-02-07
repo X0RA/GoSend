@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"os"
 	"path/filepath"
 	"sort"
@@ -90,7 +91,7 @@ func (e *messageEntry) TypedKey(key *fyne.KeyEvent) {
 }
 
 func (c *controller) buildChatPane() fyne.CanvasObject {
-	c.chatHeader = widget.NewLabel("Select a peer to start chatting")
+	c.chatHeader = canvas.NewText("Select a peer to start chatting", color.White)
 	c.chatHeader.TextStyle = fyne.TextStyle{Bold: true}
 	c.chatKeyButton = newHintButtonWithIcon("", theme.InfoIcon(), "View selected peer fingerprint", c.showSelectedPeerFingerprint, c.handleHoverHint)
 	c.chatKeyButton.Disable()
@@ -125,17 +126,23 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 func (c *controller) updateChatHeader() {
 	selectedPeerID := c.currentSelectedPeerID()
 	peerName := "Select a peer to start chatting"
+	headerColor := color.White
 	hasPeer := false
 	if selectedPeerID != "" {
 		if peer := c.peerByID(selectedPeerID); peer != nil {
 			hasPeer = true
-			peerName = fmt.Sprintf("%s (%s)", peer.DeviceName, peerStatusIndicator(peer.Status))
+			peerName = peer.DeviceName
+			if peer.Status == "online" {
+				headerColor = colorOnline
+			}
 		}
 	}
 
 	fyne.Do(func() {
 		if c.chatHeader != nil {
-			c.chatHeader.SetText(peerName)
+			c.chatHeader.Text = peerName
+			c.chatHeader.Color = headerColor
+			c.chatHeader.Refresh()
 		}
 		if c.chatKeyButton != nil {
 			if hasPeer {
