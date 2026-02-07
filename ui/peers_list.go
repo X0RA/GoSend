@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
@@ -26,18 +27,45 @@ func (c *controller) buildPeersListPane() fyne.CanvasObject {
 			return len(c.peers)
 		},
 		func() fyne.CanvasObject {
-			label := widget.NewLabel("")
-			label.Wrapping = fyne.TextWrapWord
-			return label
+			dot := canvas.NewCircle(colorOffline)
+			dotBox := container.NewGridWrap(fyne.NewSize(10, 10), dot)
+			name := widget.NewLabel("")
+			name.TextStyle = fyne.TextStyle{Bold: true}
+			name.Truncation = fyne.TextTruncateEllipsis
+			status := canvas.NewText("Offline", colorMuted)
+			status.TextSize = 11
+			info := container.NewVBox(name, status)
+			return container.NewHBox(container.NewCenter(dotBox), info)
 		},
 		func(id widget.ListItemID, object fyne.CanvasObject) {
-			label := object.(*widget.Label)
+			row := object.(*fyne.Container)
+			dotCenter := row.Objects[0].(*fyne.Container)
+			dotBox := dotCenter.Objects[0].(*fyne.Container)
+			dot := dotBox.Objects[0].(*canvas.Circle)
+			info := row.Objects[1].(*fyne.Container)
+			name := info.Objects[0].(*widget.Label)
+			status := info.Objects[1].(*canvas.Text)
+
 			peer := c.peerByIndex(int(id))
 			if peer == nil {
-				label.SetText("")
+				name.SetText("")
+				status.Text = ""
+				status.Refresh()
 				return
 			}
-			label.SetText(fmt.Sprintf("%s (%s)", peer.DeviceName, peerStatusIndicator(peer.Status)))
+
+			name.SetText(peer.DeviceName)
+			if strings.EqualFold(peer.Status, "online") {
+				dot.FillColor = colorOnline
+				status.Text = "Online"
+				status.Color = colorOnline
+			} else {
+				dot.FillColor = colorOffline
+				status.Text = "Offline"
+				status.Color = colorMuted
+			}
+			dot.Refresh()
+			status.Refresh()
 		},
 	)
 	c.peerList.OnSelected = func(id widget.ListItemID) {
@@ -45,9 +73,14 @@ func (c *controller) buildPeersListPane() fyne.CanvasObject {
 	}
 
 	heading := widget.NewLabel("Peers")
-	addBtn := widget.NewButtonWithIcon("Add Peer", theme.ContentAddIcon(), c.showDiscoveryDialog)
+	heading.TextStyle = fyne.TextStyle{Bold: true}
+	addBtn := widget.NewButtonWithIcon("", theme.ContentAddIcon(), c.showDiscoveryDialog)
+	topBar := container.NewBorder(nil, nil, heading, addBtn)
 
-	return container.NewBorder(heading, addBtn, nil, nil, c.peerList)
+	return container.NewBorder(
+		container.NewVBox(container.NewPadded(topBar), widget.NewSeparator()),
+		nil, nil, nil, c.peerList,
+	)
 }
 
 func (c *controller) refreshPeersFromStore() {
@@ -145,52 +178,56 @@ func (c *controller) showDiscoveryDialog() {
 			return len(c.discoveryRows)
 		},
 		func() fyne.CanvasObject {
+			dot := canvas.NewCircle(colorOffline)
+			dotBox := container.NewGridWrap(fyne.NewSize(8, 8), dot)
 			name := widget.NewLabel("")
-			status := widget.NewLabel("")
+			name.TextStyle = fyne.TextStyle{Bold: true}
 			addBtn := widget.NewButton("Add", nil)
-			return container.NewHBox(name, layout.NewSpacer(), status, addBtn)
+			addBtn.Importance = widget.HighImportance
+			return container.NewBorder(nil, nil, container.NewCenter(dotBox), addBtn, name)
 		},
 		func(id widget.ListItemID, object fyne.CanvasObject) {
 			row := object.(*fyne.Container)
-			if len(row.Objects) != 4 {
+			if len(row.Objects) < 3 {
 				return
 			}
 
-			nameLabel, _ := row.Objects[0].(*widget.Label)
-			statusLabel, _ := row.Objects[2].(*widget.Label)
-			addBtn, _ := row.Objects[3].(*widget.Button)
-			if nameLabel == nil || statusLabel == nil || addBtn == nil {
-				return
-			}
+			nameLabel := row.Objects[0].(*widget.Label)
+			dotCenter := row.Objects[1].(*fyne.Container)
+			dotBox := dotCenter.Objects[0].(*fyne.Container)
+			dot := dotBox.Objects[0].(*canvas.Circle)
+			addBtn := row.Objects[2].(*widget.Button)
 
 			peer := c.discoveryPeerByIndex(int(id))
 			if peer == nil {
 				nameLabel.SetText("")
-				statusLabel.SetText("")
 				addBtn.Disable()
 				return
 			}
 
 			nameLabel.SetText(valueOrDefault(peer.DeviceName, peer.DeviceID))
 			if len(peer.Addresses) > 0 {
-				statusLabel.SetText("Online")
+				dot.FillColor = colorOnline
 			} else {
-				statusLabel.SetText("Offline")
+				dot.FillColor = colorOffline
 			}
+			dot.Refresh()
 
 			if c.isKnownPeer(peer.DeviceID) {
 				addBtn.SetText("Added")
 				addBtn.Disable()
+				addBtn.Importance = widget.MediumImportance
 				addBtn.OnTapped = nil
-				return
+			} else {
+				addBtn.SetText("Add")
+				addBtn.Enable()
+				addBtn.Importance = widget.HighImportance
+				peerCopy := *peer
+				addBtn.OnTapped = func() {
+					go c.addDiscoveredPeer(peerCopy)
+				}
 			}
-
-			addBtn.SetText("Add")
-			addBtn.Enable()
-			peerCopy := *peer
-			addBtn.OnTapped = func() {
-				go c.addDiscoveredPeer(peerCopy)
-			}
+			addBtn.Refresh()
 		},
 	)
 

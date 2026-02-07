@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
@@ -37,24 +38,33 @@ type chatFileEntry struct {
 
 func (c *controller) buildChatPane() fyne.CanvasObject {
 	c.chatHeader = widget.NewLabel("Select a peer to start chatting")
-	c.chatKeyButton = widget.NewButton("🔑", c.showSelectedPeerFingerprint)
+	c.chatHeader.TextStyle = fyne.TextStyle{Bold: true}
+	c.chatKeyButton = widget.NewButtonWithIcon("", theme.InfoIcon(), c.showSelectedPeerFingerprint)
 	c.chatKeyButton.Disable()
-	header := container.NewBorder(nil, nil, c.chatHeader, c.chatKeyButton, nil)
+	header := container.NewBorder(nil, nil, nil, c.chatKeyButton, c.chatHeader)
 
-	c.chatMessagesBox = container.NewVBox(widget.NewLabel("No messages yet."))
+	emptyLabel := widget.NewLabel("No messages yet")
+	emptyLabel.Alignment = fyne.TextAlignCenter
+	emptyLabel.Importance = widget.LowImportance
+	c.chatMessagesBox = container.NewVBox(emptyLabel)
 	c.chatScroll = container.NewVScroll(c.chatMessagesBox)
 
 	c.messageInput = widget.NewMultiLineEntry()
 	c.messageInput.SetPlaceHolder("Type a message...")
 	c.messageInput.Wrapping = fyne.TextWrapWord
-	c.messageInput.SetMinRowsVisible(3)
+	c.messageInput.SetMinRowsVisible(2)
 
-	attachBtn := widget.NewButtonWithIcon("📎", theme.MailAttachmentIcon(), c.attachFileToCurrentPeer)
+	attachBtn := widget.NewButtonWithIcon("", theme.MailAttachmentIcon(), c.attachFileToCurrentPeer)
 	sendBtn := widget.NewButton("Send", c.sendCurrentMessage)
-	controls := container.NewHBox(layout.NewSpacer(), attachBtn, sendBtn)
+	sendBtn.Importance = widget.HighImportance
+	controls := container.NewHBox(attachBtn, layout.NewSpacer(), sendBtn)
 	inputPane := container.NewBorder(nil, controls, nil, nil, c.messageInput)
 
-	return container.NewBorder(header, inputPane, nil, nil, c.chatScroll)
+	return container.NewBorder(
+		container.NewVBox(container.NewPadded(header), widget.NewSeparator()),
+		container.NewVBox(widget.NewSeparator(), container.NewPadded(inputPane)),
+		nil, nil, c.chatScroll,
+	)
 }
 
 func (c *controller) updateChatHeader() {
@@ -222,7 +232,10 @@ func (c *controller) renderChatTranscript() {
 		}
 		c.chatMessagesBox.RemoveAll()
 		if len(rows) == 0 {
-			c.chatMessagesBox.Add(widget.NewLabel("No messages yet."))
+			empty := widget.NewLabel("No messages yet")
+			empty.Alignment = fyne.TextAlignCenter
+			empty.Importance = widget.LowImportance
+			c.chatMessagesBox.Add(empty)
 		} else {
 			for _, row := range rows {
 				c.chatMessagesBox.Add(row)
@@ -289,19 +302,21 @@ func renderMessageRow(message storage.Message, localDeviceID string) fyne.Canvas
 	body := widget.NewLabel(message.Content)
 	body.Wrapping = fyne.TextWrapWord
 
-	status := ""
+	statusStr := ""
 	if outgoing {
-		status = " " + deliveryStatusMark(message.DeliveryStatus)
+		statusStr = " " + deliveryStatusMark(message.DeliveryStatus)
 	}
-	meta := widget.NewLabel(formatTimestamp(message.TimestampSent) + status)
+	ts := canvas.NewText(formatTimestamp(message.TimestampSent)+statusStr, colorMuted)
+	ts.TextSize = 11
+	ts.Alignment = fyne.TextAlignTrailing
 
-	content := container.NewVBox(body, meta)
-	card := widget.NewCard("", "", content)
-
+	bgColor := colorIncomingMsg
 	if outgoing {
-		return container.NewHBox(layout.NewSpacer(), card)
+		bgColor = colorOutgoingMsg
 	}
-	return container.NewHBox(card, layout.NewSpacer())
+
+	content := container.NewVBox(body, ts)
+	return newRoundedBg(bgColor, 10, content)
 }
 
 func isOutgoingMessage(message storage.Message, localDeviceID string) bool {
@@ -310,29 +325,37 @@ func isOutgoingMessage(message storage.Message, localDeviceID string) bool {
 
 func renderFileRow(file chatFileEntry, parentWindow fyne.Window) fyne.CanvasObject {
 	name := valueOrDefault(file.Filename, file.FileID)
-	title := widget.NewLabel(fmt.Sprintf("📄 %s (%s)", name, formatBytes(file.Filesize)))
-	statusText := fileTransferStatusText(file)
-	meta := widget.NewLabel(fmt.Sprintf("%s %s", formatTimestamp(file.AddedAt), statusText))
+	title := widget.NewLabel("📄 " + name)
+	title.TextStyle = fyne.TextStyle{Bold: true}
+	title.Truncation = fyne.TextTruncateEllipsis
 
-	content := []fyne.CanvasObject{title, meta}
+	statusText := fileTransferStatusText(file)
+	meta := canvas.NewText(
+		fmt.Sprintf("%s · %s · %s", formatTimestamp(file.AddedAt), formatBytes(file.Filesize), statusText),
+		colorMuted,
+	)
+	meta.TextSize = 11
+	meta.Alignment = fyne.TextAlignTrailing
+
+	items := []fyne.CanvasObject{title, meta}
 	if !file.TransferCompleted && file.Status != "failed" && file.Status != "rejected" && file.TotalBytes > 0 {
 		progress := widget.NewProgressBar()
 		progress.SetValue(float64(file.BytesTransferred) / float64(file.TotalBytes))
-		content = append(content, progress)
+		items = append(items, progress)
 	}
 	if file.TransferCompleted && strings.TrimSpace(file.StoredPath) != "" {
 		path := file.StoredPath
 		showPathBtn := widget.NewButton("Show Path", func() {
 			dialog.ShowInformation("File Path", path, parentWindow)
 		})
-		content = append(content, showPathBtn)
+		items = append(items, showPathBtn)
 	}
 
-	card := widget.NewCard("", "", container.NewVBox(content...))
+	bgColor := colorIncomingMsg
 	if strings.EqualFold(file.Direction, "send") {
-		return container.NewHBox(layout.NewSpacer(), card)
+		bgColor = colorOutgoingMsg
 	}
-	return container.NewHBox(card, layout.NewSpacer())
+	return newRoundedBg(bgColor, 10, container.NewVBox(items...))
 }
 
 func fileTransferStatusText(file chatFileEntry) string {

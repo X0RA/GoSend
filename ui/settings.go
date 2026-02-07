@@ -46,23 +46,26 @@ func (c *controller) showSettingsDialog() {
 	}
 
 	fingerprintLabel := widget.NewLabel(appcrypto.FormatFingerprint(c.cfg.KeyFingerprint))
+	fingerprintLabel.Wrapping = fyne.TextWrapBreak
 	deviceIDLabel := widget.NewLabel(c.cfg.DeviceID)
+	deviceIDLabel.Wrapping = fyne.TextWrapBreak
 
 	resetKeysBtn := widget.NewButton("Reset Keys", func() {
 		c.confirmResetKeys(fingerprintLabel)
 	})
+	resetKeysBtn.Importance = widget.DangerImportance
+
+	form := widget.NewForm(
+		widget.NewFormItem("Device Name", nameEntry),
+		widget.NewFormItem("Device ID", deviceIDLabel),
+		widget.NewFormItem("Fingerprint", fingerprintLabel),
+		widget.NewFormItem("Port Mode", portModeGroup),
+		widget.NewFormItem("Port", portEntry),
+	)
 
 	content := container.NewVBox(
-		widget.NewLabel("Device Name"),
-		nameEntry,
-		widget.NewLabel("Device ID"),
-		deviceIDLabel,
-		widget.NewLabel("Fingerprint"),
-		fingerprintLabel,
-		widget.NewLabel("Port Mode"),
-		portModeGroup,
-		widget.NewLabel("Listening Port"),
-		portEntry,
+		form,
+		widget.NewSeparator(),
 		resetKeysBtn,
 	)
 
