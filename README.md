@@ -15,7 +15,7 @@ GoSend is a local-network peer-to-peer desktop app built in Go. It uses mDNS for
 - Offline outbound queue with limits: 500 pending messages per peer, 7-day age cutoff, 50 MB pending content per peer.
 - Replay defenses for chat messages: per-connection sequence checks, persistent seen ID table, and timestamp skew checks.
 - File transfer with request/accept/reject, chunk ack/nack retries, reconnect resume from chunk, and end checksum verification.
-- Cross-platform GUI (Fyne) with peer list, chat pane, discovery dialog, settings dialog, key-change prompt, and file-transfer prompts/progress.
+- Cross-platform GUI (Fyne) with peer list, chat pane, discovery dialog, settings dialog, key-change prompt, file-transfer prompts/progress, and chat header color that reflects online status.
 
 ## Quick Start
 
