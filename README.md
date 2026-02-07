@@ -200,6 +200,15 @@
 - `go test ./...` passes, including peer management integration tests for add/remove/disconnect, restart reconnection, and simultaneous add resolution.
 - `go vet ./...` passes.
 
+### Reconnection After Restart Retrospective
+- **Observed issue:** After closing and reopening one client, known peers remained shown as offline even though the other client was still running and discoverable on the network. The restarted client never attempted to reconnect.
+- **Root cause 1 (status gap):** On shutdown, `PeerManager.Stop()` closes all connections. Each `connectionLoop` cleanup marks the peer as `"offline"` in the database. On restart, `PeerManager.Start()` only reconnects peers with status `"online"` — since every peer is now `"offline"`, no reconnection is ever attempted.
+- **Root cause 2 (discovery–reconnection gap):** The `discoveryEventLoop` in the UI layer processed mDNS `EventPeerUpserted` events but only used them to update the discovery dialog's available-peers list. It never checked whether a discovered peer was an already-added peer that should be reconnected to. Discovery and reconnection were completely decoupled.
+- **Root cause 3 (wrong stored port):** When a peer connects inbound, `persistPeerConnection` stores the remote TCP endpoint via `conn.RemoteAddr()`. For inbound connections this is the peer's ephemeral outbound port, not their listening port. Any reconnection attempt using this stored port would fail. Discovery provides the correct listening port, so bridging discovery into reconnection also fixes this.
+- **Fix 1:** Added `NotifyPeerDiscovered(deviceID, ip, port)` to `PeerManager` (`network/peer_manager.go`). When called, it validates the peer is known and not blocked, updates the stored endpoint in the database from the discovery data (correct listening port), and starts a reconnect worker if no active connection exists.
+- **Fix 2:** Bridged discovery events to reconnection in the UI controller (`ui/main_window.go`). On each `EventPeerUpserted`, if the discovered peer is a known/added peer, `NotifyPeerDiscovered` is called. Additionally, on startup after the initial mDNS scan completes, all discovered peers are checked against the known peer list and reconnection is triggered for any matches.
+- **Result:** After restart, known peers are reconnected within one mDNS scan interval (~10 seconds) as soon as they are rediscovered on the network. Both the restarted client and the still-running client can initiate reconnection, and the stored endpoint is always updated from discovery to reflect the correct listening port.
+
 ## Phase 7: Messaging
 - [x] Implement send flow: encrypt with session key → sign → frame → send → store locally
 - [x] Implement receive flow: validate sequence → check seen_message_ids → verify signature → decrypt → store → display
