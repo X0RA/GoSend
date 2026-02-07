@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	appcrypto "gosend/crypto"
 )
 
 var (
@@ -17,6 +20,8 @@ var (
 	ErrSequenceReplay = errors.New("network: sequence replay detected")
 	// ErrPongTimeout indicates keep-alive timed out waiting for pong.
 	ErrPongTimeout = errors.New("network: pong timeout")
+	// ErrInvalidSecureFrame indicates an invalid encrypted transport frame.
+	ErrInvalidSecureFrame = errors.New("network: invalid secure frame")
 )
 
 // ConnectionState represents the lifecycle state of one peer connection.
@@ -29,6 +34,14 @@ const (
 	StateDisconnecting ConnectionState = "DISCONNECTING"
 	StateDisconnected  ConnectionState = "DISCONNECTED"
 )
+
+const secureFrameType = "secure_frame"
+
+type secureFrame struct {
+	Type       string `json:"type"`
+	Nonce      string `json:"nonce"`
+	Ciphertext string `json:"ciphertext"`
+}
 
 // ConnectionOptions controls runtime behavior of PeerConnection.
 type ConnectionOptions struct {
@@ -204,9 +217,14 @@ func (pc *PeerConnection) SendRaw(payload []byte) error {
 		return io.EOF
 	}
 
+	encryptedPayload, err := pc.encryptPayload(payload)
+	if err != nil {
+		return err
+	}
+
 	pc.sendMu.Lock()
 	defer pc.sendMu.Unlock()
-	if err := WriteFrame(pc.conn, payload); err != nil {
+	if err := WriteFrame(pc.conn, encryptedPayload); err != nil {
 		pc.closeWithError(fmt.Errorf("write frame: %w", err))
 		return err
 	}
@@ -260,7 +278,7 @@ func (pc *PeerConnection) readLoop() {
 		default:
 		}
 
-		payload, err := ReadFrameWithTimeout(pc.conn, pc.frameReadTimeout)
+		framePayload, err := ReadFrameWithTimeout(pc.conn, pc.frameReadTimeout)
 		if err != nil {
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
@@ -276,6 +294,15 @@ func (pc *PeerConnection) readLoop() {
 		}
 
 		pc.touchActivity()
+		if len(framePayload) == 0 {
+			continue
+		}
+
+		payload, err := pc.decryptPayload(framePayload)
+		if err != nil {
+			pc.closeWithError(fmt.Errorf("decrypt frame: %w", err))
+			return
+		}
 		if len(payload) == 0 {
 			continue
 		}
@@ -423,4 +450,41 @@ func decodeHandshakeResponse(payload []byte) (HandshakeResponse, error) {
 		return HandshakeResponse{}, fmt.Errorf("decode handshake response: %w", err)
 	}
 	return msg, nil
+}
+
+func (pc *PeerConnection) encryptPayload(payload []byte) ([]byte, error) {
+	ciphertext, nonce, err := appcrypto.Encrypt(pc.sessionKey, payload)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt payload: %w", err)
+	}
+	frame := secureFrame{
+		Type:       secureFrameType,
+		Nonce:      base64.StdEncoding.EncodeToString(nonce),
+		Ciphertext: base64.StdEncoding.EncodeToString(ciphertext),
+	}
+	return EncodeJSON(frame)
+}
+
+func (pc *PeerConnection) decryptPayload(framePayload []byte) ([]byte, error) {
+	var frame secureFrame
+	if err := json.Unmarshal(framePayload, &frame); err != nil {
+		return nil, fmt.Errorf("%w: decode frame: %v", ErrInvalidSecureFrame, err)
+	}
+	if frame.Type != secureFrameType || frame.Nonce == "" || frame.Ciphertext == "" {
+		return nil, ErrInvalidSecureFrame
+	}
+
+	nonce, err := base64.StdEncoding.DecodeString(frame.Nonce)
+	if err != nil {
+		return nil, fmt.Errorf("%w: decode nonce: %v", ErrInvalidSecureFrame, err)
+	}
+	ciphertext, err := base64.StdEncoding.DecodeString(frame.Ciphertext)
+	if err != nil {
+		return nil, fmt.Errorf("%w: decode ciphertext: %v", ErrInvalidSecureFrame, err)
+	}
+	plaintext, err := appcrypto.Decrypt(pc.sessionKey, nonce, ciphertext)
+	if err != nil {
+		return nil, err
+	}
+	return plaintext, nil
 }

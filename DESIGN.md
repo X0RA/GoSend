@@ -929,20 +929,3 @@ Windows: %APPDATA%\p2p-chat\
 ```
 
 ---
-
-## 14. Future Enhancements (Out of Scope)
-
-- Group chats (multiple recipients)
-- Message reactions/editing
-- Voice/video calls
-- Cloud backup option
-- Peer blocking/reporting
-- Message search/filtering
-- Desktop notifications
-- Tray application mode
-- QR code peer pairing
-- Protocol version negotiation (auto-upgrade)
-
----
-
-This document provides the complete technical foundation for development. Each section maps to specific code modules that can be developed independently and integrated.
