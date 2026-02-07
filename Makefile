@@ -1,8 +1,16 @@
-.PHONY: build run_tests run_client_a run_client_b
+.PHONY: build test_non_ui run_tests run_client_a run_client_b
 
 build:
 	mkdir -p ./bin
 	go build -o ./bin/gosend .
+
+test_non_ui:
+	@pkgs=$$(GOCACHE=/tmp/go-build go list ./... | grep -Ev '^gosend$$|/ui$$'); \
+	if [ -z "$$pkgs" ]; then \
+		echo "No non-UI Go packages found to test."; \
+		exit 1; \
+	fi; \
+	GOCACHE=/tmp/go-build go test $$pkgs
 
 run_client_a: build
 	P2P_CHAT_DATA_DIR=/tmp/gosend-a ./bin/gosend

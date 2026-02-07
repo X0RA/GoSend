@@ -21,16 +21,16 @@
 - `models/message.go`: JSON-tagged message model used by the network/UI layers.
 - `models/file.go`: JSON-tagged file metadata model used by the network/UI layers.
 - `network/protocol.go`: Protocol message structs, handshake signing/verification helpers, and length-prefixed framing (`WriteFrame`/`ReadFrame`) with 10 MB enforcement.
-- `network/connection.go`: `PeerConnection` implementation with sequence counters, connection state machine, send/receive APIs, and ping/pong keep-alive handling.
+- `network/connection.go`: `PeerConnection` implementation with sequence counters, connection state machine, post-handshake AES-GCM frame encryption/decryption for all protocol traffic, send/receive APIs, and ping/pong keep-alive handling.
 - `network/handshake.go`: Shared handshake options/defaults, key-change decision hook, and session-key derivation helpers.
 - `network/client.go`: Outbound TCP dial and handshake flow, including session-key derivation and key-change checks.
 - `network/server.go`: TCP listener/accept loop, inbound handshake verification/response, and connection handoff.
-- `network/peer_manager.go`: Peer lifecycle manager for add/accept/reject/remove/disconnect plus encrypted message send/receive, ack/error handling, replay protection checks, offline queue drain, and reconnect backoff.
+- `network/peer_manager.go`: Peer lifecycle manager for add/accept/reject/remove/disconnect plus encrypted message send/receive, signed control-message verification, sender identity binding to authenticated connections, ack/error handling, replay protection checks, offline queue drain, and reconnect backoff.
 - `network/file_transfer.go`: File transfer engine for `file_request`/`file_response`/`file_data`/`file_complete`, chunk encryption/decryption, checksum verification, retransmission retries, and reconnect resume.
 - `network/protocol_test.go`: Framing tests (round-trip and oversized frame rejection).
 - `network/integration_test.go`: Integration tests for handshake/session key matching, idle keep-alive stability, dead connection timeout detection, and key-change decision blocking.
-- `network/peer_manager_test.go`: Integration tests for peer add approval queue, restart reconnection, peer removal cleanup, and simultaneous add resolution.
-- `network/messaging_test.go`: Integration tests for delivered-ack updates, offline queue drain after reconnect, duplicate message replay rejection, out-of-sequence rejection, and tampered-signature rejection.
+- `network/peer_manager_test.go`: Integration tests for peer add approval queue, restart reconnection, peer removal cleanup, simultaneous add resolution, control-signature rejection, sender-binding checks, and pending-request cleanup on disconnect.
+- `network/messaging_test.go`: Integration tests for delivered-ack updates, offline queue drain after reconnect, duplicate message replay rejection, out-of-sequence rejection, tampered-signature rejection, metadata-signature binding, and spoofed-ack rejection.
 - `network/file_transfer_test.go`: Integration tests for accepted transfers, reject flow, reconnect resume, and checksum mismatch failure handling.
 - `discovery/mdns.go`: mDNS broadcaster setup plus combined discovery service startup/shutdown orchestration.
 - `discovery/peer_scanner.go`: Background peer scanner with self-filtering, in-memory peer list, peer-aging to avoid transient dropouts, per-scan resolver lifecycle, event channel, and manual refresh support.
@@ -60,6 +60,7 @@
 
 ## Development Commands
 - `make build`: Build the app binary at `./bin/gosend`.
+- `make test_non_ui`: Run Go tests for non-UI packages (excludes `gosend` and `gosend/ui`).
 - `make run_tests`: Build and run two instances simultaneously for local P2P testing:
   - `P2P_CHAT_DATA_DIR=/tmp/gosend-a ./bin/gosend`
   - `P2P_CHAT_DATA_DIR=/tmp/gosend-b ./bin/gosend`
@@ -233,6 +234,15 @@
 ### Phase 7 Verification
 - `go test ./...` passes, including messaging integration tests for ack delivery, replay protection, and offline queue drain.
 - `go vet ./...` passes.
+
+### Messaging/Control Security Hardening
+- [x] Verify signatures on inbound `peer_add_request`, `peer_add_response`, and `peer_remove` before acting.
+- [x] Bind control sender identity to `conn.PeerDeviceID()` instead of trusting payload IDs.
+- [x] Reject `ack` updates unless they come from the authenticated connection peer and match stored message routing.
+- [x] Remove stale inbound add-request decision entries on timeout/disconnect to prevent map leaks.
+- [x] Bind encrypted-message signatures to full message metadata + ciphertext (not ciphertext-only).
+- [x] Encrypt every post-handshake protocol frame at the connection layer using the negotiated session key (AES-GCM envelope).
+- [x] Add integration tests for control signature rejection, spoofed identity rejection, metadata tamper rejection, and spoofed ACK rejection.
 
 ## Phase 8: File Transfer
 - [x] Implement `file_request` send with metadata and SHA-256 checksum

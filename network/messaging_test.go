@@ -2,6 +2,7 @@ package network
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -216,6 +217,113 @@ func TestTamperedSignatureRejectedWithErrorResponse(t *testing.T) {
 	waitForManagerErrorContaining(t, a.manager.Errors(), "invalid_signature", 3*time.Second)
 }
 
+func TestTamperedMessageMetadataRejectedWithErrorResponse(t *testing.T) {
+	a := newTestManager(t, testManagerConfig{
+		deviceID: "peer-a",
+		name:     "Peer A",
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID: "peer-b",
+		name:     "Peer B",
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a"); err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+
+	conn := a.manager.getConnection("peer-b")
+	if conn == nil {
+		t.Fatalf("expected connection to peer-b")
+	}
+
+	originalID := uuid.NewString()
+	tamperedID := uuid.NewString()
+	seq := conn.NextSendSequence()
+	if err := sendManualEncryptedMessageWithTamperedMessageID(a.manager, "peer-b", originalID, tamperedID, seq, "tampered metadata"); err != nil {
+		t.Fatalf("send tampered metadata message failed: %v", err)
+	}
+
+	ensureMessageAbsent(t, b.store, tamperedID, 600*time.Millisecond)
+	waitForManagerErrorContaining(t, a.manager.Errors(), "invalid_signature", 3*time.Second)
+}
+
+func TestAckFromWrongConnectionPeerDoesNotMarkDelivered(t *testing.T) {
+	a := newTestManager(t, testManagerConfig{
+		deviceID: "peer-a",
+		name:     "Peer A",
+	})
+	defer a.stop()
+
+	c := newTestManager(t, testManagerConfig{
+		deviceID: "peer-c",
+		name:     "Peer C",
+	})
+	defer c.stop()
+
+	if _, err := a.manager.Connect(c.addr()); err != nil {
+		t.Fatalf("A connect C failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-c", c.manager, "peer-a"); err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+
+	victim := generateIdentity(t, "peer-b", "Peer B")
+	now := time.Now().UnixMilli()
+	if err := a.store.AddPeer(storage.Peer{
+		DeviceID:          "peer-b",
+		DeviceName:        "Peer B",
+		Ed25519PublicKey:  base64.StdEncoding.EncodeToString(victim.Ed25519PublicKey),
+		KeyFingerprint:    appcrypto.KeyFingerprint(victim.Ed25519PublicKey),
+		Status:            peerStatusOffline,
+		AddedTimestamp:    now,
+		LastSeenTimestamp: &now,
+	}); err != nil {
+		t.Fatalf("seed peer-b failed: %v", err)
+	}
+
+	messageID := uuid.NewString()
+	if err := a.store.SaveMessage(storage.Message{
+		MessageID:      messageID,
+		FromDeviceID:   "peer-a",
+		ToDeviceID:     "peer-b",
+		Content:        "spoof target",
+		ContentType:    messageContentTypeText,
+		TimestampSent:  time.Now().UnixMilli(),
+		DeliveryStatus: deliveryStatusSent,
+	}); err != nil {
+		t.Fatalf("SaveMessage failed: %v", err)
+	}
+
+	conn := c.manager.getConnection("peer-a")
+	if conn == nil {
+		t.Fatalf("expected connection from C to A")
+	}
+	if err := conn.SendMessage(AckMessage{
+		Type:         TypeAck,
+		MessageID:    messageID,
+		FromDeviceID: "peer-b",
+		Status:       deliveryStatusDelivered,
+		Timestamp:    time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("send spoofed ack failed: %v", err)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+	msg, err := a.store.GetMessageByID(messageID)
+	if err != nil {
+		t.Fatalf("GetMessageByID failed: %v", err)
+	}
+	if msg.DeliveryStatus != deliveryStatusSent {
+		t.Fatalf("expected delivery status to remain %q, got %q", deliveryStatusSent, msg.DeliveryStatus)
+	}
+}
+
 func sendManualEncryptedMessage(sender *PeerManager, peerDeviceID, messageID string, sequence uint64, content string, tamperSignature bool) error {
 	conn := sender.getConnection(peerDeviceID)
 	if conn == nil {
@@ -226,14 +334,6 @@ func sendManualEncryptedMessage(sender *PeerManager, peerDeviceID, messageID str
 	if err != nil {
 		return err
 	}
-	signature, err := appcrypto.Sign(sender.options.Identity.Ed25519PrivateKey, ciphertext)
-	if err != nil {
-		return err
-	}
-	if tamperSignature && len(signature) > 0 {
-		signature[0] ^= 0xFF
-	}
-
 	message := EncryptedMessage{
 		Type:             TypeMessage,
 		MessageID:        messageID,
@@ -244,9 +344,59 @@ func sendManualEncryptedMessage(sender *PeerManager, peerDeviceID, messageID str
 		EncryptedContent: base64.StdEncoding.EncodeToString(ciphertext),
 		IV:               base64.StdEncoding.EncodeToString(iv),
 		Timestamp:        time.Now().UnixMilli(),
-		Signature:        base64.StdEncoding.EncodeToString(signature),
 	}
+
+	signature, err := signManualEncryptedMessage(sender, message)
+	if err != nil {
+		return err
+	}
+	if tamperSignature && len(signature) > 0 {
+		signature[0] ^= 0xFF
+	}
+	message.Signature = base64.StdEncoding.EncodeToString(signature)
+
 	return conn.SendMessage(message)
+}
+
+func sendManualEncryptedMessageWithTamperedMessageID(sender *PeerManager, peerDeviceID, originalMessageID, tamperedMessageID string, sequence uint64, content string) error {
+	conn := sender.getConnection(peerDeviceID)
+	if conn == nil {
+		return errors.New("no active connection")
+	}
+
+	ciphertext, iv, err := appcrypto.Encrypt(conn.SessionKey(), []byte(content))
+	if err != nil {
+		return err
+	}
+	message := EncryptedMessage{
+		Type:             TypeMessage,
+		MessageID:        originalMessageID,
+		FromDeviceID:     sender.options.Identity.DeviceID,
+		ToDeviceID:       peerDeviceID,
+		ContentType:      messageContentTypeText,
+		Sequence:         sequence,
+		EncryptedContent: base64.StdEncoding.EncodeToString(ciphertext),
+		IV:               base64.StdEncoding.EncodeToString(iv),
+		Timestamp:        time.Now().UnixMilli(),
+	}
+	signature, err := signManualEncryptedMessage(sender, message)
+	if err != nil {
+		return err
+	}
+
+	message.MessageID = tamperedMessageID
+	message.Signature = base64.StdEncoding.EncodeToString(signature)
+	return conn.SendMessage(message)
+}
+
+func signManualEncryptedMessage(sender *PeerManager, message EncryptedMessage) ([]byte, error) {
+	signable := message
+	signable.Signature = ""
+	raw, err := json.Marshal(signable)
+	if err != nil {
+		return nil, err
+	}
+	return appcrypto.Sign(sender.options.Identity.Ed25519PrivateKey, raw)
 }
 
 func waitForMessageStatus(t *testing.T, store *storage.Store, messageID, expected string, timeout time.Duration) {

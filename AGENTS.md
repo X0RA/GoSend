@@ -7,21 +7,10 @@ structure, style, and tooling. Prefer small, correct, well-tested increments.
 - Identify the Go module path from `go.mod`.
 - Check for existing conventions in similar packages/files before introducing new patterns.
 
-## If you’re unsure what to do next
-When you feel confused, blocked, or the next step is unclear:
-1. Read `design.md`
-2. Read `phases.md`
-Then proceed according to those documents. If ambiguity remains, ask targeted questions.
 
-## Feature implementation workflow
-When implementing a feature:
-1. Confirm scope and expected behavior from existing docs and code.
-2. Implement the change with minimal disruption to unrelated code.
-3. Add or update tests where appropriate.
-4. Run formatting and checks.
-5. **Update documentation**:
-   - After a feature is implemented, **update `README.md`** to reflect the new behavior,
-     usage, commands, configuration, or examples.
+**Update documentation**:
+- After a feature is implemented, **update `README.md`** to reflect the new behavior,
+  usage, commands, configuration, or examples.
 
 ## Go standards & style
 - Follow `gofmt` formatting and standard Go idioms.
@@ -50,4 +39,3 @@ A change is considered complete when:
 - Code is formatted (`gofmt`).
 - Any new behavior is covered by tests or clear manual verification steps.
 - **`README.md` is updated** for any newly implemented feature.
-- If relevant, `design.md` and/or `phases.md` alignment is preserved.

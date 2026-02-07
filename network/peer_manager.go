@@ -524,15 +524,16 @@ loop:
 				m.reportError(err)
 				continue
 			}
-			m.handlePeerAddResponse(response)
+			m.handlePeerAddResponse(conn, response)
 		case TypePeerRemove:
 			var removeMsg PeerRemove
 			if err := json.Unmarshal(payload, &removeMsg); err != nil {
 				m.reportError(err)
 				continue
 			}
-			m.handlePeerRemove(conn, removeMsg)
-			break loop
+			if m.handlePeerRemove(conn, removeMsg) {
+				break loop
+			}
 		case TypeMessage:
 			var message EncryptedMessage
 			if err := json.Unmarshal(payload, &message); err != nil {
@@ -546,7 +547,7 @@ loop:
 				m.reportError(err)
 				continue
 			}
-			m.handleAck(ack)
+			m.handleAck(conn, ack)
 		case TypeError:
 			var msg ErrorMessage
 			if err := json.Unmarshal(payload, &msg); err != nil {
@@ -604,7 +605,24 @@ loop:
 }
 
 func (m *PeerManager) handlePeerAddRequest(conn *PeerConnection, request PeerAddRequest) {
-	peerID := request.FromDeviceID
+	peerID := conn.PeerDeviceID()
+	if peerID == "" || request.FromDeviceID == "" || request.FromDeviceName == "" || request.Signature == "" {
+		return
+	}
+	if request.FromDeviceID != peerID {
+		m.reportError(fmt.Errorf("rejecting peer_add_request: sender mismatch %q != %q", request.FromDeviceID, peerID))
+		return
+	}
+	if !withinTimestampSkew(request.Timestamp) {
+		m.reportError(fmt.Errorf("rejecting peer_add_request from %q: timestamp outside skew", peerID))
+		return
+	}
+	if err := m.verifyPeerAddRequest(conn, request); err != nil {
+		m.reportError(err)
+		_ = m.sendErrorMessage(conn, "invalid_signature", "peer add request signature verification failed", "")
+		return
+	}
+
 	accept := false
 	var err error
 
@@ -625,17 +643,22 @@ func (m *PeerManager) handlePeerAddRequest(conn *PeerConnection, request PeerAdd
 		m.inboundMu.Lock()
 		m.inboundAddPending[peerID] = decisionCh
 		m.inboundMu.Unlock()
+		defer m.removeInboundAddPendingIfMatch(peerID, decisionCh)
 
 		select {
 		case m.addRequests <- AddRequestNotification{
-			PeerDeviceID:   request.FromDeviceID,
+			PeerDeviceID:   peerID,
 			PeerDeviceName: request.FromDeviceName,
 		}:
 		default:
 		}
 
+		timer := time.NewTimer(m.options.AddResponseTimeout)
+		defer timer.Stop()
+
 		select {
 		case accept = <-decisionCh:
+		case <-timer.C:
 		case <-m.ctx.Done():
 			return
 		case <-conn.Done():
@@ -674,8 +697,28 @@ func (m *PeerManager) handlePeerAddRequest(conn *PeerConnection, request PeerAdd
 	_ = conn.Close()
 }
 
-func (m *PeerManager) handlePeerAddResponse(response PeerAddResponse) {
-	peerID := response.DeviceID
+func (m *PeerManager) handlePeerAddResponse(conn *PeerConnection, response PeerAddResponse) {
+	peerID := conn.PeerDeviceID()
+	if peerID == "" || response.DeviceID == "" || response.DeviceName == "" || response.Status == "" || response.Signature == "" {
+		return
+	}
+	if response.DeviceID != peerID {
+		m.reportError(fmt.Errorf("rejecting peer_add_response: sender mismatch %q != %q", response.DeviceID, peerID))
+		return
+	}
+	if !withinTimestampSkew(response.Timestamp) {
+		m.reportError(fmt.Errorf("rejecting peer_add_response from %q: timestamp outside skew", peerID))
+		return
+	}
+	if err := m.verifyPeerAddResponse(conn, response); err != nil {
+		m.reportError(err)
+		return
+	}
+	if !stringsEqualFold(response.Status, "accepted") && !stringsEqualFold(response.Status, "rejected") {
+		m.reportError(fmt.Errorf("rejecting peer_add_response from %q: invalid status %q", peerID, response.Status))
+		return
+	}
+
 	m.outboundMu.Lock()
 	ch := m.outboundAddResponse[peerID]
 	m.outboundMu.Unlock()
@@ -689,10 +732,23 @@ func (m *PeerManager) handlePeerAddResponse(response PeerAddResponse) {
 	}
 }
 
-func (m *PeerManager) handlePeerRemove(conn *PeerConnection, removeMsg PeerRemove) {
-	peerID := removeMsg.FromDeviceID
-	if peerID == "" {
-		peerID = conn.PeerDeviceID()
+func (m *PeerManager) handlePeerRemove(conn *PeerConnection, removeMsg PeerRemove) bool {
+	peerID := conn.PeerDeviceID()
+	if peerID == "" || removeMsg.FromDeviceID == "" || removeMsg.Signature == "" {
+		return false
+	}
+	if removeMsg.FromDeviceID != peerID {
+		m.reportError(fmt.Errorf("rejecting peer_remove: sender mismatch %q != %q", removeMsg.FromDeviceID, peerID))
+		return false
+	}
+	if !withinTimestampSkew(removeMsg.Timestamp) {
+		m.reportError(fmt.Errorf("rejecting peer_remove from %q: timestamp outside skew", peerID))
+		return false
+	}
+	if err := m.verifyPeerRemove(conn, removeMsg); err != nil {
+		m.reportError(err)
+		_ = m.sendErrorMessage(conn, "invalid_signature", "peer remove signature verification failed", "")
+		return false
 	}
 
 	m.markSuppressReconnect(peerID)
@@ -700,6 +756,7 @@ func (m *PeerManager) handlePeerRemove(conn *PeerConnection, removeMsg PeerRemov
 	_ = m.options.Store.RemovePeer(peerID)
 	m.removeKnownKey(peerID)
 	_ = conn.Close()
+	return true
 }
 
 func (m *PeerManager) sendTextMessageWithID(peerDeviceID, messageID, content string, timestampSent int64) error {
@@ -783,18 +840,7 @@ func (m *PeerManager) handleIncomingEncryptedMessage(conn *PeerConnection, messa
 		m.reportError(err)
 		return
 	}
-	signature, err := base64.StdEncoding.DecodeString(message.Signature)
-	if err != nil {
-		m.reportError(err)
-		return
-	}
-
-	peerPublicKey, err := decodePeerPublicKey(conn.PeerPublicKey())
-	if err != nil {
-		m.reportError(err)
-		return
-	}
-	if !appcrypto.Verify(peerPublicKey, ciphertext, signature) {
+	if err := m.verifyEncryptedMessageSignature(conn, message); err != nil {
 		m.reportError(fmt.Errorf("rejecting message %q from %q: invalid signature", message.MessageID, message.FromDeviceID))
 		_ = m.sendErrorMessage(conn, "invalid_signature", "message signature verification failed", message.MessageID)
 		return
@@ -848,8 +894,28 @@ func (m *PeerManager) handleIncomingEncryptedMessage(conn *PeerConnection, messa
 	}
 }
 
-func (m *PeerManager) handleAck(ack AckMessage) {
+func (m *PeerManager) handleAck(conn *PeerConnection, ack AckMessage) {
 	if ack.MessageID == "" {
+		return
+	}
+	peerID := conn.PeerDeviceID()
+	if peerID == "" || ack.FromDeviceID == "" {
+		return
+	}
+	if ack.FromDeviceID != peerID {
+		m.reportError(fmt.Errorf("rejecting ack %q: sender mismatch %q != %q", ack.MessageID, ack.FromDeviceID, peerID))
+		return
+	}
+
+	stored, err := m.options.Store.GetMessageByID(ack.MessageID)
+	if err != nil {
+		if !errors.Is(err, storage.ErrNotFound) {
+			m.reportError(err)
+		}
+		return
+	}
+	if stored.FromDeviceID != m.options.Identity.DeviceID || stored.ToDeviceID != peerID {
+		m.reportError(fmt.Errorf("rejecting ack %q from %q: ack does not match message route", ack.MessageID, peerID))
 		return
 	}
 
@@ -858,7 +924,7 @@ func (m *PeerManager) handleAck(ack AckMessage) {
 		status = deliveryStatusDelivered
 	}
 
-	var err error
+	err = nil
 	if status == deliveryStatusDelivered {
 		err = m.options.Store.MarkDelivered(ack.MessageID)
 	} else {
@@ -996,13 +1062,7 @@ func (m *PeerManager) buildEncryptedMessage(conn *PeerConnection, messageID, con
 		return EncryptedMessage{}, "", err
 	}
 
-	signatureBytes, err := appcrypto.Sign(m.options.Identity.Ed25519PrivateKey, ciphertext)
-	if err != nil {
-		return EncryptedMessage{}, "", err
-	}
-	signature := base64.StdEncoding.EncodeToString(signatureBytes)
-
-	return EncryptedMessage{
+	wire := EncryptedMessage{
 		Type:             TypeMessage,
 		MessageID:        messageID,
 		FromDeviceID:     m.options.Identity.DeviceID,
@@ -1012,8 +1072,12 @@ func (m *PeerManager) buildEncryptedMessage(conn *PeerConnection, messageID, con
 		EncryptedContent: base64.StdEncoding.EncodeToString(ciphertext),
 		IV:               base64.StdEncoding.EncodeToString(iv),
 		Timestamp:        timestamp,
-		Signature:        signature,
-	}, signature, nil
+	}
+	if err := m.signEncryptedMessage(&wire); err != nil {
+		return EncryptedMessage{}, "", err
+	}
+
+	return wire, wire.Signature, nil
 }
 
 func (m *PeerManager) sendErrorMessage(conn *PeerConnection, code, message, relatedMessageID string) error {
@@ -1282,6 +1346,15 @@ func (m *PeerManager) isOutboundAddPending(peerDeviceID string) bool {
 	return m.outboundAddPending[peerDeviceID]
 }
 
+func (m *PeerManager) removeInboundAddPendingIfMatch(peerDeviceID string, decisionCh chan bool) {
+	m.inboundMu.Lock()
+	current := m.inboundAddPending[peerDeviceID]
+	if current == decisionCh {
+		delete(m.inboundAddPending, peerDeviceID)
+	}
+	m.inboundMu.Unlock()
+}
+
 func (m *PeerManager) markSuppressReconnect(peerDeviceID string) {
 	m.suppressMu.Lock()
 	m.suppressReconnect[peerDeviceID] = true
@@ -1417,6 +1490,27 @@ func (m *PeerManager) signPeerAddRequest(msg *PeerAddRequest) error {
 	return nil
 }
 
+func (m *PeerManager) verifyPeerAddRequest(conn *PeerConnection, msg PeerAddRequest) error {
+	publicKey, err := decodePeerPublicKey(conn.PeerPublicKey())
+	if err != nil {
+		return err
+	}
+	signature, err := base64.StdEncoding.DecodeString(msg.Signature)
+	if err != nil {
+		return fmt.Errorf("decode peer add request signature: %w", err)
+	}
+	signable := msg
+	signable.Signature = ""
+	raw, err := json.Marshal(signable)
+	if err != nil {
+		return err
+	}
+	if !appcrypto.Verify(publicKey, raw, signature) {
+		return errors.New("invalid peer add request signature")
+	}
+	return nil
+}
+
 func (m *PeerManager) signPeerAddResponse(msg *PeerAddResponse) error {
 	signable := *msg
 	signable.Signature = ""
@@ -1432,6 +1526,27 @@ func (m *PeerManager) signPeerAddResponse(msg *PeerAddResponse) error {
 	return nil
 }
 
+func (m *PeerManager) verifyPeerAddResponse(conn *PeerConnection, msg PeerAddResponse) error {
+	publicKey, err := decodePeerPublicKey(conn.PeerPublicKey())
+	if err != nil {
+		return err
+	}
+	signature, err := base64.StdEncoding.DecodeString(msg.Signature)
+	if err != nil {
+		return fmt.Errorf("decode peer add response signature: %w", err)
+	}
+	signable := msg
+	signable.Signature = ""
+	raw, err := json.Marshal(signable)
+	if err != nil {
+		return err
+	}
+	if !appcrypto.Verify(publicKey, raw, signature) {
+		return errors.New("invalid peer add response signature")
+	}
+	return nil
+}
+
 func (m *PeerManager) signPeerRemove(msg *PeerRemove) error {
 	signable := *msg
 	signable.Signature = ""
@@ -1444,5 +1559,65 @@ func (m *PeerManager) signPeerRemove(msg *PeerRemove) error {
 		return err
 	}
 	msg.Signature = base64.StdEncoding.EncodeToString(signature)
+	return nil
+}
+
+func (m *PeerManager) verifyPeerRemove(conn *PeerConnection, msg PeerRemove) error {
+	publicKey, err := decodePeerPublicKey(conn.PeerPublicKey())
+	if err != nil {
+		return err
+	}
+	signature, err := base64.StdEncoding.DecodeString(msg.Signature)
+	if err != nil {
+		return fmt.Errorf("decode peer remove signature: %w", err)
+	}
+	signable := msg
+	signable.Signature = ""
+	raw, err := json.Marshal(signable)
+	if err != nil {
+		return err
+	}
+	if !appcrypto.Verify(publicKey, raw, signature) {
+		return errors.New("invalid peer remove signature")
+	}
+	return nil
+}
+
+func (m *PeerManager) signEncryptedMessage(msg *EncryptedMessage) error {
+	signable := *msg
+	signable.Signature = ""
+	raw, err := json.Marshal(signable)
+	if err != nil {
+		return err
+	}
+	signature, err := appcrypto.Sign(m.options.Identity.Ed25519PrivateKey, raw)
+	if err != nil {
+		return err
+	}
+	msg.Signature = base64.StdEncoding.EncodeToString(signature)
+	return nil
+}
+
+func (m *PeerManager) verifyEncryptedMessageSignature(conn *PeerConnection, msg EncryptedMessage) error {
+	if msg.Signature == "" {
+		return errors.New("message signature is required")
+	}
+	publicKey, err := decodePeerPublicKey(conn.PeerPublicKey())
+	if err != nil {
+		return err
+	}
+	signature, err := base64.StdEncoding.DecodeString(msg.Signature)
+	if err != nil {
+		return fmt.Errorf("decode message signature: %w", err)
+	}
+	signable := msg
+	signable.Signature = ""
+	raw, err := json.Marshal(signable)
+	if err != nil {
+		return err
+	}
+	if !appcrypto.Verify(publicKey, raw, signature) {
+		return errors.New("invalid message signature")
+	}
 	return nil
 }

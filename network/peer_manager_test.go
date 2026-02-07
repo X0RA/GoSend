@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"net"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	appcrypto "gosend/crypto"
 	"gosend/storage"
 )
 
@@ -196,6 +198,217 @@ func TestSimultaneousAddResolution(t *testing.T) {
 
 	waitForPeerStatus(t, a.store, "peer-b", peerStatusOnline, 2*time.Second)
 	waitForPeerStatus(t, b.store, "peer-a", peerStatusOnline, 2*time.Second)
+}
+
+func TestInvalidPeerAddRequestSignatureIgnored(t *testing.T) {
+	a := newTestManager(t, testManagerConfig{
+		deviceID: "peer-a",
+		name:     "Peer A",
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID: "peer-b",
+		name:     "Peer B",
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	conn := a.manager.getConnection("peer-b")
+	if conn == nil {
+		t.Fatalf("expected connection to peer-b")
+	}
+
+	request := PeerAddRequest{
+		Type:           TypePeerAddRequest,
+		FromDeviceID:   "peer-a",
+		FromDeviceName: "Peer A",
+		Timestamp:      time.Now().UnixMilli(),
+	}
+	if err := a.manager.signPeerAddRequest(&request); err != nil {
+		t.Fatalf("sign peer add request failed: %v", err)
+	}
+
+	sig, err := base64.StdEncoding.DecodeString(request.Signature)
+	if err != nil {
+		t.Fatalf("decode signature: %v", err)
+	}
+	sig[0] ^= 0xFF
+	request.Signature = base64.StdEncoding.EncodeToString(sig)
+
+	if err := conn.SendMessage(request); err != nil {
+		t.Fatalf("send forged peer add request failed: %v", err)
+	}
+
+	select {
+	case req := <-b.manager.PendingAddRequests():
+		t.Fatalf("unexpected pending add request: %+v", req)
+	case <-time.After(400 * time.Millisecond):
+	}
+}
+
+func TestPeerRemoveCannotRemoveSpoofedDeviceID(t *testing.T) {
+	a := newTestManager(t, testManagerConfig{
+		deviceID: "peer-a",
+		name:     "Peer A",
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID: "peer-b",
+		name:     "Peer B",
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a"); err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+
+	victimIdentity := generateIdentity(t, "victim-peer", "Victim")
+	victimPubKey := base64.StdEncoding.EncodeToString(victimIdentity.Ed25519PublicKey)
+	now := time.Now().UnixMilli()
+	if err := b.store.AddPeer(storage.Peer{
+		DeviceID:         "victim-peer",
+		DeviceName:       "Victim",
+		Ed25519PublicKey: victimPubKey,
+		KeyFingerprint:   appcrypto.KeyFingerprint(victimIdentity.Ed25519PublicKey),
+		Status:           peerStatusOnline,
+		AddedTimestamp:   now,
+	}); err != nil {
+		t.Fatalf("seed victim peer failed: %v", err)
+	}
+
+	conn := a.manager.getConnection("peer-b")
+	if conn == nil {
+		t.Fatalf("expected connection to peer-b")
+	}
+
+	remove := PeerRemove{
+		Type:         TypePeerRemove,
+		FromDeviceID: "victim-peer",
+		Timestamp:    time.Now().UnixMilli(),
+	}
+	if err := a.manager.signPeerRemove(&remove); err != nil {
+		t.Fatalf("sign peer remove failed: %v", err)
+	}
+	if err := conn.SendMessage(remove); err != nil {
+		t.Fatalf("send spoofed peer remove failed: %v", err)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+	if _, err := b.store.GetPeer("victim-peer"); err != nil {
+		t.Fatalf("expected victim peer to remain, got err: %v", err)
+	}
+}
+
+func TestInboundAddRequestPendingEntryRemovedOnDisconnect(t *testing.T) {
+	a := newTestManager(t, testManagerConfig{
+		deviceID: "peer-a",
+		name:     "Peer A",
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID: "peer-b",
+		name:     "Peer B",
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	conn := a.manager.getConnection("peer-b")
+	if conn == nil {
+		t.Fatalf("expected connection to peer-b")
+	}
+
+	request := PeerAddRequest{
+		Type:           TypePeerAddRequest,
+		FromDeviceID:   "peer-a",
+		FromDeviceName: "Peer A",
+		Timestamp:      time.Now().UnixMilli(),
+	}
+	if err := a.manager.signPeerAddRequest(&request); err != nil {
+		t.Fatalf("sign peer add request failed: %v", err)
+	}
+	if err := conn.SendMessage(request); err != nil {
+		t.Fatalf("send peer add request failed: %v", err)
+	}
+
+	waitForInboundPendingCount(t, b.manager, 1, 2*time.Second)
+	a.stop()
+	waitForInboundPendingCount(t, b.manager, 0, 2*time.Second)
+}
+
+func TestPeerAddResponseMustMatchConnectionPeer(t *testing.T) {
+	a := newTestManager(t, testManagerConfig{
+		deviceID: "peer-a",
+		name:     "Peer A",
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID: "peer-b",
+		name:     "Peer B",
+	})
+	defer b.stop()
+
+	c := newTestManager(t, testManagerConfig{
+		deviceID: "peer-c",
+		name:     "Peer C",
+	})
+	defer c.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := a.manager.Connect(c.addr()); err != nil {
+		t.Fatalf("A connect C failed: %v", err)
+	}
+
+	type addResult struct {
+		accepted bool
+		err      error
+	}
+	resultCh := make(chan addResult, 1)
+	go func() {
+		accepted, err := a.manager.SendPeerAddRequest("peer-c")
+		resultCh <- addResult{accepted: accepted, err: err}
+	}()
+
+	waitForOutboundAddPending(t, a.manager, "peer-c", 2*time.Second)
+
+	conn := b.manager.getConnection("peer-a")
+	if conn == nil {
+		t.Fatalf("expected connection from B to A")
+	}
+	forged := PeerAddResponse{
+		Type:       TypePeerAddResponse,
+		Status:     "accepted",
+		DeviceID:   "peer-c",
+		DeviceName: "Peer C",
+		Timestamp:  time.Now().UnixMilli(),
+	}
+	if err := b.manager.signPeerAddResponse(&forged); err != nil {
+		t.Fatalf("sign forged peer_add_response failed: %v", err)
+	}
+	if err := conn.SendMessage(forged); err != nil {
+		t.Fatalf("send forged peer_add_response failed: %v", err)
+	}
+
+	select {
+	case res := <-resultCh:
+		if res.accepted {
+			t.Fatalf("expected forged response to be rejected")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for add request result")
+	}
 }
 
 type testManager struct {
@@ -389,4 +602,38 @@ func freeTCPPort(t *testing.T) string {
 		t.Fatalf("split host/port: %v", err)
 	}
 	return port
+}
+
+func waitForInboundPendingCount(t *testing.T, manager *PeerManager, expected int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		manager.inboundMu.Lock()
+		count := len(manager.inboundAddPending)
+		manager.inboundMu.Unlock()
+		if count == expected {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	manager.inboundMu.Lock()
+	count := len(manager.inboundAddPending)
+	manager.inboundMu.Unlock()
+	t.Fatalf("timed out waiting for inbound pending count=%d, final=%d", expected, count)
+}
+
+func waitForOutboundAddPending(t *testing.T, manager *PeerManager, peerID string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		manager.outboundMu.Lock()
+		_, exists := manager.outboundAddResponse[peerID]
+		manager.outboundMu.Unlock()
+		if exists {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for outbound add response channel for peer %q", peerID)
 }
