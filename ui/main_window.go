@@ -16,6 +16,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	fyneapp "fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
@@ -76,7 +77,7 @@ type controller struct {
 	fileTransfers map[string]chatFileEntry
 
 	peerList        *widget.List
-	chatHeader      *widget.Label
+	chatHeader      *canvas.Text
 	chatKeyButton   *hintButton
 	chatMessagesBox *fyne.Container
 	chatScroll      *container.Scroll
