@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"os"
 	"path/filepath"
 	"sort"
@@ -124,6 +125,7 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 func (c *controller) updateChatHeader() {
 	selectedPeerID := c.currentSelectedPeerID()
 	peerName := "Select a peer to start chatting"
+	headerColor := color.White
 	hasPeer := false
 	statusColor := colorMuted
 	if selectedPeerID != "" {
