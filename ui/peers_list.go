@@ -352,10 +352,10 @@ func discoveredPeerAddress(peer discovery.DiscoveredPeer) (string, error) {
 	}
 	return "", fmt.Errorf("peer %s has no reachable addresses", peer.DeviceID)
 }
-
 func peerStatusIndicator(status string) string {
 	if strings.EqualFold(status, "online") {
 		return "●"
 	}
 	return "○"
 }
+
