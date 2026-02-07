@@ -73,18 +73,20 @@ This repository includes a release workflow at `.github/workflows/release-build.
 When a GitHub Release is published, the workflow:
 
 - Uses the release tag (`github.event.release.tag_name`).
-- Builds binaries for `linux/amd64`, `darwin/amd64`, and `windows/amd64`.
-- Uploads those binaries to that same GitHub Release as assets.
+- Builds a Linux binary (`linux/amd64`) and a macOS Apple Silicon app bundle archive (`darwin/arm64` as `.app.zip`).
+- Uploads those artifacts to that same GitHub Release as assets.
+- Restores/saves Go dependency/build caches via `actions/setup-go` using `go.sum` as the cache dependency key.
+- The macOS AMD64 and Windows matrix entries are currently commented out.
 
 Expected asset names:
 
 - `gosend-<tag>-linux-amd64`
-- `gosend-<tag>-darwin-amd64`
-- `gosend-<tag>-windows-amd64.exe`
+- `gosend-<tag>-darwin-arm64.app.zip`
 
 Tag notes:
 
 - Git tags cannot contain spaces. For prereleases, prefer tags like `v0.0.1-alpha` (not `v0.0.1 alpha`).
+- The macOS `.app` bundle is unsigned; users may need to right-click `Open` on first launch.
 
 ## Runtime Data and Config
 
@@ -363,7 +365,7 @@ Dialogs/prompts:
 
 - `main.go`: Startup entrypoint. Loads/normalizes config, ensures key material, persists fingerprint updates, opens SQLite store, constructs local identity, and starts UI runtime.
 - `Makefile`: Convenience commands for build and non-UI test flows, plus two client run targets with isolated data dirs.
-- `.github/workflows/release-build.yml`: On release publish, builds platform binaries and uploads them to the created release as assets.
+- `.github/workflows/release-build.yml`: On release publish, builds release artifacts and uploads them to the created release as assets (Linux binary + macOS ARM `.app.zip`).
 - `tools.go`: Build-tagged dependency anchors for `fyne`, `zeroconf`, and `go-sqlite3`.
 - `go.mod`: Module `gosend`, Go version `1.25.6`, direct dependencies (Fyne, UUID, zeroconf, sqlite3, x/crypto).
 - `go.sum`: Dependency checksum lockfile.

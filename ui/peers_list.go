@@ -11,7 +11,6 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -35,14 +34,15 @@ func (c *controller) buildPeersListPane() fyne.CanvasObject {
 			status := canvas.NewText("Offline", colorMuted)
 			status.TextSize = 11
 			info := container.NewVBox(name, status)
-			return container.NewHBox(container.NewCenter(dotBox), info)
+			return container.NewBorder(nil, nil, container.NewCenter(dotBox), nil, info)
 		},
 		func(id widget.ListItemID, object fyne.CanvasObject) {
 			row := object.(*fyne.Container)
-			dotCenter := row.Objects[0].(*fyne.Container)
+			// Border(nil, nil, left, nil, center): Objects = [center, left]
+			info := row.Objects[0].(*fyne.Container)
+			dotCenter := row.Objects[1].(*fyne.Container)
 			dotBox := dotCenter.Objects[0].(*fyne.Container)
 			dot := dotBox.Objects[0].(*canvas.Circle)
-			info := row.Objects[1].(*fyne.Container)
 			name := info.Objects[0].(*widget.Label)
 			status := info.Objects[1].(*canvas.Text)
 
@@ -179,12 +179,17 @@ func (c *controller) showDiscoveryDialog() {
 		},
 		func() fyne.CanvasObject {
 			dot := canvas.NewCircle(colorOffline)
-			dotBox := container.NewGridWrap(fyne.NewSize(8, 8), dot)
+			dotBox := container.NewGridWrap(fyne.NewSize(10, 10), dot)
 			name := widget.NewLabel("")
 			name.TextStyle = fyne.TextStyle{Bold: true}
+			name.Truncation = fyne.TextTruncateEllipsis
+			status := canvas.NewText("Online", colorMuted)
+			status.TextSize = 11
+			info := container.NewVBox(name, status)
 			addBtn := widget.NewButton("Add", nil)
 			addBtn.Importance = widget.HighImportance
-			return container.NewBorder(nil, nil, container.NewCenter(dotBox), addBtn, name)
+			// Border(nil, nil, left, right, center): Objects = [center, left, right]
+			return container.NewBorder(nil, nil, container.NewCenter(dotBox), addBtn, info)
 		},
 		func(id widget.ListItemID, object fyne.CanvasObject) {
 			row := object.(*fyne.Container)
@@ -192,7 +197,10 @@ func (c *controller) showDiscoveryDialog() {
 				return
 			}
 
-			nameLabel := row.Objects[0].(*widget.Label)
+			// Border(nil, nil, left, right, center): Objects = [center, left, right]
+			info := row.Objects[0].(*fyne.Container)
+			nameLabel := info.Objects[0].(*widget.Label)
+			statusText := info.Objects[1].(*canvas.Text)
 			dotCenter := row.Objects[1].(*fyne.Container)
 			dotBox := dotCenter.Objects[0].(*fyne.Container)
 			dot := dotBox.Objects[0].(*canvas.Circle)
@@ -201,6 +209,8 @@ func (c *controller) showDiscoveryDialog() {
 			peer := c.discoveryPeerByIndex(int(id))
 			if peer == nil {
 				nameLabel.SetText("")
+				statusText.Text = ""
+				statusText.Refresh()
 				addBtn.Disable()
 				return
 			}
@@ -208,10 +218,15 @@ func (c *controller) showDiscoveryDialog() {
 			nameLabel.SetText(valueOrDefault(peer.DeviceName, peer.DeviceID))
 			if len(peer.Addresses) > 0 {
 				dot.FillColor = colorOnline
+				statusText.Text = "Online"
+				statusText.Color = colorOnline
 			} else {
 				dot.FillColor = colorOffline
+				statusText.Text = "Offline"
+				statusText.Color = colorMuted
 			}
 			dot.Refresh()
+			statusText.Refresh()
 
 			if c.isKnownPeer(peer.DeviceID) {
 				addBtn.SetText("Added")
@@ -231,13 +246,19 @@ func (c *controller) showDiscoveryDialog() {
 		},
 	)
 
+	subtitle := widget.NewLabel("Peers discovered on your local network")
+	subtitle.Importance = widget.LowImportance
 	refreshBtn := widget.NewButtonWithIcon("Refresh", theme.ViewRefreshIcon(), func() {
 		go c.refreshDiscovery()
 	})
-	actions := container.NewHBox(layout.NewSpacer(), refreshBtn)
-	content := container.NewBorder(nil, actions, nil, nil, c.discoveryList)
+	refreshBtn.Importance = widget.HighImportance
+	header := container.NewBorder(nil, nil, subtitle, refreshBtn)
+	content := container.NewBorder(
+		container.NewVBox(container.NewPadded(header), widget.NewSeparator()),
+		nil, nil, nil, c.discoveryList,
+	)
 
-	c.discoveryDialog = dialog.NewCustom("Available Peers", "Close", content, c.window)
+	c.discoveryDialog = dialog.NewCustom("Discover Peers", "Close", content, c.window)
 	c.discoveryDialog.SetOnClosed(func() {
 		c.discoveryDialog = nil
 		c.discoveryList = nil
