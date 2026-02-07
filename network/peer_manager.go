@@ -1354,6 +1354,34 @@ func fingerprintFromBase64(keyBase64 string) (string, error) {
 	return appcrypto.KeyFingerprint(ed25519.PublicKey(publicKeyBytes)), nil
 }
 
+// NotifyPeerDiscovered is called when mDNS discovers a peer on the network.
+// If the peer is a known (added) peer that is not currently connected,
+// it updates the stored endpoint and starts a reconnect attempt.
+func (m *PeerManager) NotifyPeerDiscovered(deviceID, ip string, port int) {
+	if deviceID == "" || deviceID == m.options.Identity.DeviceID {
+		return
+	}
+
+	peer, err := m.options.Store.GetPeer(deviceID)
+	if err != nil {
+		return
+	}
+	if peer.Status == peerStatusBlocked {
+		return
+	}
+
+	if ip != "" && port > 0 {
+		_ = m.options.Store.UpdatePeerEndpoint(deviceID, ip, port, time.Now().UnixMilli())
+	}
+
+	conn := m.getConnection(deviceID)
+	if conn != nil && conn.State() != StateDisconnected {
+		return
+	}
+
+	m.startReconnect(deviceID)
+}
+
 func stringsEqualFold(a, b string) bool {
 	if len(a) != len(b) {
 		return false
