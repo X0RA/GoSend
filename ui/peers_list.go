@@ -186,8 +186,7 @@ func (c *controller) showDiscoveryDialog() {
 			status := canvas.NewText("Online", colorMuted)
 			status.TextSize = 11
 			info := container.NewVBox(name, status)
-			addBtn := widget.NewButton("Add", nil)
-			addBtn.Importance = widget.HighImportance
+			addBtn := newRoundedButton("Add", nil, 10, colorButtonFill, colorButtonMuted, nil)
 			// Border(nil, nil, left, right, center): Objects = [center, left, right]
 			return container.NewBorder(nil, nil, container.NewCenter(dotBox), addBtn, info)
 		},
@@ -204,7 +203,7 @@ func (c *controller) showDiscoveryDialog() {
 			dotCenter := row.Objects[1].(*fyne.Container)
 			dotBox := dotCenter.Objects[0].(*fyne.Container)
 			dot := dotBox.Objects[0].(*canvas.Circle)
-			addBtn := row.Objects[2].(*widget.Button)
+			addBtn := row.Objects[2].(*roundedButton)
 
 			peer := c.discoveryPeerByIndex(int(id))
 			if peer == nil {
@@ -212,6 +211,7 @@ func (c *controller) showDiscoveryDialog() {
 				statusText.Text = ""
 				statusText.Refresh()
 				addBtn.Disable()
+				addBtn.SetOnTapped(nil)
 				return
 			}
 
@@ -231,16 +231,14 @@ func (c *controller) showDiscoveryDialog() {
 			if c.isKnownPeer(peer.DeviceID) {
 				addBtn.SetText("Added")
 				addBtn.Disable()
-				addBtn.Importance = widget.MediumImportance
-				addBtn.OnTapped = nil
+				addBtn.SetOnTapped(nil)
 			} else {
 				addBtn.SetText("Add")
 				addBtn.Enable()
-				addBtn.Importance = widget.HighImportance
 				peerCopy := *peer
-				addBtn.OnTapped = func() {
+				addBtn.SetOnTapped(func() {
 					go c.addDiscoveredPeer(peerCopy)
-				}
+				})
 			}
 			addBtn.Refresh()
 		},
@@ -248,12 +246,11 @@ func (c *controller) showDiscoveryDialog() {
 
 	subtitle := widget.NewLabel("Peers discovered on your local network")
 	subtitle.Importance = widget.LowImportance
-	refreshBtn := newHintButtonWithIcon("Refresh", theme.ViewRefreshIcon(), "Refresh discovered peers", func() {
+	refreshBtn := newRoundedHintButton("Refresh", theme.ViewRefreshIcon(), "Refresh discovered peers", 10, colorButtonFill, func() {
 		go c.refreshDiscovery()
 	}, c.handleHoverHint)
-	refreshBtn.Importance = widget.HighImportance
 	header := container.NewBorder(nil, nil, subtitle, refreshBtn)
-	discoveryListPanel := newRoundedBg(themedColor(theme.ColorNameInputBackground), 10, c.discoveryList)
+	discoveryListPanel := newRoundedBg(colorDialogPanel, 10, c.discoveryList)
 	content := container.NewBorder(
 		container.NewVBox(container.NewPadded(header), widget.NewSeparator()),
 		nil, nil, nil, container.NewPadded(discoveryListPanel),
