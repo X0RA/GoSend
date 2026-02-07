@@ -157,6 +157,7 @@ func newController(app fyne.App, options RunOptions) (*controller, error) {
 	ctrl.startLoops()
 	ctrl.refreshPeersFromStore()
 	ctrl.syncDiscoveredFromScanner()
+	ctrl.reconnectDiscoveredKnownPeers()
 	ctrl.refreshChatView()
 	if ctrl.activeListenPort > 0 {
 		ctrl.setStatus(fmt.Sprintf("Ready (listening on %d)", ctrl.activeListenPort))
@@ -254,6 +255,9 @@ func (c *controller) discoveryEventLoop() {
 			}
 			c.discoveredMu.Unlock()
 			c.refreshDiscoveryRows()
+			if event.Type == discovery.EventPeerUpserted {
+				c.tryReconnectDiscoveredPeer(event.Peer)
+			}
 		}
 	}
 }
@@ -429,6 +433,26 @@ func (c *controller) syncDiscoveredFromScanner() {
 	c.discovered = next
 	c.discoveredMu.Unlock()
 	c.refreshDiscoveryRows()
+}
+
+func (c *controller) tryReconnectDiscoveredPeer(peer discovery.DiscoveredPeer) {
+	if c.manager == nil || len(peer.Addresses) == 0 || peer.Port <= 0 {
+		return
+	}
+	if !c.isKnownPeer(peer.DeviceID) {
+		return
+	}
+	c.manager.NotifyPeerDiscovered(peer.DeviceID, peer.Addresses[0], peer.Port)
+}
+
+func (c *controller) reconnectDiscoveredKnownPeers() {
+	if c.manager == nil {
+		return
+	}
+	discovered := c.listDiscoveredSnapshot()
+	for _, dp := range discovered {
+		c.tryReconnectDiscoveredPeer(dp)
+	}
 }
 
 func (c *controller) promptIncomingPeerAddRequest(req network.AddRequestNotification) (bool, error) {
