@@ -76,11 +76,13 @@ func NewPeerScanner(config Config) (*PeerScanner, error) {
 
 	browse := cfg.browseFn
 	if browse == nil {
-		resolver, err := zeroconf.NewResolver(nil)
-		if err != nil {
-			return nil, err
+		browse = func(ctx context.Context, service, domain string, entries chan<- *zeroconf.ServiceEntry) error {
+			resolver, err := zeroconf.NewResolver(nil)
+			if err != nil {
+				return err
+			}
+			return resolver.Browse(ctx, service, domain, entries)
 		}
-		browse = resolver.Browse
 	}
 
 	return &PeerScanner{
@@ -212,7 +214,10 @@ func (s *PeerScanner) runScan(requestCtx context.Context) error {
 			select {
 			case <-scanCtx.Done():
 				return
-			case entry := <-entries:
+			case entry, ok := <-entries:
+				if !ok {
+					return
+				}
 				if entry == nil {
 					continue
 				}
@@ -229,7 +234,7 @@ func (s *PeerScanner) runScan(requestCtx context.Context) error {
 	}()
 
 	browseErr := s.browse(scanCtx, s.cfg.Service, s.cfg.Domain, entries)
-	if browseErr != nil {
+	if browseErr != nil && !errors.Is(browseErr, context.DeadlineExceeded) && !errors.Is(browseErr, context.Canceled) {
 		return browseErr
 	}
 
@@ -241,7 +246,7 @@ func (s *PeerScanner) runScan(requestCtx context.Context) error {
 
 	s.applySnapshot(next)
 
-	// A timeout just means this scan window ended naturally.
+	// A timeout/cancel just means this scan window ended naturally.
 	if err := scanCtx.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		return err
 	}
@@ -253,20 +258,31 @@ func (s *PeerScanner) applySnapshot(next map[string]DiscoveredPeer) {
 	defer s.mu.Unlock()
 
 	previous := s.peers
-	s.peers = next
+	merged := make(map[string]DiscoveredPeer, len(previous)+len(next))
+	for id, peer := range previous {
+		merged[id] = peer
+	}
 
 	for id, peer := range next {
 		old, exists := previous[id]
 		if !exists || !peersEqual(old, peer) {
 			s.emitEvent(Event{Type: EventPeerUpserted, Peer: peer})
 		}
+		merged[id] = peer
 	}
 
-	for id, peer := range previous {
+	now := time.Now()
+	for id, peer := range merged {
 		if _, exists := next[id]; !exists {
+			if !peer.LastSeen.IsZero() && now.Sub(peer.LastSeen) < s.cfg.PeerStaleAfter {
+				continue
+			}
+			delete(merged, id)
 			s.emitEvent(Event{Type: EventPeerRemoved, Peer: peer})
 		}
 	}
+
+	s.peers = merged
 }
 
 func (s *PeerScanner) emitEvent(event Event) {

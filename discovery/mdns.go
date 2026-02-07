@@ -22,9 +22,11 @@ const (
 	// DefaultRefreshInterval is the background peer discovery interval.
 	DefaultRefreshInterval = 10 * time.Second
 	// DefaultScanTimeout bounds each discovery scan.
-	DefaultScanTimeout = 3 * time.Second
+	DefaultScanTimeout = 5 * time.Second
 	// DefaultTTL is the intended mDNS record TTL in seconds.
 	DefaultTTL = 120
+	// DefaultPeerStaleAfter keeps a discovered peer visible across transient missed scans.
+	DefaultPeerStaleAfter = 30 * time.Second
 )
 
 type registerFunc func(instance, service, domain string, port int, text []string, ifaces []net.Interface) (*zeroconf.Server, error)
@@ -37,6 +39,7 @@ type Config struct {
 	Version         int
 	RefreshInterval time.Duration
 	ScanTimeout     time.Duration
+	PeerStaleAfter  time.Duration
 	TTL             uint32
 
 	SelfDeviceID   string
@@ -67,6 +70,19 @@ func (c Config) withDefaults() Config {
 	}
 	if out.TTL == 0 {
 		out.TTL = DefaultTTL
+	}
+	if out.PeerStaleAfter <= 0 {
+		out.PeerStaleAfter = DefaultPeerStaleAfter
+		ttlBased := time.Duration(out.TTL) * time.Second * 2
+		if ttlBased > out.PeerStaleAfter {
+			out.PeerStaleAfter = ttlBased
+		}
+		if out.RefreshInterval > 0 {
+			candidate := out.RefreshInterval * 6
+			if candidate > out.PeerStaleAfter {
+				out.PeerStaleAfter = candidate
+			}
+		}
 	}
 	if out.registerFn == nil {
 		out.registerFn = zeroconf.Register
