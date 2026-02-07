@@ -16,6 +16,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	fyneapp "fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
@@ -88,11 +89,12 @@ type controller struct {
 	statusMu       sync.RWMutex
 	statusMessage  string
 	hoverHint      string
-	tooltipMu      sync.Mutex
-	tooltipTimer   *time.Timer
-	tooltipPopup   *widget.PopUp
-	tooltipTarget  fyne.CanvasObject
-	tooltipText    string
+	tooltipMu       sync.Mutex
+	tooltipTimer    *time.Timer
+	tooltipOverlay  fyne.CanvasObject
+	tooltipCanvas   fyne.Canvas
+	tooltipTarget   fyne.CanvasObject
+	tooltipText     string
 
 	activeListenPort int
 }
@@ -104,6 +106,7 @@ func Run(options RunOptions) error {
 	}
 
 	ui := fyneapp.NewWithID("gosend")
+	ui.Settings().SetTheme(newGoSendTheme())
 	ctrl, err := newController(ui, options)
 	if err != nil {
 		return err
@@ -446,10 +449,7 @@ func (c *controller) scheduleTooltip(target fyne.CanvasObject, hint string) {
 		c.tooltipTimer.Stop()
 		c.tooltipTimer = nil
 	}
-	if c.tooltipPopup != nil {
-		c.tooltipPopup.Hide()
-		c.tooltipPopup = nil
-	}
+	c.removeTooltipOverlay()
 	c.tooltipTarget = target
 	c.tooltipText = hint
 	c.tooltipTimer = time.AfterFunc(450*time.Millisecond, func() {
@@ -471,34 +471,74 @@ func (c *controller) showTooltip(target fyne.CanvasObject, hint string) {
 		if target == nil || strings.TrimSpace(hint) == "" {
 			return
 		}
-		canvas := c.app.Driver().CanvasForObject(target)
-		if canvas == nil {
+		drv := c.app.Driver()
+		canv := drv.CanvasForObject(target)
+		if canv == nil {
 			return
 		}
 
-		label := widget.NewLabel(hint)
-		label.Wrapping = fyne.TextWrapWord
-		wrapped := container.NewGridWrap(fyne.NewSize(240, label.MinSize().Height), label)
-		content := newRoundedBg(themedColor(theme.ColorNameInputBackground), 8, wrapped)
-		popup := widget.NewPopUp(content, canvas)
-		popup.ShowAtRelativePosition(fyne.NewPos(target.Size().Width+6, 0), target)
+		const maxTooltipChars = 18
+		displayHint := hint
+		if len(displayHint) > maxTooltipChars {
+			displayHint = displayHint[:maxTooltipChars-3] + "..."
+		}
+		tooltipText := canvas.NewText(displayHint, themedColor(theme.ColorNameForeground))
+		tooltipText.TextSize = 10
+		wrapped := container.NewPadded(container.NewCenter(tooltipText))
+		pill := newRoundedBg(themedColor(theme.ColorNameInputBackground), 3, wrapped)
+		pillSize := pill.MinSize()
+		pill.Resize(pillSize)
+
+		const gap = 6
+		const edgePad = 4
+		canvasSize := canv.Size()
+		targetAbs := drv.AbsolutePositionForObject(target)
+		targetSize := target.Size()
+		// Prefer right of button; fall back to left if it would overflow.
+		pos := targetAbs.Add(fyne.NewPos(targetSize.Width+gap, 0))
+		if pos.X+pillSize.Width+edgePad > canvasSize.Width {
+			pos.X = targetAbs.X - pillSize.Width - gap
+		}
+		if pos.X < edgePad {
+			pos.X = edgePad
+		}
+		if pos.Y+pillSize.Height+edgePad > canvasSize.Height {
+			pos.Y = canvasSize.Height - pillSize.Height - edgePad
+		}
+		if pos.Y < edgePad {
+			pos.Y = edgePad
+		}
+		pill.Move(pos)
+		box := container.NewWithoutLayout(pill)
+		box.Resize(canv.Size())
 
 		c.tooltipMu.Lock()
 		if c.tooltipTarget != target || c.tooltipText != hint {
 			c.tooltipMu.Unlock()
-			popup.Hide()
+			canv.Overlays().Remove(box)
 			return
 		}
-		if c.tooltipPopup != nil {
-			c.tooltipPopup.Hide()
-		}
-		c.tooltipPopup = popup
+		c.removeTooltipOverlay()
+		canv.Overlays().Add(box)
+		c.tooltipOverlay = box
+		c.tooltipCanvas = canv
 		c.tooltipMu.Unlock()
 	})
 }
 
+// removeTooltipOverlay removes the current tooltip from the canvas overlay.
+// Must be called with c.tooltipMu held.
+func (c *controller) removeTooltipOverlay() {
+	if c.tooltipOverlay != nil && c.tooltipCanvas != nil {
+		c.tooltipCanvas.Overlays().Remove(c.tooltipOverlay)
+		c.tooltipOverlay = nil
+		c.tooltipCanvas = nil
+	}
+}
+
 func (c *controller) hideTooltip(target fyne.CanvasObject) {
-	var popup *widget.PopUp
+	var overlay fyne.CanvasObject
+	var canv fyne.Canvas
 
 	c.tooltipMu.Lock()
 	if c.tooltipTimer != nil {
@@ -506,16 +546,18 @@ func (c *controller) hideTooltip(target fyne.CanvasObject) {
 		c.tooltipTimer = nil
 	}
 	if target == nil || c.tooltipTarget == target {
-		popup = c.tooltipPopup
-		c.tooltipPopup = nil
+		overlay = c.tooltipOverlay
+		canv = c.tooltipCanvas
+		c.tooltipOverlay = nil
+		c.tooltipCanvas = nil
 		c.tooltipTarget = nil
 		c.tooltipText = ""
 	}
 	c.tooltipMu.Unlock()
 
-	if popup != nil {
+	if overlay != nil && canv != nil {
 		fyne.Do(func() {
-			popup.Hide()
+			canv.Overlays().Remove(overlay)
 		})
 	}
 }
