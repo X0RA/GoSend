@@ -74,9 +74,8 @@ func (c *controller) buildPeersListPane() fyne.CanvasObject {
 
 	heading := widget.NewLabel("Peers")
 	heading.TextStyle = fyne.TextStyle{Bold: true}
-	addBtn := widget.NewButtonWithIcon("", theme.ContentAddIcon(), c.showDiscoveryDialog)
-	addBtnWithHint := withHoverStatusHint(addBtn, "Discover peers", c.setHoverHint)
-	topBar := container.NewBorder(nil, nil, heading, addBtnWithHint)
+	addBtn := newHintButtonWithIcon("", theme.ContentAddIcon(), "Discover peers", c.showDiscoveryDialog, c.handleHoverHint)
+	topBar := container.NewBorder(nil, nil, heading, addBtn)
 
 	return container.NewBorder(
 		container.NewVBox(container.NewPadded(topBar), widget.NewSeparator()),
@@ -249,20 +248,18 @@ func (c *controller) showDiscoveryDialog() {
 
 	subtitle := widget.NewLabel("Peers discovered on your local network")
 	subtitle.Importance = widget.LowImportance
-	refreshBtn := widget.NewButtonWithIcon("Refresh", theme.ViewRefreshIcon(), func() {
+	refreshBtn := newHintButtonWithIcon("Refresh", theme.ViewRefreshIcon(), "Refresh discovered peers", func() {
 		go c.refreshDiscovery()
-	})
+	}, c.handleHoverHint)
 	refreshBtn.Importance = widget.HighImportance
-	refreshBtnWithHint := withHoverStatusHint(refreshBtn, "Refresh discovered peers", c.setHoverHint)
-	header := container.NewBorder(nil, nil, subtitle, refreshBtnWithHint)
-	discoveryListPanel := newRoundedBg(colorPanelBg, 10, c.discoveryList)
+	header := container.NewBorder(nil, nil, subtitle, refreshBtn)
+	discoveryListPanel := newRoundedBg(themedColor(theme.ColorNameInputBackground), 10, c.discoveryList)
 	content := container.NewBorder(
 		container.NewVBox(container.NewPadded(header), widget.NewSeparator()),
 		nil, nil, nil, container.NewPadded(discoveryListPanel),
 	)
-	themedContent := container.NewPadded(newRoundedBg(colorIncomingMsg, 12, content))
 
-	c.discoveryDialog = dialog.NewCustom("Discover Peers", "Close", themedContent, c.window)
+	c.discoveryDialog = dialog.NewCustom("Discover Peers", "Close", content, c.window)
 	c.discoveryDialog.SetOnClosed(func() {
 		c.discoveryDialog = nil
 		c.discoveryList = nil

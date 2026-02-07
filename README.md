@@ -279,9 +279,10 @@ Main window:
 - Right pane: selected peer chat transcript + file transfer rows.
 - Chat composer is hidden until a peer is selected.
 - Chat composer layout: message box on the left, with `Send` above `Attach` in a vertical action group on the right.
+- Chat input keyboard behavior: `Enter` sends the message, `Shift+Enter` inserts a newline.
 - Toolbar: Settings + Refresh Discovery.
 - Footer: status label for errors/events.
-- Hovering key action buttons (peer info/settings/refresh/discover/send/attach) shows a short hint in the status bar.
+- Hovering key action buttons (peer info/settings/refresh/discover/send/attach) shows a tooltip and a short status hint.
 
 Dialogs/prompts:
 
