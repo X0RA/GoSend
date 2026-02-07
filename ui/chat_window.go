@@ -91,11 +91,10 @@ func (e *messageEntry) TypedKey(key *fyne.KeyEvent) {
 }
 
 func (c *controller) buildChatPane() fyne.CanvasObject {
-	c.chatHeader = canvas.NewText("Select a peer to start chatting", color.White)
-	c.chatHeader.TextStyle = fyne.TextStyle{Bold: true}
-	c.chatKeyButton = newHintButtonWithIcon("", theme.InfoIcon(), "View selected peer fingerprint", c.showSelectedPeerFingerprint, c.handleHoverHint)
-	c.chatKeyButton.Disable()
-	header := container.NewBorder(nil, nil, nil, c.chatKeyButton, c.chatHeader)
+	c.chatHeader = newClickableLabel("Select a peer to start chatting", c.showSelectedPeerFingerprint)
+	c.chatHeader.SetTextStyle(fyne.TextStyle{Bold: true})
+	c.chatHeader.SetColor(colorMuted)
+	header := container.NewPadded(c.chatHeader)
 
 	emptyLabel := widget.NewLabel("No messages yet")
 	emptyLabel.Alignment = fyne.TextAlignCenter
@@ -117,7 +116,7 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 	c.chatComposer.Hide()
 
 	return container.NewBorder(
-		container.NewVBox(container.NewPadded(header), widget.NewSeparator()),
+		container.NewVBox(header, widget.NewSeparator()),
 		container.NewVBox(widget.NewSeparator(), c.chatComposer),
 		nil, nil, c.chatScroll,
 	)
@@ -128,28 +127,21 @@ func (c *controller) updateChatHeader() {
 	peerName := "Select a peer to start chatting"
 	headerColor := color.White
 	hasPeer := false
+	statusColor := colorMuted
 	if selectedPeerID != "" {
 		if peer := c.peerByID(selectedPeerID); peer != nil {
 			hasPeer = true
-			peerName = peer.DeviceName
-			if peer.Status == "online" {
-				headerColor = colorOnline
+			peerName = fmt.Sprintf("%s (%s)", peer.DeviceName, peerStatusIndicator(peer.Status))
+			if strings.EqualFold(peer.Status, "online") {
+				statusColor = colorOnline
 			}
 		}
 	}
 
 	fyne.Do(func() {
 		if c.chatHeader != nil {
-			c.chatHeader.Text = peerName
-			c.chatHeader.Color = headerColor
-			c.chatHeader.Refresh()
-		}
-		if c.chatKeyButton != nil {
-			if hasPeer {
-				c.chatKeyButton.Enable()
-			} else {
-				c.chatKeyButton.Disable()
-			}
+			c.chatHeader.SetText(peerName)
+			c.chatHeader.SetColor(statusColor)
 		}
 		if c.chatComposer != nil {
 			if hasPeer {
