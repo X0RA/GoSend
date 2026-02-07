@@ -17,7 +17,6 @@ var (
 	colorOffline     = color.NRGBA{R: 120, G: 120, B: 120, A: 255}
 	colorOutgoingMsg = color.NRGBA{R: 28, G: 68, B: 120, A: 255}
 	colorIncomingMsg = color.NRGBA{R: 52, G: 53, B: 58, A: 255}
-	colorPanelBg     = color.NRGBA{R: 42, G: 43, B: 48, A: 255}
 	colorMuted       = color.NRGBA{R: 155, G: 155, B: 160, A: 255}
 )
 
@@ -39,54 +38,50 @@ func newStatusDot(online bool) (*canvas.Circle, fyne.CanvasObject) {
 	return dot, wrapped
 }
 
-type hoverHintOverlay struct {
-	widget.BaseWidget
-	onEnter func()
-	onLeave func()
+type hintButton struct {
+	widget.Button
+	hint           string
+	onHoverChanged func(target fyne.CanvasObject, hint string, active bool)
 }
 
-func newHoverHintOverlay(onEnter, onLeave func()) *hoverHintOverlay {
-	overlay := &hoverHintOverlay{
-		onEnter: onEnter,
-		onLeave: onLeave,
+func newHintButton(label, hint string, tapped func(), onHoverChanged func(target fyne.CanvasObject, hint string, active bool)) *hintButton {
+	return newHintButtonWithIcon(label, nil, hint, tapped, onHoverChanged)
+}
+
+func newHintButtonWithIcon(label string, icon fyne.Resource, hint string, tapped func(), onHoverChanged func(target fyne.CanvasObject, hint string, active bool)) *hintButton {
+	btn := &hintButton{
+		hint:           strings.TrimSpace(hint),
+		onHoverChanged: onHoverChanged,
 	}
-	overlay.ExtendBaseWidget(overlay)
-	return overlay
+	btn.Text = label
+	btn.Icon = icon
+	btn.OnTapped = tapped
+	btn.ExtendBaseWidget(btn)
+	return btn
 }
 
-func (h *hoverHintOverlay) CreateRenderer() fyne.WidgetRenderer {
-	return widget.NewSimpleRenderer(canvas.NewRectangle(color.Transparent))
-}
-
-func (h *hoverHintOverlay) MouseIn(*desktop.MouseEvent) {
-	if h.onEnter != nil {
-		h.onEnter()
-	}
-}
-
-func (h *hoverHintOverlay) MouseMoved(*desktop.MouseEvent) {}
-
-func (h *hoverHintOverlay) MouseOut() {
-	if h.onLeave != nil {
-		h.onLeave()
+func (b *hintButton) MouseIn(ev *desktop.MouseEvent) {
+	b.Button.MouseIn(ev)
+	if b.onHoverChanged != nil {
+		b.onHoverChanged(b, b.hint, true)
 	}
 }
 
-func withHoverStatusHint(control fyne.CanvasObject, hint string, onHoverChanged func(string)) fyne.CanvasObject {
-	if control == nil || onHoverChanged == nil {
-		return control
+func (b *hintButton) MouseMoved(ev *desktop.MouseEvent) {
+	b.Button.MouseMoved(ev)
+}
+
+func (b *hintButton) MouseOut() {
+	b.Button.MouseOut()
+	if b.onHoverChanged != nil {
+		b.onHoverChanged(b, "", false)
 	}
-	trimmedHint := strings.TrimSpace(hint)
-	if trimmedHint == "" {
-		return control
+}
+
+func themedColor(name fyne.ThemeColorName) color.Color {
+	app := fyne.CurrentApp()
+	if app == nil {
+		return colorIncomingMsg
 	}
-	overlay := newHoverHintOverlay(
-		func() {
-			onHoverChanged(trimmedHint)
-		},
-		func() {
-			onHoverChanged("")
-		},
-	)
-	return container.NewStack(control, overlay)
+	return app.Settings().Theme().Color(name, app.Settings().ThemeVariant())
 }

@@ -77,10 +77,10 @@ type controller struct {
 
 	peerList        *widget.List
 	chatHeader      *widget.Label
-	chatKeyButton   *widget.Button
+	chatKeyButton   *hintButton
 	chatMessagesBox *fyne.Container
 	chatScroll      *container.Scroll
-	messageInput    *widget.Entry
+	messageInput    *messageEntry
 	chatComposer    fyne.CanvasObject
 	statusLabel     *widget.Label
 
@@ -89,6 +89,11 @@ type controller struct {
 	statusMu       sync.RWMutex
 	statusMessage  string
 	hoverHint      string
+	tooltipMu      sync.Mutex
+	tooltipTimer   *time.Timer
+	tooltipPopup   *widget.PopUp
+	tooltipTarget  fyne.CanvasObject
+	tooltipText    string
 
 	activeListenPort int
 }
@@ -346,6 +351,7 @@ func (c *controller) run() error {
 func (c *controller) shutdown() {
 	c.shutdownMu.Do(func() {
 		c.cancel()
+		c.hideTooltip(nil)
 		if c.manager != nil {
 			c.manager.Stop()
 		}
@@ -368,13 +374,11 @@ func (c *controller) buildMainWindow() {
 
 	appTitle := widget.NewLabel("GoSend")
 	appTitle.TextStyle = fyne.TextStyle{Bold: true}
-	settingsBtn := widget.NewButtonWithIcon("", theme.SettingsIcon(), c.showSettingsDialog)
-	refreshBtn := widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() {
+	settingsBtn := newHintButtonWithIcon("", theme.SettingsIcon(), "Open settings", c.showSettingsDialog, c.handleHoverHint)
+	refreshBtn := newHintButtonWithIcon("", theme.ViewRefreshIcon(), "Refresh discovery", func() {
 		go c.refreshDiscovery()
-	})
-	refreshBtnWithHint := withHoverStatusHint(refreshBtn, "Refresh discovery", c.setHoverHint)
-	settingsBtnWithHint := withHoverStatusHint(settingsBtn, "Open settings", c.setHoverHint)
-	toolbar := container.NewHBox(appTitle, layout.NewSpacer(), refreshBtnWithHint, settingsBtnWithHint)
+	}, c.handleHoverHint)
+	toolbar := container.NewHBox(appTitle, layout.NewSpacer(), refreshBtn, settingsBtn)
 
 	c.statusLabel = widget.NewLabel("Starting...")
 	c.statusLabel.Importance = widget.LowImportance
@@ -418,6 +422,102 @@ func (c *controller) setHoverHint(message string) {
 		labelText = hoverHint
 	}
 	c.applyStatusLabel(labelText)
+}
+
+func (c *controller) handleHoverHint(target fyne.CanvasObject, hint string, active bool) {
+	if !active {
+		c.setHoverHint("")
+		c.hideTooltip(target)
+		return
+	}
+
+	trimmedHint := strings.TrimSpace(hint)
+	if target == nil || trimmedHint == "" {
+		c.setHoverHint("")
+		c.hideTooltip(target)
+		return
+	}
+	c.setHoverHint(trimmedHint)
+	c.scheduleTooltip(target, trimmedHint)
+}
+
+func (c *controller) scheduleTooltip(target fyne.CanvasObject, hint string) {
+	c.tooltipMu.Lock()
+	if c.tooltipTimer != nil {
+		c.tooltipTimer.Stop()
+		c.tooltipTimer = nil
+	}
+	if c.tooltipPopup != nil {
+		c.tooltipPopup.Hide()
+		c.tooltipPopup = nil
+	}
+	c.tooltipTarget = target
+	c.tooltipText = hint
+	c.tooltipTimer = time.AfterFunc(450*time.Millisecond, func() {
+		c.showTooltip(target, hint)
+	})
+	c.tooltipMu.Unlock()
+}
+
+func (c *controller) showTooltip(target fyne.CanvasObject, hint string) {
+	fyne.Do(func() {
+		c.tooltipMu.Lock()
+		if c.tooltipTarget != target || c.tooltipText != hint {
+			c.tooltipMu.Unlock()
+			return
+		}
+		c.tooltipTimer = nil
+		c.tooltipMu.Unlock()
+
+		if target == nil || strings.TrimSpace(hint) == "" {
+			return
+		}
+		canvas := c.app.Driver().CanvasForObject(target)
+		if canvas == nil {
+			return
+		}
+
+		label := widget.NewLabel(hint)
+		label.Wrapping = fyne.TextWrapWord
+		content := newRoundedBg(themedColor(theme.ColorNameInputBackground), 8, label)
+		popup := widget.NewPopUp(content, canvas)
+		popup.ShowAtRelativePosition(fyne.NewPos(target.Size().Width+6, 0), target)
+
+		c.tooltipMu.Lock()
+		if c.tooltipTarget != target || c.tooltipText != hint {
+			c.tooltipMu.Unlock()
+			popup.Hide()
+			return
+		}
+		if c.tooltipPopup != nil {
+			c.tooltipPopup.Hide()
+		}
+		c.tooltipPopup = popup
+		c.tooltipMu.Unlock()
+	})
+}
+
+func (c *controller) hideTooltip(target fyne.CanvasObject) {
+	var popup *widget.PopUp
+
+	c.tooltipMu.Lock()
+	if c.tooltipTimer != nil {
+		c.tooltipTimer.Stop()
+		c.tooltipTimer = nil
+	}
+	if target == nil || c.tooltipTarget == target {
+		popup = c.tooltipPopup
+		c.tooltipPopup = nil
+		c.tooltipTarget = nil
+		c.tooltipText = ""
+	}
+	c.tooltipMu.Unlock()
+
+	if popup != nil {
+		fyne.Do(func() {
+			popup.Hide()
+		})
+	}
 }
 
 func (c *controller) applyStatusLabel(message string) {

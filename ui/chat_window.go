@@ -12,6 +12,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -36,13 +37,64 @@ type chatFileEntry struct {
 	TransferCompleted bool
 }
 
+type messageEntry struct {
+	widget.Entry
+	shiftDown bool
+	onSend    func()
+}
+
+func newMessageEntry(onSend func()) *messageEntry {
+	entry := &messageEntry{
+		onSend: onSend,
+	}
+	entry.MultiLine = true
+	entry.ExtendBaseWidget(entry)
+	return entry
+}
+
+func (e *messageEntry) KeyDown(key *fyne.KeyEvent) {
+	e.Entry.KeyDown(key)
+	if key == nil {
+		return
+	}
+	if key.Name == desktop.KeyShiftLeft || key.Name == desktop.KeyShiftRight {
+		e.shiftDown = true
+	}
+}
+
+func (e *messageEntry) KeyUp(key *fyne.KeyEvent) {
+	e.Entry.KeyUp(key)
+	if key == nil {
+		return
+	}
+	if key.Name == desktop.KeyShiftLeft || key.Name == desktop.KeyShiftRight {
+		e.shiftDown = false
+	}
+}
+
+func (e *messageEntry) TypedKey(key *fyne.KeyEvent) {
+	if key == nil {
+		return
+	}
+	if key.Name == fyne.KeyReturn || key.Name == fyne.KeyEnter {
+		if e.shiftDown {
+			e.Entry.TypedKey(key)
+			return
+		}
+		if e.onSend != nil {
+			e.onSend()
+		}
+		return
+	}
+	e.Entry.TypedKey(key)
+}
+
 func (c *controller) buildChatPane() fyne.CanvasObject {
 	c.chatHeader = widget.NewLabel("Select a peer to start chatting")
 	c.chatHeader.TextStyle = fyne.TextStyle{Bold: true}
-	c.chatKeyButton = widget.NewButtonWithIcon("", theme.InfoIcon(), c.showSelectedPeerFingerprint)
+	c.chatKeyButton = newHintButtonWithIcon("", theme.InfoIcon(), "View selected peer fingerprint", c.showSelectedPeerFingerprint, c.handleHoverHint)
 	c.chatKeyButton.Disable()
-	peerInfoBtnWithHint := withHoverStatusHint(c.chatKeyButton, "View selected peer fingerprint", c.setHoverHint)
-	header := container.NewBorder(nil, nil, nil, peerInfoBtnWithHint, c.chatHeader)
+	header := container.NewBorder(nil, nil, nil, c.chatKeyButton, c.chatHeader)
 
 	emptyLabel := widget.NewLabel("No messages yet")
 	emptyLabel.Alignment = fyne.TextAlignCenter
@@ -50,17 +102,15 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 	c.chatMessagesBox = container.NewVBox(emptyLabel)
 	c.chatScroll = container.NewVScroll(c.chatMessagesBox)
 
-	c.messageInput = widget.NewMultiLineEntry()
+	c.messageInput = newMessageEntry(c.sendCurrentMessage)
 	c.messageInput.SetPlaceHolder("Type a message...")
 	c.messageInput.Wrapping = fyne.TextWrapWord
 	c.messageInput.SetMinRowsVisible(2)
 
-	attachBtn := widget.NewButtonWithIcon("", theme.MailAttachmentIcon(), c.attachFileToCurrentPeer)
-	sendBtn := widget.NewButton("Send", c.sendCurrentMessage)
+	attachBtn := newHintButtonWithIcon("", theme.MailAttachmentIcon(), "Attach file", c.attachFileToCurrentPeer, c.handleHoverHint)
+	sendBtn := newHintButton("Send", "Send message", c.sendCurrentMessage, c.handleHoverHint)
 	sendBtn.Importance = widget.HighImportance
-	sendBtnWithHint := withHoverStatusHint(sendBtn, "Send message", c.setHoverHint)
-	attachBtnWithHint := withHoverStatusHint(attachBtn, "Attach file", c.setHoverHint)
-	controls := container.NewVBox(sendBtnWithHint, attachBtnWithHint)
+	controls := container.NewVBox(sendBtn, attachBtn)
 	inputPane := container.NewBorder(nil, nil, nil, container.NewPadded(controls), c.messageInput)
 	c.chatComposer = container.NewPadded(inputPane)
 	c.chatComposer.Hide()
