@@ -58,6 +58,7 @@ func TestPeerScannerBackgroundPollingAndRemovalEvent(t *testing.T) {
 		SelfDeviceID:    "self-device",
 		RefreshInterval: 40 * time.Millisecond,
 		ScanTimeout:     25 * time.Millisecond,
+		PeerStaleAfter:  80 * time.Millisecond,
 		browseFn: func(ctx context.Context, service, domain string, entries chan<- *zeroconf.ServiceEntry) error {
 			call := atomic.AddInt32(&browseCalls, 1)
 			if call == 1 {
@@ -88,6 +89,37 @@ func TestPeerScannerBackgroundPollingAndRemovalEvent(t *testing.T) {
 	if !waitForEvent(scanner.Events(), EventPeerRemoved, "peer-1", 2*time.Second) {
 		t.Fatalf("expected peer removal event for peer-1")
 	}
+}
+
+func TestPeerScannerRefreshIgnoresDeadlineExceededFromBrowse(t *testing.T) {
+	cfg := Config{
+		SelfDeviceID:    "self-device",
+		RefreshInterval: time.Hour,
+		ScanTimeout:     35 * time.Millisecond,
+		browseFn: func(ctx context.Context, service, domain string, entries chan<- *zeroconf.ServiceEntry) error {
+			entries <- testServiceEntry("peer-1", "Bob", 9998, "10.0.0.2")
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+
+	scanner, err := NewPeerScanner(cfg)
+	if err != nil {
+		t.Fatalf("NewPeerScanner failed: %v", err)
+	}
+	if err := scanner.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer scanner.Stop()
+
+	if err := scanner.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh failed: %v", err)
+	}
+
+	waitForCondition(t, time.Second, func() bool {
+		peers := scanner.ListPeers()
+		return len(peers) == 1 && peers[0].DeviceID == "peer-1"
+	})
 }
 
 func testServiceEntry(deviceID, instance string, port int, ip string) *zeroconf.ServiceEntry {

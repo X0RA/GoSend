@@ -3,7 +3,7 @@
 # P2P Chat — Implementation Checklist
 
 ## overview
-- `main.go`: App entrypoint; loads config/keys, opens SQLite, starts discovery broadcast+scan, streams discovery events, and handles graceful shutdown.
+- `main.go`: GUI app entrypoint; loads config/keys, opens SQLite, builds local identity, and launches the Phase 9 Fyne runtime.
 - `tools.go`: Build-tagged imports that keep planned dependencies (`fyne`, `zeroconf`, `go-sqlite3`) pinned in `go.mod`.
 - `go.mod`: Go module definition and direct/indirect dependency versions.
 - `go.sum`: Dependency checksum lock file.
@@ -33,7 +33,7 @@
 - `network/messaging_test.go`: Integration tests for delivered-ack updates, offline queue drain after reconnect, duplicate message replay rejection, out-of-sequence rejection, and tampered-signature rejection.
 - `network/file_transfer_test.go`: Integration tests for accepted transfers, reject flow, reconnect resume, and checksum mismatch failure handling.
 - `discovery/mdns.go`: mDNS broadcaster setup plus combined discovery service startup/shutdown orchestration.
-- `discovery/peer_scanner.go`: Background peer scanner with self-filtering, in-memory peer list, event channel, and manual refresh support.
+- `discovery/peer_scanner.go`: Background peer scanner with self-filtering, in-memory peer list, peer-aging to avoid transient dropouts, per-scan resolver lifecycle, event channel, and manual refresh support.
 - `discovery/mdns_test.go`: Tests broadcaster TXT record generation and service startup/shutdown wiring.
 - `discovery/peer_scanner_test.go`: Tests self-filtering, manual refresh updates, background polling, and peer removal events.
 - `storage/types.go`: Shared storage types, status constants, validation helpers, null conversion helpers, and common errors.
@@ -45,6 +45,10 @@
 - `storage/messages_test.go`: Message CRUD tests including delivery status updates, message lookup by ID, and queue-pruning behavior.
 - `storage/files.go`: File metadata CRUD methods (`SaveFileMetadata`, `UpdateTransferStatus`, `GetFileByID`) with nullable ID/peer fields for flexible transfer lifecycle persistence.
 - `storage/files_test.go`: File metadata CRUD tests.
+- `ui/main_window.go`: GUI runtime controller; window shell, service lifecycle (discovery + peer manager), background event loops, and thread-safe dialog prompts for peer add/file accept/key change.
+- `ui/peers_list.go`: Left-pane peers list with online/offline indicators and selection, plus the discovery/add dialog (`Add`, `Refresh`, `Close`).
+- `ui/chat_window.go`: Per-peer chat view; message timeline (left/right alignment, timestamps, delivery marks), multiline input/send, attachment flow, and file transfer progress rendering.
+- `ui/settings.go`: Settings dialog for device name, fingerprint visibility, listening port, and key reset workflow.
 - `ui/file_handler.go`: UI-facing file picker and transfer progress tracking helper.
 - `storage/seen_ids.go`: Replay-protection ID methods (`InsertSeenID`, `HasSeenID`, `PruneOldEntries`).
 - `storage/seen_ids_test.go`: Seen-message ID insert/check/prune tests.
@@ -158,6 +162,15 @@
 ### Phase 5 Verification
 - `go test ./...` passes, including discovery tests for TXT record publishing, self-filtering, polling updates, and manual refresh.
 - `go vet ./...` passes.
+- Manual refresh no longer treats expected scan timeout windows as errors; peers are retained across transient missed scans until stale.
+
+### Discovery Stability Retrospective
+- **Observed issue:** Peers were discovered at startup, then disappeared after ~1 minute; manual refresh often reported `context deadline exceeded` and did not rediscover peers.
+- **Root cause 1:** The scanner reused a single `zeroconf.Resolver` across scans. After a scan context ended, resolver internals were effectively closed, so later scans became unreliable.
+- **Root cause 2:** `PeerStaleAfter` defaulting used TTL before the TTL default was set, causing peers to age out too quickly in real usage.
+- **Fix 1:** Use a fresh resolver per scan (`discovery/peer_scanner.go`), and keep refresh handling tolerant of normal scan-window timeout/cancel behavior.
+- **Fix 2:** Set TTL defaults before stale-time calculation (`discovery/mdns.go`), and compute stale retention from TTL/refresh interval to avoid transient dropouts.
+- **Result:** Discovery remains stable over time, and refresh is reliable instead of becoming startup-only.
 
 ## Phase 6: Peer Management
 - [x] Implement `peer_add_request` send (initiator side)
@@ -232,27 +245,32 @@
 - `go vet ./...` passes.
 
 ## Phase 9: GUI
-- [ ] Implement main window split layout (peer list left, chat view right, toolbar top)
-- [ ] Implement peer list with online/offline indicators (● / ○)
-- [ ] Implement peer list click to open chat view
-- [ ] Implement "Add Peer" button
-- [ ] Implement peer discovery dialog (available peers list, Add/Refresh/Close)
-- [ ] Implement chat message list with left/right alignment
-- [ ] Implement message timestamps
-- [ ] Implement delivery status indicators (✓ sent, ✓✓ delivered, ✗ failed)
-- [ ] Implement text input field (multiline)
-- [ ] Implement send button
-- [ ] Implement file attach button (📎) wired to file picker
-- [ ] Implement file message display (filename, size, download)
-- [ ] Implement file transfer progress bar in chat
-- [ ] Implement file transfer accept/reject dialog
-- [ ] Implement settings screen (device name, fingerprint, port, reset keys)
-- [ ] Implement per-peer fingerprint display (🔑 button in chat header)
-- [ ] Implement key change warning dialog (show old/new fingerprint, Trust/Disconnect)
-- [ ] Implement peer add request notification/prompt
-- [ ] Wire all UI callbacks to network/storage layers
-- [ ] Handle threading: network events → UI updates via Fyne thread-safe methods
+- [x] Implement main window split layout (peer list left, chat view right, toolbar top)
+- [x] Implement peer list with online/offline indicators (● / ○)
+- [x] Implement peer list click to open chat view
+- [x] Implement "Add Peer" button
+- [x] Implement peer discovery dialog (available peers list, Add/Refresh/Close)
+- [x] Implement chat message list with left/right alignment
+- [x] Implement message timestamps
+- [x] Implement delivery status indicators (✓ sent, ✓✓ delivered, ✗ failed)
+- [x] Implement text input field (multiline)
+- [x] Implement send button
+- [x] Implement file attach button (📎) wired to file picker
+- [x] Implement file message display (filename, size, download)
+- [x] Implement file transfer progress bar in chat
+- [x] Implement file transfer accept/reject dialog
+- [x] Implement settings screen (device name, fingerprint, port, reset keys)
+- [x] Implement per-peer fingerprint display (🔑 button in chat header)
+- [x] Implement key change warning dialog (show old/new fingerprint, Trust/Disconnect)
+- [x] Implement peer add request notification/prompt
+- [x] Wire all UI callbacks to network/storage layers
+- [x] Handle threading: network events → UI updates via Fyne thread-safe methods
 - [ ] Full manual walkthrough: launch → discover → add → chat → send file → settings → restart → reconnect → verify fingerprints
+
+### Phase 9 Verification
+- `go test ./...` passes with the new GUI package compiled.
+- `GOCACHE=/tmp/go-build go vet ./...` passes.
+- Full GUI walkthrough remains manual (to be validated interactively across two app instances).
 
 ## Phase 10: Polish & Hardening
 - [ ] Add structured logging (connection events, errors, crypto failures)

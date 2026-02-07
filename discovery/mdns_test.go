@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/grandcat/zeroconf"
 )
@@ -81,6 +82,20 @@ func TestServiceStartAndStop(t *testing.T) {
 		t.Fatalf("expected broadcaster and scanner")
 	}
 	svc.Stop()
+}
+
+func TestConfigWithDefaultsSetsPeerStaleAfterFromTTL(t *testing.T) {
+	cfg := Config{
+		RefreshInterval: 10 * time.Second,
+	}
+
+	withDefaults := cfg.withDefaults()
+	if withDefaults.TTL != DefaultTTL {
+		t.Fatalf("expected default TTL %d, got %d", DefaultTTL, withDefaults.TTL)
+	}
+	if withDefaults.PeerStaleAfter < 2*time.Duration(DefaultTTL)*time.Second {
+		t.Fatalf("expected peer stale timeout to be >= 2*TTL, got %s", withDefaults.PeerStaleAfter)
+	}
 }
 
 func assertContainsTXT(t *testing.T, txt []string, expected string) {
