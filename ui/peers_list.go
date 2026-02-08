@@ -186,7 +186,8 @@ func (c *controller) showDiscoveryDialog() {
 			status := canvas.NewText("Online", colorMuted)
 			status.TextSize = 11
 			info := container.NewVBox(name, status)
-			addBtn := newRoundedButton("Add", nil, 10, colorButtonFill, colorButtonMuted, nil)
+			addBtn := widget.NewButton("Add", nil)
+			addBtn.Importance = widget.HighImportance
 			// Border(nil, nil, left, right, center): Objects = [center, left, right]
 			return container.NewBorder(nil, nil, container.NewCenter(dotBox), addBtn, info)
 		},
@@ -203,7 +204,7 @@ func (c *controller) showDiscoveryDialog() {
 			dotCenter := row.Objects[1].(*fyne.Container)
 			dotBox := dotCenter.Objects[0].(*fyne.Container)
 			dot := dotBox.Objects[0].(*canvas.Circle)
-			addBtn := row.Objects[2].(*roundedButton)
+			addBtn := row.Objects[2].(*widget.Button)
 
 			peer := c.discoveryPeerByIndex(int(id))
 			if peer == nil {
@@ -211,7 +212,7 @@ func (c *controller) showDiscoveryDialog() {
 				statusText.Text = ""
 				statusText.Refresh()
 				addBtn.Disable()
-				addBtn.SetOnTapped(nil)
+				addBtn.OnTapped = nil
 				return
 			}
 
@@ -231,14 +232,14 @@ func (c *controller) showDiscoveryDialog() {
 			if c.isKnownPeer(peer.DeviceID) {
 				addBtn.SetText("Added")
 				addBtn.Disable()
-				addBtn.SetOnTapped(nil)
+				addBtn.OnTapped = nil
 			} else {
 				addBtn.SetText("Add")
 				addBtn.Enable()
 				peerCopy := *peer
-				addBtn.SetOnTapped(func() {
+				addBtn.OnTapped = func() {
 					go c.addDiscoveredPeer(peerCopy)
-				})
+				}
 			}
 			addBtn.Refresh()
 		},

@@ -1,4 +1,4 @@
-.PHONY: build test_non_ui run_tests run_client_a run_client_b
+.PHONY: build test_non_ui run_tests run_client_a run_client_b run_clients
 
 build:
 	mkdir -p ./bin
@@ -17,3 +17,7 @@ run_client_a: build
 
 run_client_b:
 	P2P_CHAT_DATA_DIR=/tmp/gosend-b ./bin/gosend
+
+run_clients: build
+	rm -rf /tmp/gosend-*
+	(P2P_CHAT_DATA_DIR=/tmp/gosend-a ./bin/gosend & P2P_CHAT_DATA_DIR=/tmp/gosend-b ./bin/gosend & wait)
