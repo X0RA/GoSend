@@ -85,6 +85,8 @@ type controller struct {
 	peerSettingsBtn *hintButton
 	chatMessagesBox *fyne.Container
 	chatScroll      *container.Scroll
+	chatDropArea    fyne.CanvasObject
+	chatDropOverlay *fyne.Container
 	messageInput    *messageEntry
 	chatComposer    fyne.CanvasObject
 	statusLabel     *widget.Label
@@ -166,6 +168,7 @@ func newController(app fyne.App, options RunOptions) (*controller, error) {
 	ctrl.window.Resize(fyne.NewSize(1200, 760))
 
 	ctrl.buildMainWindow()
+	ctrl.window.SetOnDropped(ctrl.handleWindowDropped)
 
 	if err := ctrl.startServices(); err != nil {
 		ctrl.shutdown()
@@ -387,11 +390,12 @@ func (c *controller) buildMainWindow() {
 
 	appTitle := widget.NewLabel("GoSend")
 	appTitle.TextStyle = fyne.TextStyle{Bold: true}
+	queueBtn := newHintButtonWithIcon("", theme.HistoryIcon(), "Transfer queue", c.showTransferQueuePanel, c.handleHoverHint)
 	settingsBtn := newHintButtonWithIcon("", theme.SettingsIcon(), "Open settings", c.showSettingsDialog, c.handleHoverHint)
 	refreshBtn := newHintButtonWithIcon("", theme.ViewRefreshIcon(), "Refresh discovery", func() {
 		go c.refreshDiscovery()
 	}, c.handleHoverHint)
-	toolbar := container.NewHBox(appTitle, layout.NewSpacer(), refreshBtn, settingsBtn)
+	toolbar := container.NewHBox(appTitle, layout.NewSpacer(), queueBtn, refreshBtn, settingsBtn)
 
 	c.statusLabel = widget.NewLabel("Starting...")
 	c.statusLabel.Importance = widget.LowImportance
@@ -402,6 +406,240 @@ func (c *controller) buildMainWindow() {
 		nil, nil, split,
 	)
 	c.window.SetContent(content)
+}
+
+func (c *controller) handleWindowDropped(position fyne.Position, items []fyne.URI) {
+	if len(items) == 0 {
+		return
+	}
+	if !c.isDropInsideChatArea(position) {
+		return
+	}
+
+	peerID := c.currentSelectedPeerID()
+	if peerID == "" {
+		c.setStatus("Select a peer before dropping files")
+		return
+	}
+
+	paths := make([]string, 0, len(items))
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		path := strings.TrimSpace(item.Path())
+		if path == "" {
+			continue
+		}
+		paths = append(paths, path)
+	}
+	if len(paths) == 0 {
+		return
+	}
+
+	c.flashChatDropIndicator()
+	go c.queuePathsForPeer(peerID, paths)
+}
+
+func (c *controller) isDropInsideChatArea(position fyne.Position) bool {
+	target := c.chatDropArea
+	if target == nil {
+		return false
+	}
+	abs := c.app.Driver().AbsolutePositionForObject(target)
+	size := target.Size()
+	if size.Width <= 0 || size.Height <= 0 {
+		return false
+	}
+	if position.X < abs.X || position.Y < abs.Y {
+		return false
+	}
+	if position.X > abs.X+size.Width || position.Y > abs.Y+size.Height {
+		return false
+	}
+	return true
+}
+
+func (c *controller) flashChatDropIndicator() {
+	fyne.Do(func() {
+		if c.chatDropOverlay == nil {
+			return
+		}
+		c.chatDropOverlay.Show()
+		c.chatDropOverlay.Refresh()
+	})
+	time.AfterFunc(1200*time.Millisecond, func() {
+		fyne.Do(func() {
+			if c.chatDropOverlay != nil {
+				c.chatDropOverlay.Hide()
+				c.chatDropOverlay.Refresh()
+			}
+		})
+	})
+}
+
+func (c *controller) showTransferQueuePanel() {
+	content := container.NewVBox()
+	scroll := container.NewVScroll(content)
+	scroll.SetMinSize(fyne.NewSize(780, 420))
+
+	render := func() {
+		entries := c.transferQueueEntriesSnapshot()
+		fyne.Do(func() {
+			content.RemoveAll()
+			if len(entries) == 0 {
+				empty := widget.NewLabel("No active or queued transfers")
+				empty.Importance = widget.LowImportance
+				content.Add(container.NewPadded(empty))
+				content.Refresh()
+				return
+			}
+
+			currentPeer := ""
+			for _, entry := range entries {
+				if entry.PeerDeviceID != currentPeer {
+					currentPeer = entry.PeerDeviceID
+					header := widget.NewLabel(c.transferPeerName(entry.PeerDeviceID))
+					header.TextStyle = fyne.TextStyle{Bold: true}
+					content.Add(container.NewPadded(header))
+				}
+				content.Add(c.renderTransferQueueRow(entry))
+			}
+			content.Refresh()
+		})
+	}
+
+	render()
+
+	clearBtn := widget.NewButton("Clear Completed", func() {
+		c.clearCompletedTransfers()
+		render()
+	})
+	panel := container.NewBorder(nil, container.NewPadded(clearBtn), nil, nil, scroll)
+	dlg := dialog.NewCustom("Transfer Queue", "Close", panel, c.window)
+
+	stop := make(chan struct{})
+	dlg.SetOnClosed(func() {
+		close(stop)
+	})
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-c.ctx.Done():
+				return
+			case <-stop:
+				return
+			case <-ticker.C:
+				render()
+			}
+		}
+	}()
+
+	dlg.Show()
+}
+
+func (c *controller) transferPeerName(peerDeviceID string) string {
+	if peer := c.peerByID(peerDeviceID); peer != nil {
+		name := c.peerDisplayName(peer)
+		if strings.TrimSpace(name) != "" {
+			return name
+		}
+		if strings.TrimSpace(peer.DeviceName) != "" {
+			return peer.DeviceName
+		}
+	}
+	if strings.TrimSpace(peerDeviceID) != "" {
+		return peerDeviceID
+	}
+	return "Unknown Peer"
+}
+
+func (c *controller) transferQueueEntriesSnapshot() []chatFileEntry {
+	now := time.Now().UnixMilli()
+	c.chatMu.RLock()
+	entries := make([]chatFileEntry, 0, len(c.fileTransfers))
+	for _, entry := range c.fileTransfers {
+		terminal := strings.EqualFold(entry.Status, "complete") || strings.EqualFold(entry.Status, "failed") || strings.EqualFold(entry.Status, "rejected")
+		if terminal {
+			completedAt := entry.CompletedAt
+			if completedAt == 0 {
+				completedAt = entry.AddedAt
+			}
+			if completedAt > 0 && now-completedAt > int64(30*time.Second/time.Millisecond) {
+				continue
+			}
+		}
+		entries = append(entries, entry)
+	}
+	c.chatMu.RUnlock()
+
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].PeerDeviceID != entries[j].PeerDeviceID {
+			return entries[i].PeerDeviceID < entries[j].PeerDeviceID
+		}
+		if entries[i].AddedAt == entries[j].AddedAt {
+			return entries[i].FileID < entries[j].FileID
+		}
+		return entries[i].AddedAt < entries[j].AddedAt
+	})
+	return entries
+}
+
+func (c *controller) renderTransferQueueRow(entry chatFileEntry) fyne.CanvasObject {
+	direction := "Receiving"
+	if strings.EqualFold(entry.Direction, "send") {
+		direction = "Sending"
+	}
+	status := fileTransferStatusText(entry)
+	if entry.TransferCompleted && strings.EqualFold(entry.Status, "complete") {
+		status = "Complete"
+	}
+	progressPercent := "--"
+	if entry.TotalBytes > 0 {
+		progressPercent = fmt.Sprintf("%.0f%%", float64(entry.BytesTransferred)*100/float64(entry.TotalBytes))
+	}
+	speedLabel := "--"
+	if entry.SpeedBytesPerSec > 0 && !entry.TransferCompleted {
+		speedLabel = fmt.Sprintf("%s/s", formatBytes(int64(entry.SpeedBytesPerSec)))
+	}
+	etaLabel := "--"
+	if entry.ETASeconds > 0 && !entry.TransferCompleted {
+		etaLabel = (time.Duration(entry.ETASeconds) * time.Second).Round(time.Second).String()
+	}
+
+	title := widget.NewLabel(fmt.Sprintf("%s (%s)", valueOrDefault(entry.Filename, entry.FileID), direction))
+	title.TextStyle = fyne.TextStyle{Bold: true}
+	meta := widget.NewLabel(fmt.Sprintf("%s · %s · %s · ETA %s", status, progressPercent, speedLabel, etaLabel))
+	meta.Importance = widget.LowImportance
+
+	rowItems := []fyne.CanvasObject{title, meta}
+	if !entry.TransferCompleted && (strings.EqualFold(entry.Status, "pending") || strings.EqualFold(entry.Status, "accepted")) {
+		cancelBtn := widget.NewButton("Cancel", func() {
+			c.cancelTransferFromUI(entry.FileID)
+		})
+		cancelBtn.Importance = widget.DangerImportance
+		rowItems = append(rowItems, cancelBtn)
+	}
+	if (strings.EqualFold(entry.Status, "failed") || strings.EqualFold(entry.Status, "rejected")) && strings.EqualFold(entry.Direction, "send") {
+		retryBtn := widget.NewButton("Retry", func() {
+			c.retryTransferFromUI(entry.FileID)
+		})
+		rowItems = append(rowItems, retryBtn)
+	}
+	return container.NewPadded(newRoundedBg(colorDialogPanel, 8, container.NewVBox(rowItems...)))
+}
+
+func (c *controller) clearCompletedTransfers() {
+	c.chatMu.Lock()
+	for fileID, entry := range c.fileTransfers {
+		if strings.EqualFold(entry.Status, "complete") && entry.TransferCompleted {
+			delete(c.fileTransfers, fileID)
+		}
+	}
+	c.chatMu.Unlock()
+	c.refreshChatView()
 }
 
 func (c *controller) setStatus(message string) {
@@ -800,7 +1038,35 @@ func (c *controller) promptKeyChangeDecision(peerDeviceID, existingPublicKeyBase
 	}
 }
 
-func (c *controller) pickFilePath() (string, error) {
+func (c *controller) pickFilePath() ([]string, error) {
+	path, err := c.pickSingleFilePath()
+	if err != nil {
+		return nil, err
+	}
+
+	paths := []string{path}
+	for {
+		addAnother, promptErr := c.promptAddAnotherFile()
+		if promptErr != nil {
+			return paths, promptErr
+		}
+		if !addAnother {
+			break
+		}
+		nextPath, pickErr := c.pickSingleFilePath()
+		if pickErr != nil {
+			if errors.Is(pickErr, errFilePickerCancelled) {
+				break
+			}
+			return paths, pickErr
+		}
+		paths = append(paths, nextPath)
+	}
+
+	return paths, nil
+}
+
+func (c *controller) pickSingleFilePath() (string, error) {
 	type pickResult struct {
 		path string
 		err  error
@@ -833,6 +1099,30 @@ func (c *controller) pickFilePath() (string, error) {
 		return "", errors.New("application is shutting down")
 	case picked := <-result:
 		return picked.path, picked.err
+	}
+}
+
+func (c *controller) promptAddAnotherFile() (bool, error) {
+	type promptResult struct {
+		add bool
+		err error
+	}
+	result := make(chan promptResult, 1)
+
+	fyne.Do(func() {
+		dlg := dialog.NewConfirm("Add More Files", "Add another file to this transfer queue?", func(add bool) {
+			result <- promptResult{add: add}
+		}, c.window)
+		dlg.SetConfirmText("Add Another")
+		dlg.SetDismissText("Done")
+		dlg.Show()
+	})
+
+	select {
+	case <-c.ctx.Done():
+		return false, errors.New("application is shutting down")
+	case prompted := <-result:
+		return prompted.add, prompted.err
 	}
 }
 

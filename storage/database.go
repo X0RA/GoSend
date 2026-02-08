@@ -139,6 +139,29 @@ CREATE TABLE IF NOT EXISTS transfer_checkpoints (
 CREATE INDEX IF NOT EXISTS idx_transfer_checkpoints_updated_at
 ON transfer_checkpoints (updated_at DESC, file_id, direction);
 `,
+	`
+ALTER TABLE files ADD COLUMN folder_id TEXT;
+`,
+	`
+ALTER TABLE files ADD COLUMN relative_path TEXT;
+`,
+	`
+CREATE TABLE IF NOT EXISTS folder_transfers (
+  folder_id        TEXT PRIMARY KEY,
+  from_device_id   TEXT,
+  to_device_id     TEXT,
+  folder_name      TEXT NOT NULL,
+  root_path        TEXT NOT NULL,
+  total_files      INTEGER NOT NULL,
+  total_size       INTEGER NOT NULL,
+  transfer_status  TEXT NOT NULL CHECK(transfer_status IN ('pending','accepted','rejected','complete','failed')) DEFAULT 'pending',
+  timestamp        INTEGER NOT NULL
+);
+`,
+	`
+CREATE INDEX IF NOT EXISTS idx_folder_transfers_peer_time
+ON folder_transfers (to_device_id, from_device_id, timestamp DESC, folder_id);
+`,
 }
 
 // Store is a thin wrapper around a SQLite connection.

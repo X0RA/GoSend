@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,6 +25,8 @@ import (
 
 type chatFileEntry struct {
 	FileID            string
+	FolderID          string
+	RelativePath      string
 	PeerDeviceID      string
 	Direction         string
 	Filename          string
@@ -33,7 +36,10 @@ type chatFileEntry struct {
 	AddedAt           int64
 	BytesTransferred  int64
 	TotalBytes        int64
+	SpeedBytesPerSec  float64
+	ETASeconds        int64
 	Status            string
+	CompletedAt       int64
 	TransferCompleted bool
 }
 
@@ -102,6 +108,7 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 	emptyLabel.Importance = widget.LowImportance
 	c.chatMessagesBox = container.NewVBox(emptyLabel)
 	c.chatScroll = container.NewVScroll(c.chatMessagesBox)
+	c.chatDropArea = c.chatScroll
 
 	c.messageInput = newMessageEntry(c.sendCurrentMessage)
 	c.messageInput.SetPlaceHolder("Type a message...")
@@ -116,11 +123,21 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 	c.chatComposer = container.NewPadded(inputPane)
 	c.chatComposer.Hide()
 
-	return container.NewBorder(
+	base := container.NewBorder(
 		container.NewVBox(header, widget.NewSeparator()),
 		container.NewVBox(widget.NewSeparator(), c.chatComposer),
 		nil, nil, c.chatScroll,
 	)
+
+	dropBg := canvas.NewRectangle(color.NRGBA{R: 76, G: 175, B: 80, A: 36})
+	dropBg.StrokeColor = colorOnline
+	dropBg.StrokeWidth = 2
+	dropText := canvas.NewText("Drop files or folders here", colorOnline)
+	dropText.TextStyle = fyne.TextStyle{Bold: true}
+	c.chatDropOverlay = container.NewStack(dropBg, container.NewCenter(dropText))
+	c.chatDropOverlay.Hide()
+
+	return container.NewStack(base, c.chatDropOverlay)
 }
 
 func (c *controller) updateChatHeader() {
@@ -205,43 +222,172 @@ func (c *controller) attachFileToCurrentPeer() {
 	}
 
 	go func() {
-		path, err := c.fileHandler.PickFile()
+		paths, err := c.fileHandler.PickPaths()
 		if err != nil {
 			if err != errFilePickerCancelled {
 				c.setStatus(fmt.Sprintf("Pick file failed: %v", err))
 			}
 			return
 		}
+		if len(paths) == 0 {
+			return
+		}
+		c.queuePathsForPeer(peerID, paths)
+	}()
+}
+
+func (c *controller) queuePathsForPeer(peerID string, paths []string) {
+	if strings.TrimSpace(peerID) == "" {
+		return
+	}
+
+	queuedFiles := 0
+	queuedFolders := 0
+	for _, rawPath := range paths {
+		path := strings.TrimSpace(rawPath)
+		if path == "" {
+			continue
+		}
 
 		info, err := os.Stat(path)
 		if err != nil {
-			c.setStatus(fmt.Sprintf("Read file failed: %v", err))
-			return
-		}
-		if info.IsDir() {
-			c.setStatus("Cannot send a directory")
-			return
+			c.setStatus(fmt.Sprintf("Read path failed: %v", err))
+			continue
 		}
 
-		fileID, err := c.manager.SendFile(peerID, path)
-		if err != nil {
-			c.setStatus(fmt.Sprintf("Send file failed: %v", err))
-			return
+		if info.IsDir() {
+			folderID, fileIDs, sendErr := c.manager.SendFolder(peerID, path)
+			if sendErr != nil {
+				c.setStatus(fmt.Sprintf("Send folder failed: %v", sendErr))
+				continue
+			}
+			queuedFolders++
+			if len(fileIDs) == 0 {
+				c.setStatus(fmt.Sprintf("Folder accepted with no files to transfer: %s", filepath.Base(path)))
+				continue
+			}
+
+			for _, fileID := range fileIDs {
+				meta, metaErr := c.store.GetFileByID(fileID)
+				if metaErr != nil {
+					continue
+				}
+				c.upsertFileTransfer(chatFileEntry{
+					FileID:           fileID,
+					FolderID:         folderID,
+					RelativePath:     meta.RelativePath,
+					PeerDeviceID:     peerID,
+					Direction:        "send",
+					Filename:         meta.Filename,
+					Filesize:         meta.Filesize,
+					StoredPath:       meta.StoredPath,
+					AddedAt:          time.Now().UnixMilli(),
+					Status:           "pending",
+					TotalBytes:       meta.Filesize,
+					BytesTransferred: 0,
+				})
+				queuedFiles++
+			}
+			continue
+		}
+
+		fileID, sendErr := c.manager.SendFile(peerID, path)
+		if sendErr != nil {
+			c.setStatus(fmt.Sprintf("Send file failed: %v", sendErr))
+			continue
 		}
 
 		c.upsertFileTransfer(chatFileEntry{
-			FileID:       fileID,
-			PeerDeviceID: peerID,
-			Direction:    "send",
-			Filename:     filepath.Base(path),
-			Filesize:     info.Size(),
-			StoredPath:   path,
-			AddedAt:      time.Now().UnixMilli(),
-			Status:       "pending",
-			TotalBytes:   info.Size(),
+			FileID:           fileID,
+			PeerDeviceID:     peerID,
+			Direction:        "send",
+			Filename:         filepath.Base(path),
+			Filesize:         info.Size(),
+			StoredPath:       path,
+			AddedAt:          time.Now().UnixMilli(),
+			Status:           "pending",
+			TotalBytes:       info.Size(),
+			BytesTransferred: 0,
 		})
-		c.refreshChatForPeer(peerID)
-		c.setStatus(fmt.Sprintf("File queued: %s", filepath.Base(path)))
+		queuedFiles++
+	}
+
+	c.refreshChatForPeer(peerID)
+	if queuedFolders > 0 {
+		c.setStatus(fmt.Sprintf("Queued %d file(s) from %d folder(s)", queuedFiles, queuedFolders))
+		return
+	}
+	c.setStatus(fmt.Sprintf("Queued %d file(s)", queuedFiles))
+}
+
+func (c *controller) cancelTransferFromUI(fileID string) {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" || c.manager == nil {
+		return
+	}
+
+	fyne.Do(func() {
+		dialog.NewConfirm("Cancel Transfer", "Cancel this transfer?", func(confirm bool) {
+			if !confirm {
+				return
+			}
+			go func() {
+				if err := c.manager.CancelTransfer(fileID); err != nil {
+					c.setStatus(fmt.Sprintf("Cancel transfer failed: %v", err))
+					return
+				}
+				if meta, err := c.store.GetFileByID(fileID); err == nil {
+					peerID := meta.ToDeviceID
+					if meta.FromDeviceID != c.cfg.DeviceID {
+						peerID = meta.FromDeviceID
+					}
+					c.upsertFileTransfer(chatFileEntry{
+						FileID:            fileID,
+						PeerDeviceID:      peerID,
+						Status:            "failed",
+						TransferCompleted: true,
+						CompletedAt:       time.Now().UnixMilli(),
+					})
+					c.refreshChatForPeer(peerID)
+				} else {
+					c.refreshChatView()
+				}
+				c.setStatus("Transfer canceled")
+			}()
+		}, c.window).Show()
+	})
+}
+
+func (c *controller) retryTransferFromUI(fileID string) {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" || c.manager == nil {
+		return
+	}
+
+	go func() {
+		if err := c.manager.RetryTransfer(fileID); err != nil {
+			c.setStatus(fmt.Sprintf("Retry transfer failed: %v", err))
+			return
+		}
+		if meta, err := c.store.GetFileByID(fileID); err == nil {
+			peerID := meta.ToDeviceID
+			if meta.FromDeviceID != c.cfg.DeviceID {
+				peerID = meta.FromDeviceID
+			}
+			c.upsertFileTransfer(chatFileEntry{
+				FileID:            fileID,
+				PeerDeviceID:      peerID,
+				Filename:          meta.Filename,
+				Filesize:          meta.Filesize,
+				StoredPath:        meta.StoredPath,
+				Status:            "pending",
+				TransferCompleted: false,
+			})
+			c.refreshChatForPeer(peerID)
+		} else {
+			c.refreshChatView()
+		}
+		c.setStatus("Transfer re-queued")
 	}()
 }
 
@@ -324,7 +470,7 @@ func (c *controller) renderChatTranscript() {
 				barMap[fileID] = bar
 			}
 		}
-		rows := buildConversationRows(messages, files, c.cfg.DeviceID, c.window, registerBar)
+		rows := buildConversationRows(messages, files, c.cfg.DeviceID, c.window, registerBar, c.cancelTransferFromUI, c.retryTransferFromUI)
 		c.fileProgressBarsMu.Lock()
 		c.fileProgressBars = barMap
 		c.fileProgressBarsMu.Unlock()
@@ -347,7 +493,7 @@ func (c *controller) renderChatTranscript() {
 	})
 }
 
-func buildConversationRows(messages []storage.Message, files []chatFileEntry, localDeviceID string, parentWindow fyne.Window, registerProgressBar onProgressBarCreated) []fyne.CanvasObject {
+func buildConversationRows(messages []storage.Message, files []chatFileEntry, localDeviceID string, parentWindow fyne.Window, registerProgressBar onProgressBarCreated, onCancelTransfer func(string), onRetryTransfer func(string)) []fyne.CanvasObject {
 	type conversationRow struct {
 		timestamp int64
 		kind      int
@@ -406,7 +552,7 @@ func buildConversationRows(messages []storage.Message, files []chatFileEntry, lo
 			continue
 		}
 		if row.file != nil {
-			out = append(out, renderFileRow(*row.file, parentWindow, registerProgressBar))
+			out = append(out, renderFileRow(*row.file, parentWindow, registerProgressBar, onCancelTransfer, onRetryTransfer))
 		}
 	}
 	return out
@@ -464,13 +610,19 @@ func isOutgoingMessage(message storage.Message, localDeviceID string) bool {
 // onProgressBarCreated is called when a file row has a progress bar so the controller can update it by FileID.
 type onProgressBarCreated func(fileID string, bar *widget.ProgressBar)
 
-func renderFileRow(file chatFileEntry, parentWindow fyne.Window, registerProgressBar onProgressBarCreated) fyne.CanvasObject {
+func renderFileRow(file chatFileEntry, parentWindow fyne.Window, registerProgressBar onProgressBarCreated, onCancelTransfer func(string), onRetryTransfer func(string)) fyne.CanvasObject {
 	name := valueOrDefault(file.Filename, file.FileID)
 	title := widget.NewLabel("📄 " + name)
 	title.TextStyle = fyne.TextStyle{Bold: true}
 	title.Truncation = fyne.TextTruncateEllipsis
 
 	items := []fyne.CanvasObject{title}
+	if rel := strings.TrimSpace(file.RelativePath); rel != "" {
+		relLabel := widget.NewLabel(rel)
+		relLabel.Importance = widget.LowImportance
+		relLabel.Truncation = fyne.TextTruncateEllipsis
+		items = append(items, relLabel)
+	}
 
 	// Image preview for image files with an available path.
 	storedPath := strings.TrimSpace(file.StoredPath)
@@ -492,6 +644,17 @@ func renderFileRow(file chatFileEntry, parentWindow fyne.Window, registerProgres
 	meta.Alignment = fyne.TextAlignTrailing
 	items = append(items, meta)
 
+	if file.SpeedBytesPerSec > 0 && !file.TransferCompleted && strings.EqualFold(file.Status, "accepted") {
+		eta := "ETA --"
+		if file.ETASeconds > 0 {
+			eta = fmt.Sprintf("ETA %s", (time.Duration(file.ETASeconds) * time.Second).Round(time.Second))
+		}
+		speed := canvas.NewText(fmt.Sprintf("%s/s · %s", formatBytes(int64(file.SpeedBytesPerSec)), eta), colorMuted)
+		speed.TextSize = 11
+		speed.Alignment = fyne.TextAlignTrailing
+		items = append(items, speed)
+	}
+
 	if !file.TransferCompleted && file.Status != "failed" && file.Status != "rejected" && file.TotalBytes > 0 {
 		progress := widget.NewProgressBar()
 		progress.SetValue(float64(file.BytesTransferred) / float64(file.TotalBytes))
@@ -500,6 +663,22 @@ func renderFileRow(file chatFileEntry, parentWindow fyne.Window, registerProgres
 			registerProgressBar(file.FileID, progress)
 		}
 	}
+
+	if !file.TransferCompleted && (strings.EqualFold(file.Status, "pending") || strings.EqualFold(file.Status, "accepted")) && onCancelTransfer != nil {
+		cancelBtn := widget.NewButton("Cancel", func() {
+			onCancelTransfer(file.FileID)
+		})
+		cancelBtn.Importance = widget.DangerImportance
+		items = append(items, cancelBtn)
+	}
+
+	if (strings.EqualFold(file.Status, "failed") || strings.EqualFold(file.Status, "rejected")) && strings.EqualFold(file.Direction, "send") && onRetryTransfer != nil {
+		retryBtn := widget.NewButton("Retry", func() {
+			onRetryTransfer(file.FileID)
+		})
+		items = append(items, retryBtn)
+	}
+
 	if file.TransferCompleted && storedPath != "" {
 		showPathBtn := widget.NewButton("Show Path", func() {
 			dialog.ShowInformation("File Path", storedPath, parentWindow)
@@ -547,10 +726,13 @@ func fileTransferStatusText(file chatFileEntry) string {
 	if file.TransferCompleted {
 		return "✓✓ complete"
 	}
+	if strings.EqualFold(file.Status, "pending") {
+		return "Waiting..."
+	}
 	if file.TotalBytes > 0 {
 		return fmt.Sprintf("%.0f%%", float64(file.BytesTransferred)*100.0/float64(file.TotalBytes))
 	}
-	return "✓ pending"
+	return "Waiting..."
 }
 
 func deliveryStatusMark(status string) string {
@@ -581,6 +763,12 @@ func (c *controller) upsertFileTransfer(entry chatFileEntry) {
 	c.chatMu.Lock()
 	existing, exists := c.fileTransfers[entry.FileID]
 	if exists {
+		if entry.FolderID == "" {
+			entry.FolderID = existing.FolderID
+		}
+		if entry.RelativePath == "" {
+			entry.RelativePath = existing.RelativePath
+		}
 		if entry.PeerDeviceID == "" {
 			entry.PeerDeviceID = existing.PeerDeviceID
 		}
@@ -605,11 +793,20 @@ func (c *controller) upsertFileTransfer(entry chatFileEntry) {
 		if entry.BytesTransferred == 0 {
 			entry.BytesTransferred = existing.BytesTransferred
 		}
+		if entry.SpeedBytesPerSec == 0 {
+			entry.SpeedBytesPerSec = existing.SpeedBytesPerSec
+		}
+		if entry.ETASeconds == 0 {
+			entry.ETASeconds = existing.ETASeconds
+		}
 		if entry.Status == "" {
 			entry.Status = existing.Status
 		}
 		if !entry.TransferCompleted {
 			entry.TransferCompleted = existing.TransferCompleted
+		}
+		if entry.CompletedAt == 0 {
+			entry.CompletedAt = existing.CompletedAt
 		}
 		if entry.AddedAt == 0 {
 			entry.AddedAt = existing.AddedAt
@@ -619,6 +816,9 @@ func (c *controller) upsertFileTransfer(entry chatFileEntry) {
 		if entry.AddedAt == 0 {
 			entry.AddedAt = time.Now().UnixMilli()
 		}
+	}
+	if entry.TransferCompleted && entry.CompletedAt == 0 {
+		entry.CompletedAt = time.Now().UnixMilli()
 	}
 	c.fileTransfers[entry.FileID] = entry
 	c.chatMu.Unlock()
@@ -653,8 +853,13 @@ func (c *controller) handleFileProgress(progress network.FileProgress) {
 		Direction:         progress.Direction,
 		BytesTransferred:  progress.BytesTransferred,
 		TotalBytes:        progress.TotalBytes,
+		SpeedBytesPerSec:  progress.SpeedBytesPerSec,
+		ETASeconds:        progress.ETASeconds,
 		Status:            "accepted",
 		TransferCompleted: progress.TransferCompleted,
+	}
+	if strings.TrimSpace(progress.Status) != "" {
+		entry.Status = strings.TrimSpace(progress.Status)
 	}
 
 	meta, err := c.store.GetFileByID(progress.FileID)
@@ -670,6 +875,8 @@ func (c *controller) handleFileProgress(progress network.FileProgress) {
 		entry.Filesize = meta.Filesize
 		entry.Filetype = meta.Filetype
 		entry.StoredPath = meta.StoredPath
+		entry.FolderID = meta.FolderID
+		entry.RelativePath = meta.RelativePath
 		entry.Status = meta.TransferStatus
 		if meta.TransferStatus == "complete" {
 			entry.TransferCompleted = true
@@ -678,6 +885,7 @@ func (c *controller) handleFileProgress(progress network.FileProgress) {
 
 	if entry.TransferCompleted {
 		entry.Status = "complete"
+		entry.CompletedAt = time.Now().UnixMilli()
 	}
 	if entry.TotalBytes == 0 {
 		entry.TotalBytes = entry.Filesize

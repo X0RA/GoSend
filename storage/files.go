@@ -31,6 +31,8 @@ func (s *Store) SaveFileMetadata(file FileMetadata) error {
 		`INSERT INTO files (
 			file_id,
 			message_id,
+			folder_id,
+			relative_path,
 			from_device_id,
 			to_device_id,
 			filename,
@@ -40,9 +42,11 @@ func (s *Store) SaveFileMetadata(file FileMetadata) error {
 			checksum,
 			timestamp_received,
 			transfer_status
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		file.FileID,
 		nullString(stringPointer(file.MessageID)),
+		nullString(stringPointer(file.FolderID)),
+		nullString(stringPointer(file.RelativePath)),
 		nullString(stringPointer(file.FromDeviceID)),
 		nullString(stringPointer(file.ToDeviceID)),
 		file.Filename,
@@ -97,6 +101,8 @@ func (s *Store) GetFileByID(fileID string) (*FileMetadata, error) {
 		`SELECT
 			file_id,
 			message_id,
+			folder_id,
+			relative_path,
 			from_device_id,
 			to_device_id,
 			filename,
@@ -120,6 +126,176 @@ func (s *Store) GetFileByID(fileID string) (*FileMetadata, error) {
 	}
 
 	return file, nil
+}
+
+// UpsertFolderTransfer stores folder transfer envelope metadata.
+func (s *Store) UpsertFolderTransfer(folder FolderTransferMetadata) error {
+	if folder.FolderID == "" {
+		return errors.New("folder_id is required")
+	}
+	if folder.FolderName == "" {
+		return errors.New("folder_name is required")
+	}
+	if folder.RootPath == "" {
+		return errors.New("root_path is required")
+	}
+	if folder.TotalFiles < 0 {
+		return errors.New("total_files must be >= 0")
+	}
+	if folder.TotalSize < 0 {
+		return errors.New("total_size must be >= 0")
+	}
+	if folder.TransferStatus == "" {
+		folder.TransferStatus = transferStatusPending
+	}
+	if err := validateTransferStatus(folder.TransferStatus); err != nil {
+		return err
+	}
+	if folder.Timestamp == 0 {
+		folder.Timestamp = nowUnixMilli()
+	}
+
+	_, err := s.db.Exec(
+		`INSERT INTO folder_transfers (
+			folder_id,
+			from_device_id,
+			to_device_id,
+			folder_name,
+			root_path,
+			total_files,
+			total_size,
+			transfer_status,
+			timestamp
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(folder_id) DO UPDATE SET
+			from_device_id = excluded.from_device_id,
+			to_device_id = excluded.to_device_id,
+			folder_name = excluded.folder_name,
+			root_path = excluded.root_path,
+			total_files = excluded.total_files,
+			total_size = excluded.total_size,
+			transfer_status = excluded.transfer_status,
+			timestamp = excluded.timestamp`,
+		folder.FolderID,
+		nullString(stringPointer(folder.FromDeviceID)),
+		nullString(stringPointer(folder.ToDeviceID)),
+		folder.FolderName,
+		folder.RootPath,
+		folder.TotalFiles,
+		folder.TotalSize,
+		folder.TransferStatus,
+		folder.Timestamp,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert folder transfer %q: %w", folder.FolderID, err)
+	}
+	return nil
+}
+
+// UpdateFolderTransferStatus updates transfer_status for a folder transfer row.
+func (s *Store) UpdateFolderTransferStatus(folderID, status string) error {
+	if folderID == "" {
+		return errors.New("folder_id is required")
+	}
+	if err := validateTransferStatus(status); err != nil {
+		return err
+	}
+
+	res, err := s.db.Exec(
+		`UPDATE folder_transfers
+		SET transfer_status = ?
+		WHERE folder_id = ?`,
+		status,
+		folderID,
+	)
+	if err != nil {
+		return fmt.Errorf("update folder transfer status %q: %w", folderID, err)
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read rows affected for folder transfer status %q: %w", folderID, err)
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetFolderTransfer fetches folder transfer metadata by ID.
+func (s *Store) GetFolderTransfer(folderID string) (*FolderTransferMetadata, error) {
+	if folderID == "" {
+		return nil, errors.New("folder_id is required")
+	}
+
+	row := s.db.QueryRow(
+		`SELECT
+			folder_id,
+			from_device_id,
+			to_device_id,
+			folder_name,
+			root_path,
+			total_files,
+			total_size,
+			transfer_status,
+			timestamp
+		FROM folder_transfers
+		WHERE folder_id = ?`,
+		folderID,
+	)
+
+	folder, err := scanFolderTransferMetadata(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get folder transfer %q: %w", folderID, err)
+	}
+	return folder, nil
+}
+
+// ListFilesByFolderID returns file rows linked to a folder transfer.
+func (s *Store) ListFilesByFolderID(folderID string) ([]FileMetadata, error) {
+	if folderID == "" {
+		return nil, errors.New("folder_id is required")
+	}
+
+	rows, err := s.db.Query(
+		`SELECT
+			file_id,
+			message_id,
+			folder_id,
+			relative_path,
+			from_device_id,
+			to_device_id,
+			filename,
+			filesize,
+			filetype,
+			stored_path,
+			checksum,
+			timestamp_received,
+			transfer_status
+		FROM files
+		WHERE folder_id = ?
+		ORDER BY COALESCE(relative_path, ''), file_id`,
+		folderID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list files by folder_id %q: %w", folderID, err)
+	}
+	defer rows.Close()
+
+	files := make([]FileMetadata, 0)
+	for rows.Next() {
+		file, scanErr := scanFileMetadata(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan file metadata by folder_id %q: %w", folderID, scanErr)
+		}
+		files = append(files, *file)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate files by folder_id %q: %w", folderID, err)
+	}
+	return files, nil
 }
 
 // UpsertTransferCheckpoint inserts or updates resumable transfer state.
@@ -265,6 +441,8 @@ func scanFileMetadata(row scanner) (*FileMetadata, error) {
 	var (
 		file              FileMetadata
 		messageID         sql.NullString
+		folderID          sql.NullString
+		relativePath      sql.NullString
 		fromDeviceID      sql.NullString
 		toDeviceID        sql.NullString
 		fileType          sql.NullString
@@ -274,6 +452,8 @@ func scanFileMetadata(row scanner) (*FileMetadata, error) {
 	if err := row.Scan(
 		&file.FileID,
 		&messageID,
+		&folderID,
+		&relativePath,
 		&fromDeviceID,
 		&toDeviceID,
 		&file.Filename,
@@ -290,6 +470,12 @@ func scanFileMetadata(row scanner) (*FileMetadata, error) {
 	if messageID.Valid {
 		file.MessageID = messageID.String
 	}
+	if folderID.Valid {
+		file.FolderID = folderID.String
+	}
+	if relativePath.Valid {
+		file.RelativePath = relativePath.String
+	}
 	if fromDeviceID.Valid {
 		file.FromDeviceID = fromDeviceID.String
 	}
@@ -302,6 +488,34 @@ func scanFileMetadata(row scanner) (*FileMetadata, error) {
 	file.TimestampReceived = int64Ptr(timestampReceived)
 
 	return &file, nil
+}
+
+func scanFolderTransferMetadata(row scanner) (*FolderTransferMetadata, error) {
+	var (
+		folder       FolderTransferMetadata
+		fromDeviceID sql.NullString
+		toDeviceID   sql.NullString
+	)
+	if err := row.Scan(
+		&folder.FolderID,
+		&fromDeviceID,
+		&toDeviceID,
+		&folder.FolderName,
+		&folder.RootPath,
+		&folder.TotalFiles,
+		&folder.TotalSize,
+		&folder.TransferStatus,
+		&folder.Timestamp,
+	); err != nil {
+		return nil, err
+	}
+	if fromDeviceID.Valid {
+		folder.FromDeviceID = fromDeviceID.String
+	}
+	if toDeviceID.Valid {
+		folder.ToDeviceID = toDeviceID.String
+	}
+	return &folder, nil
 }
 
 func scanTransferCheckpoint(row scanner) (*TransferCheckpoint, error) {

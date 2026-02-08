@@ -5,8 +5,8 @@ import (
 	"sync"
 )
 
-// PickerFunc opens a platform-specific file picker and returns a selected path.
-type PickerFunc func() (string, error)
+// PickerFunc opens a platform-specific picker and returns selected file paths.
+type PickerFunc func() ([]string, error)
 
 // TransferProgress tracks one transfer's progress for UI binding.
 type TransferProgress struct {
@@ -34,12 +34,24 @@ func NewFileHandler(picker PickerFunc) *FileHandler {
 	}
 }
 
-// PickFile opens the configured picker.
-func (h *FileHandler) PickFile() (string, error) {
+// PickPaths opens the configured picker.
+func (h *FileHandler) PickPaths() ([]string, error) {
 	if h == nil || h.picker == nil {
-		return "", errors.New("file picker is not configured")
+		return nil, errors.New("file picker is not configured")
 	}
 	return h.picker()
+}
+
+// PickFile returns the first selected path for call sites that only need one.
+func (h *FileHandler) PickFile() (string, error) {
+	paths, err := h.PickPaths()
+	if err != nil {
+		return "", err
+	}
+	if len(paths) == 0 {
+		return "", errors.New("no file selected")
+	}
+	return paths[0], nil
 }
 
 // UpdateProgress stores progress for one file transfer.

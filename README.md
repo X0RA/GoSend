@@ -23,7 +23,10 @@ GoSend is a local-network peer-to-peer desktop app built in Go. It uses mDNS for
 - Replay defenses for chat messages: per-connection sequence checks, persistent seen ID table, and timestamp skew checks.
 - Trusted key rotations persist immediately to the pinned peer key plus an auditable `key_rotation_events` trail.
 - Structured `security_events` logging captures handshake failures, signature failures, replay rejections, key-rotation decisions, and queue-limit triggers.
+- Per-peer outbound file transfer queue (sequential send worker), queued-transfer cancel/retry, and multi-file picker enqueue flow.
+- Folder transfer envelope (`folder_transfer_request` / `folder_transfer_response`) with signed manifests, structure-preserving receive paths, and traversal-safe relative-path validation.
 - File transfer with request/accept/reject, signed chunk ack/nack + signed file completion, reconnect resume from chunk, end checksum verification, persistent transfer checkpoints for crash recovery, global receive limits/download location, and per-peer auto-accept/limit/directory overrides.
+- Chat drag-and-drop (single/multi file + folder) plus transfer queue panel with grouped active/pending visibility, speed/ETA display, cancel/retry controls, and short completed-item retention.
 - Per-peer controls include custom names, trust level (`normal`/`trusted`), and trusted badges in the peer list.
 - Cross-platform GUI (Fyne) with peer list, chat pane, discovery dialog, device settings dialog, peer settings dialog, key-change prompt, file-transfer prompts/progress, and chat header color that reflects online status.
 
@@ -75,6 +78,14 @@ go test ./...
 go vet ./...
 go mod tidy
 ```
+
+Manual UI verification for drag/drop and queue UX:
+
+1. Drag one file into an active chat, verify a queued card appears as `Waiting...` then progresses to `complete`.
+2. Drag multiple files together, verify they preserve drop order and run sequentially.
+3. Drag a folder containing nested files + an empty subdirectory, verify receiver preserves structure.
+4. Drag mixed items (files + folders), verify all items enqueue in the original drop order.
+5. Open the transfer queue panel and verify cancel/retry actions and 30-second completed-item retention behavior.
 
 ## GitHub Release Automation
 
@@ -194,7 +205,7 @@ Cryptography:
 
 Message/control integrity:
 
-- Signed (Ed25519) and verified: handshake messages, `peer_add_request`, `peer_add_response`, `peer_remove`, `message`, `ack`, `rekey_request`, `rekey_response`, `file_request`, `file_response`, `file_complete`.
+- Signed (Ed25519) and verified: handshake messages, `peer_add_request`, `peer_add_response`, `peer_remove`, `message`, `ack`, `rekey_request`, `rekey_response`, `file_request`, `file_response`, `file_complete`, `folder_transfer_request`, and `folder_transfer_response`.
 - `file_response` validation requires signature + `from_device_id` sender binding for chunk ack/nack and request responses.
 - Replay/tamper defenses: per-connection sequence numbers, timestamp skew ±5 minutes, persistent `seen_message_ids` dedupe.
 
@@ -250,24 +261,34 @@ Reconnect:
 
 Outbound:
 
-- `SendFile(peerID, path)` computes checksum, stores metadata (`pending`), and starts transfer if connected.
+- `SendFile(peerID, path)` and `SendFiles(peerID, paths)` enqueue outbound files into a per-peer ordered queue; only one file is active per peer at a time.
+- `SendFolder(peerID, folderPath)` builds a signed folder manifest, waits for `folder_transfer_response`, then enqueues accepted files with `folder_id` + `relative_path` metadata.
 - Sends `file_request`; waits for `accepted` or `rejected`.
 - On accept, resumes from `resume_from_chunk` if provided.
 - Chunks are read from source file and encrypted as `file_data` with per-chunk nonce.
 - Receiver responds with `chunk_ack` / `chunk_nack`.
 - Each chunk retries up to `MaxChunkRetries` (default 3).
 - Outbound checkpoints are persisted to `transfer_checkpoints` every 50 chunks or 10 MB, whichever comes first.
+- Queued or active transfers can be canceled (`CancelTransfer`), and failed/rejected outbound transfers can be re-queued (`RetryTransfer`).
 - After all chunks are sent, sender sends signed `file_complete` and waits for the receiver’s signed `file_complete` (after checksum and rename). Wait uses `FileCompleteTimeout` (default 5 minutes); chunk acks use `FileResponseTimeout` (default 10s). Default chunk size 256 KiB. If the receiver’s completion arrives after the sender timed out, the sender still applies completion so the UI updates.
 
 Inbound:
 
 - For each incoming `file_request`, the manager resolves peer settings (`peer_settings`) and computes effective receive policy.
+- If `folder_id`/`relative_path` are present, the target file path is resolved under the accepted inbound folder root and validated to remain inside that root.
 - Effective size limit is peer `max_file_size` when set (`>0`), otherwise global `max_receive_file_size`; oversized requests are auto-rejected with a descriptive message.
 - File requests are rate-limited per peer (default 5/minute); excess requests are rejected and logged as security events.
 - If within limit and `auto_accept_files=true`, the request is auto-accepted; otherwise the UI accept/reject callback is invoked.
-- Accepted transfers write to `<resolved-download-dir>/<file_id>_<basename>.part`, where the resolved directory is peer `download_directory` override first, then global `download_directory`.
+- Accepted non-folder transfers write to `<resolved-download-dir>/<file_id>_<basename>.part`; folder-scoped transfers write to `<folder-root>/<relative_path>.part`. The resolved base directory is peer `download_directory` override first, then global `download_directory`.
 - Inbound checkpoints are persisted in batches (every 10 chunks or 2 MB).
 - On `file_complete`, receiver verifies checksum and renames `.part` to final file.
+
+Folder transfer safety/policy:
+
+- Folder manifests include file and directory entries with relative paths and sizes.
+- Relative paths are normalized and rejected if absolute or traversal (`..`) is detected.
+- Symlinks are skipped during folder enumeration.
+- Empty directories are preserved via directory manifest entries.
 
 Completion/failure:
 
@@ -281,7 +302,7 @@ Completion/failure:
 
 Persistence uses `github.com/mattn/go-sqlite3` with a single DB (`app.db`) under the app data directory. DSN enables foreign keys (`_foreign_keys=on`); busy timeout `5000ms`. The database is opened in WAL mode (`PRAGMA journal_mode=WAL`) with startup checkpointing (`PRAGMA wal_checkpoint(TRUNCATE)`) and a periodic 24-hour checkpoint loop. Schema migrations are versioned with `PRAGMA user_version`.
 
-Tables store: **peers** — identity, pinned Ed25519 public key, fingerprint, status, timestamps, last known endpoint. **messages** — content, content type, sent/received timestamps, read flag, delivery status, signature. **files** — file IDs, sender/receiver, filename/type/size/path/checksum, transfer status. **seen_message_ids** — replay defense. **key_rotation_events** — trusted/rejected key-change decisions with old/new fingerprints. **security_events** — structured security logs with severity and JSON details. **peer_settings** — per-peer transfer policy (`auto_accept_files`, `max_file_size`, `download_directory`) plus presentation/trust metadata (`custom_name`, `trust_level`). **transfer_checkpoints** — resumable send/receive progress (`next_chunk`, `bytes_transferred`, `temp_path`, `updated_at`). Status enums: peer `online`/`offline`/`pending`/`blocked`; delivery `pending`/`sent`/`delivered`/`failed`; file `pending`/`accepted`/`rejected`/`complete`/`failed`. Updates in practice: peer add accepted → peer row created/updated to `online` and default `peer_settings` ensured; disconnect → `offline`; message sent → `sent`, after ACK → `delivered`; offline messages stored as `pending` and drained on reconnect; file request/accept/reject/complete update `files.transfer_status`; received message IDs go into `seen_message_ids`; key-change trust/reject decisions write to `key_rotation_events` and (when trusted) update `peers.ed25519_public_key` + `peers.key_fingerprint`; checkpoint rows are upserted during transfers and removed on definitive completion/failure. Pending queue prune: messages older than 7 days marked `failed`. Security-event retention pruning defaults to 90 days.
+Tables store: **peers** — identity, pinned Ed25519 public key, fingerprint, status, timestamps, last known endpoint. **messages** — content, content type, sent/received timestamps, read flag, delivery status, signature. **files** — file IDs, sender/receiver, filename/type/size/path/checksum, transfer status, plus optional `folder_id`/`relative_path` linkage for folder sends. **folder_transfers** — folder envelope metadata (`folder_name`, root path, totals, status). **seen_message_ids** — replay defense. **key_rotation_events** — trusted/rejected key-change decisions with old/new fingerprints. **security_events** — structured security logs with severity and JSON details. **peer_settings** — per-peer transfer policy (`auto_accept_files`, `max_file_size`, `download_directory`) plus presentation/trust metadata (`custom_name`, `trust_level`). **transfer_checkpoints** — resumable send/receive progress (`next_chunk`, `bytes_transferred`, `temp_path`, `updated_at`). Status enums: peer `online`/`offline`/`pending`/`blocked`; delivery `pending`/`sent`/`delivered`/`failed`; file `pending`/`accepted`/`rejected`/`complete`/`failed`. Updates in practice: peer add accepted → peer row created/updated to `online` and default `peer_settings` ensured; disconnect → `offline`; message sent → `sent`, after ACK → `delivered`; offline messages stored as `pending` and drained on reconnect; file request/accept/reject/complete update `files.transfer_status`; folder request/response transitions update `folder_transfers.transfer_status`; received message IDs go into `seen_message_ids`; key-change trust/reject decisions write to `key_rotation_events` and (when trusted) update `peers.ed25519_public_key` + `peers.key_fingerprint`; checkpoint rows are upserted during transfers and removed on definitive completion/failure. Pending queue prune: messages older than 7 days marked `failed`. Security-event retention pruning defaults to 90 days.
 
 Schema:
 
@@ -314,6 +335,8 @@ CREATE TABLE messages (
 CREATE TABLE files (
   file_id            TEXT PRIMARY KEY,
   message_id         TEXT REFERENCES messages(message_id),
+  folder_id          TEXT,
+  relative_path      TEXT,
   from_device_id     TEXT,
   to_device_id       TEXT,
   filename           TEXT NOT NULL,
@@ -323,6 +346,18 @@ CREATE TABLE files (
   checksum           TEXT NOT NULL,
   timestamp_received INTEGER,
   transfer_status    TEXT CHECK(transfer_status IN ('pending','accepted','rejected','complete','failed')) DEFAULT 'pending'
+);
+
+CREATE TABLE folder_transfers (
+  folder_id        TEXT PRIMARY KEY,
+  from_device_id   TEXT,
+  to_device_id     TEXT,
+  folder_name      TEXT NOT NULL,
+  root_path        TEXT NOT NULL,
+  total_files      INTEGER NOT NULL,
+  total_size       INTEGER NOT NULL,
+  transfer_status  TEXT NOT NULL CHECK(transfer_status IN ('pending','accepted','rejected','complete','failed')) DEFAULT 'pending',
+  timestamp        INTEGER NOT NULL
 );
 
 CREATE TABLE seen_message_ids (
@@ -377,6 +412,7 @@ Indexes:
 - `idx_security_events_type` on `(event_type, timestamp DESC, id DESC)`
 - `idx_security_events_peer` on `(peer_device_id, timestamp DESC, id DESC)`
 - `idx_transfer_checkpoints_updated_at` on `(updated_at DESC, file_id, direction)`
+- `idx_folder_transfers_peer_time` on `(to_device_id, from_device_id, timestamp DESC, folder_id)`
 
 ## UI Summary
 
@@ -386,10 +422,10 @@ Layout:
 
 - Left pane: known peers list from DB (self filtered out), plus discovery dialog entry point. Rows use custom peer names when set, show the original device name as secondary text, and append `[Trusted]` for trusted peers.
 - Right pane: selected peer chat transcript (messages + file transfer rows), compose box, Send and Attach actions.
-- Top bar: app title, discovery refresh, settings. Bottom bar: global runtime feedback (errors, queue warnings, connect state).
+- Top bar: app title, transfer queue panel, discovery refresh, settings. Bottom bar: global runtime feedback (errors, queue warnings, connect state).
 - Text messages show a copy button (clipboard icon); file/image messages do not. Chat composer is hidden until a peer is selected.
 - Chat header is clickable to show the selected peer fingerprint; its color reflects online/offline status; a peer-settings gear button appears when a peer is selected.
-- Composer: message box on the left, `Send` above `Attach` on the right. `Enter` sends; `Shift+Enter` newline.
+- Composer: message box on the left, `Send` above `Attach` on the right. `Attach` supports multi-file enqueue; folders are supported via drag-and-drop. `Enter` sends; `Shift+Enter` newline.
 - Hovering key buttons (peer info, peer settings, app settings, refresh, discover, send, attach) shows a tooltip and status hint.
 
 Runtime loops:
@@ -401,7 +437,7 @@ Runtime loops:
 
 Dialogs: discovery (peers + Add, dark panels), incoming peer add confirmation, incoming file accept/reject, key-change trust/deny, device settings, peer settings.
 
-Key flows: Add peer (discovery → select → dial → `peer_add_request`); incoming add (accept/reject). Message (Enter to send); file (picker → `SendFile`, progress). Key change (trust/reject with fingerprints). Incoming file (auto-accept or accept/reject with name/size/type based on per-peer/global settings). Peer settings (chat-header gear → save custom name/trust/transfer policy).
+Key flows: Add peer (discovery → select → dial → `peer_add_request`); incoming add (accept/reject). Message (Enter to send); files (multi-file picker → queued `SendFile`), folders (drag/drop directory → `SendFolder` manifest + queued files), transfer queue management (top-bar queue panel with cancel/retry), key change (trust/reject with fingerprints). Incoming file (auto-accept or accept/reject with name/size/type based on per-peer/global settings). Peer settings (chat-header gear → save custom name/trust/transfer policy).
 
 Settings:
 
@@ -536,15 +572,15 @@ Note: runtime logic currently uses `storage` structs directly; `models` package 
 
 ### `storage/`
 
-- `storage/types.go`: Core storage data types, status/content constants, peer-trust constants, validators, null helpers, and shared errors.
-- `storage/database.go`: SQLite open/create helpers, migrations (`peer_settings` and `transfer_checkpoints` included), schema versioning, and connection lifecycle.
+- `storage/types.go`: Core storage data types, status/content constants, folder-transfer metadata structs, peer-trust constants, validators, null helpers, and shared errors.
+- `storage/database.go`: SQLite open/create helpers, migrations (`peer_settings`, `transfer_checkpoints`, `folder_transfers`, and `files` folder-link columns), schema versioning, and connection lifecycle.
 - `storage/database_test.go`: Verifies DB creation, migrations, schema version, and expected table presence.
 - `storage/peers.go`: Peer CRUD + endpoint/status updates, discovery-driven device-name updates, per-peer settings CRUD/default ensure, pinned-key updates, and key-rotation event history helpers.
 - `storage/peers_test.go`: Peer CRUD, endpoint/status update, per-peer settings CRUD/defaults, pinned-key update, and key-rotation event tests.
 - `storage/messages.go`: Message insert/read/update APIs, pending queue reads, and expired queue pruning.
 - `storage/messages_test.go`: Message CRUD, ordering, status updates, pending retrieval, and prune behavior.
-- `storage/files.go`: File metadata insert/read, transfer-status updates, and transfer-checkpoint CRUD/list APIs.
-- `storage/files_test.go`: File metadata CRUD/status update tests plus transfer-checkpoint persistence tests.
+- `storage/files.go`: File metadata insert/read (including `folder_id`/`relative_path`), folder-transfer metadata upsert/query/status helpers, and transfer-checkpoint CRUD/list APIs.
+- `storage/files_test.go`: File metadata CRUD/status update tests plus transfer-checkpoint and folder-transfer linkage tests.
 - `storage/security_events.go`: Structured security-event insert/query/retention-prune helpers.
 - `storage/security_events_test.go`: Security-event filter and retention behavior tests.
 - `storage/seen_ids.go`: Seen-message ID insert/check/prune helpers.
@@ -553,28 +589,28 @@ Note: runtime logic currently uses `storage` structs directly; `models` package 
 
 ### `network/`
 
-- `network/protocol.go`: Protocol constants/types, JSON helpers, frame read/write helpers (control/data limits), handshake/rekey message helpers.
+- `network/protocol.go`: Protocol constants/types (including folder transfer envelopes and file folder metadata fields), JSON helpers, frame read/write helpers (control/data limits), handshake/rekey message helpers.
 - `network/protocol_test.go`: Frame round-trip and oversized frame rejection tests.
 - `network/connection.go`: Encrypted framed peer connection, connection states, keepalive ping/pong, malformed-frame strike counter (3 consecutive invalid frames), sequence tracking, rekey triggers, and epoch-based key rotation.
 - `network/handshake.go`: Handshake options/defaults, key-change decision flow, and session-key derivation helpers.
 - `network/client.go`: Outbound dial + handshake + session setup.
 - `network/server.go`: Listener accept loop, per-IP inbound connection rate limiting, and inbound handshake/session setup.
-- `network/peer_manager.go`: High-level peer lifecycle manager: add/approve/remove/disconnect, message send/receive, add/file request rate limits, queue drain/limits, jittered reconnect workers with endpoint health scoring, discovery-triggered reconnect, and default peer-settings creation on first persisted peer.
-- `network/file_transfer.go`: File transfer protocol implementation: request/response, chunk send/ack/nack, resume, checksum verification, checkpoint persistence/recovery, status persistence, progress callbacks, and per-peer/global receive-policy resolution.
+- `network/peer_manager.go`: High-level peer lifecycle manager: add/approve/remove/disconnect, message send/receive, add/file request rate limits, reconnect workers, discovery-triggered reconnect, folder-transfer message dispatch, and default peer-settings creation on first persisted peer.
+- `network/file_transfer.go`: File transfer protocol implementation: per-peer outbound queue, send/cancel/retry APIs, folder manifest request/response flow, chunk send/ack/nack, resume, checksum verification, checkpoint persistence/recovery, status persistence, progress callbacks (with speed/ETA), and per-peer/global receive-policy resolution.
 - `network/integration_test.go`: Handshake/session/keepalive/ping-timeout/key-change decision, replay, and control-frame-limit integration tests.
 - `network/server_test.go`: Per-IP inbound connection rate-limit enforcement test.
 - `network/connection_test.go`: Epoch transition decrypt-window tests plus malformed-frame disconnect-threshold tests.
 - `network/rekey_test.go`: Rekey trigger/rekey-under-load/concurrent-transfer/failure-handling tests.
 - `network/peer_manager_test.go`: Add/remove/restart/simultaneous-add/spoof-protection behavior tests, request-rate-limit tests, jitter/backoff and endpoint-health ordering tests, and peer-settings row creation for accepted peers.
 - `network/messaging_test.go`: Delivery updates, offline queue drain, replay rejection, sequence rejection, signature tamper rejection, spoofed ack rejection tests.
-- `network/file_transfer_test.go`: Accepted/rejected transfer flows, reconnect/crash-resume coverage, checksum mismatch failure tests, max-receive-limit auto-reject, and auto-accept directory override behavior.
+- `network/file_transfer_test.go`: Accepted/rejected transfer flows, sequential queue behavior, queued-cancel behavior, folder structure preservation + traversal rejection, retry flow, reconnect/crash-resume coverage, checksum mismatch failure tests, max-receive-limit auto-reject, and auto-accept directory override behavior.
 
 ### `ui/`
 
-- `ui/main_window.go`: Application controller, service startup/shutdown, event loops, status updates, dialogs, dynamic file-policy wiring into `PeerManager`, and cross-layer wiring.
+- `ui/main_window.go`: Application controller, service startup/shutdown, event loops, status updates, dialogs, transfer queue panel, window-level drop handling, dynamic file-policy wiring into `PeerManager`, and cross-layer wiring.
 - `ui/peers_list.go`: Peer list pane, discovery dialog rendering, discovered-peer add flow, peer selection, custom-name sorting/secondary labels, and trusted badge rendering.
-- `ui/chat_window.go`: Chat pane rendering, message send flow, file attach flow, transcript composition, transfer row rendering/progress, custom peer-name header, and peer-settings entry point.
+- `ui/chat_window.go`: Chat pane rendering, message send flow, multi-file/folder queueing flow, transcript composition, transfer row rendering/progress/actions (cancel/retry/speed/ETA), custom peer-name header, and peer-settings entry point.
 - `ui/settings.go`: Device settings dialog (name, fingerprint, port mode/port, download location, max file size), per-peer settings dialog (custom name/trust/transfer overrides), and key reset workflow.
-- `ui/file_handler.go`: Picker/progress helper used by UI for file selection and transfer progress state.
+- `ui/file_handler.go`: Picker/progress helper used by UI for multi-path selection and transfer progress state.
 - `ui/clickable_label.go`: Clickable label widget used by chat header for peer fingerprint interactions.
 - `ui/theme.go`: Theme/palette helpers, rounded UI primitives, and hover/tooltip button behavior.

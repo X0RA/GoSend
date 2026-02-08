@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -287,6 +288,321 @@ func TestFileTransferResumeAfterReconnect(t *testing.T) {
 	}
 }
 
+func TestSendFileQueueRunsSequentiallyPerPeer(t *testing.T) {
+	aFiles := filepath.Join(t.TempDir(), "a-files")
+	bFiles := filepath.Join(t.TempDir(), "b-files")
+	firstPath := createFixtureFile(t, t.TempDir(), "queued-first.bin", 8*1024*1024)
+	secondPath := createFixtureFile(t, t.TempDir(), "queued-second.bin", 256*1024)
+
+	a := newTestManager(t, testManagerConfig{
+		deviceID:      "peer-a",
+		name:          "Peer A",
+		filesDir:      aFiles,
+		fileChunkSize: 64 * 1024,
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID:      "peer-b",
+		name:          "Peer B",
+		filesDir:      bFiles,
+		fileChunkSize: 64 * 1024,
+		approveFile: func(FileRequestNotification) (bool, error) {
+			return true, nil
+		},
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a"); err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+
+	firstID, err := a.manager.SendFile("peer-b", firstPath)
+	if err != nil {
+		t.Fatalf("SendFile(first) failed: %v", err)
+	}
+	secondID, err := a.manager.SendFile("peer-b", secondPath)
+	if err != nil {
+		t.Fatalf("SendFile(second) failed: %v", err)
+	}
+
+	waitForFileStatusOneOf(t, a.store, firstID, []string{"accepted", "complete"}, 8*time.Second)
+
+	secondMeta, err := a.store.GetFileByID(secondID)
+	if err != nil {
+		t.Fatalf("GetFileByID(second) failed: %v", err)
+	}
+	if secondMeta.TransferStatus != "pending" {
+		t.Fatalf("expected second transfer to remain queued (pending) while first is active, got %q", secondMeta.TransferStatus)
+	}
+
+	waitForFileStatus(t, a.store, firstID, "complete", 20*time.Second)
+	waitForFileStatus(t, a.store, secondID, "complete", 20*time.Second)
+	waitForFileStatus(t, b.store, firstID, "complete", 20*time.Second)
+	waitForFileStatus(t, b.store, secondID, "complete", 20*time.Second)
+}
+
+func TestCancelQueuedTransferBeforeStart(t *testing.T) {
+	aFiles := filepath.Join(t.TempDir(), "a-files")
+	bFiles := filepath.Join(t.TempDir(), "b-files")
+	firstPath := createFixtureFile(t, t.TempDir(), "cancel-first.bin", 10*1024*1024)
+	secondPath := createFixtureFile(t, t.TempDir(), "cancel-second.bin", 512*1024)
+
+	a := newTestManager(t, testManagerConfig{
+		deviceID:      "peer-a",
+		name:          "Peer A",
+		filesDir:      aFiles,
+		fileChunkSize: 64 * 1024,
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID:      "peer-b",
+		name:          "Peer B",
+		filesDir:      bFiles,
+		fileChunkSize: 64 * 1024,
+		approveFile: func(FileRequestNotification) (bool, error) {
+			return true, nil
+		},
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a"); err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+
+	firstID, err := a.manager.SendFile("peer-b", firstPath)
+	if err != nil {
+		t.Fatalf("SendFile(first) failed: %v", err)
+	}
+	secondID, err := a.manager.SendFile("peer-b", secondPath)
+	if err != nil {
+		t.Fatalf("SendFile(second) failed: %v", err)
+	}
+
+	waitForFileStatusOneOf(t, a.store, firstID, []string{"accepted", "complete"}, 8*time.Second)
+	waitForFileStatus(t, a.store, secondID, "pending", 5*time.Second)
+
+	if err := a.manager.CancelTransfer(secondID); err != nil {
+		t.Fatalf("CancelTransfer(second) failed: %v", err)
+	}
+
+	waitForFileStatus(t, a.store, secondID, "failed", 8*time.Second)
+	waitForFileStatus(t, a.store, firstID, "complete", 20*time.Second)
+	waitForFileStatus(t, b.store, firstID, "complete", 20*time.Second)
+
+	time.Sleep(500 * time.Millisecond)
+	if _, err := b.store.GetFileByID(secondID); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("expected canceled queued transfer to never reach receiver, got err=%v", err)
+	}
+}
+
+func TestFolderTransferPreservesStructure(t *testing.T) {
+	aFiles := filepath.Join(t.TempDir(), "a-files")
+	bFiles := filepath.Join(t.TempDir(), "b-files")
+	sourceRoot := filepath.Join(t.TempDir(), "source-folder")
+
+	if err := os.MkdirAll(filepath.Join(sourceRoot, "sub"), 0o700); err != nil {
+		t.Fatalf("mkdir sub failed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(sourceRoot, "empty"), 0o700); err != nil {
+		t.Fatalf("mkdir empty failed: %v", err)
+	}
+	sourceA := filepath.Join(sourceRoot, "a.txt")
+	sourceB := filepath.Join(sourceRoot, "sub", "b.txt")
+	if err := os.WriteFile(sourceA, []byte("alpha"), 0o600); err != nil {
+		t.Fatalf("write sourceA failed: %v", err)
+	}
+	if err := os.WriteFile(sourceB, []byte("beta"), 0o600); err != nil {
+		t.Fatalf("write sourceB failed: %v", err)
+	}
+
+	a := newTestManager(t, testManagerConfig{
+		deviceID:      "peer-a",
+		name:          "Peer A",
+		filesDir:      aFiles,
+		fileChunkSize: 32 * 1024,
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID:      "peer-b",
+		name:          "Peer B",
+		filesDir:      bFiles,
+		fileChunkSize: 32 * 1024,
+		approveFile: func(FileRequestNotification) (bool, error) {
+			return true, nil
+		},
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a"); err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+
+	folderID, fileIDs, err := a.manager.SendFolder("peer-b", sourceRoot)
+	if err != nil {
+		t.Fatalf("SendFolder failed: %v", err)
+	}
+	if folderID == "" {
+		t.Fatalf("expected non-empty folder ID")
+	}
+	if len(fileIDs) != 2 {
+		t.Fatalf("expected 2 file IDs queued from folder, got %d", len(fileIDs))
+	}
+
+	for _, fileID := range fileIDs {
+		waitForFileStatus(t, a.store, fileID, "complete", 20*time.Second)
+		waitForFileStatus(t, b.store, fileID, "complete", 20*time.Second)
+	}
+
+	folderMeta, err := b.store.GetFolderTransfer(folderID)
+	if err != nil {
+		t.Fatalf("GetFolderTransfer(receiver) failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(folderMeta.RootPath, "a.txt")); err != nil {
+		t.Fatalf("missing received top-level file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(folderMeta.RootPath, "sub", "b.txt")); err != nil {
+		t.Fatalf("missing received nested file: %v", err)
+	}
+	if emptyInfo, err := os.Stat(filepath.Join(folderMeta.RootPath, "empty")); err != nil {
+		t.Fatalf("missing received empty directory: %v", err)
+	} else if !emptyInfo.IsDir() {
+		t.Fatalf("expected empty path to be directory")
+	}
+
+	files, err := b.store.ListFilesByFolderID(folderID)
+	if err != nil {
+		t.Fatalf("ListFilesByFolderID failed: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected 2 receiver file rows linked to folder, got %d", len(files))
+	}
+	for _, meta := range files {
+		if meta.FolderID != folderID {
+			t.Fatalf("expected folder_id %q, got %q", folderID, meta.FolderID)
+		}
+		if strings.TrimSpace(meta.RelativePath) == "" {
+			t.Fatalf("expected non-empty relative_path for folder file %q", meta.FileID)
+		}
+	}
+}
+
+func TestRetryTransferRequeuesFailedOutbound(t *testing.T) {
+	aFiles := filepath.Join(t.TempDir(), "a-files")
+	bFiles := filepath.Join(t.TempDir(), "b-files")
+	sourcePath := createFixtureFile(t, t.TempDir(), "retry.bin", 600*1024)
+
+	a := newTestManager(t, testManagerConfig{
+		deviceID:      "peer-a",
+		name:          "Peer A",
+		filesDir:      aFiles,
+		fileChunkSize: 32 * 1024,
+	})
+	defer a.stop()
+
+	var allow atomic.Bool
+	allow.Store(false)
+	b := newTestManager(t, testManagerConfig{
+		deviceID:      "peer-b",
+		name:          "Peer B",
+		filesDir:      bFiles,
+		fileChunkSize: 32 * 1024,
+		approveFile: func(FileRequestNotification) (bool, error) {
+			return allow.Load(), nil
+		},
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a"); err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+
+	fileID, err := a.manager.SendFile("peer-b", sourcePath)
+	if err != nil {
+		t.Fatalf("SendFile failed: %v", err)
+	}
+	waitForFileStatus(t, a.store, fileID, "rejected", 10*time.Second)
+
+	allow.Store(true)
+	if err := a.manager.RetryTransfer(fileID); err != nil {
+		t.Fatalf("RetryTransfer failed: %v", err)
+	}
+
+	waitForFileStatus(t, a.store, fileID, "complete", 20*time.Second)
+	waitForFileStatus(t, b.store, fileID, "complete", 20*time.Second)
+}
+
+func TestFolderTransferRequestRejectsPathTraversal(t *testing.T) {
+	a := newTestManager(t, testManagerConfig{
+		deviceID: "peer-a",
+		name:     "Peer A",
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID: "peer-b",
+		name:     "Peer B",
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a"); err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+
+	folderID := uuid.NewString()
+	responseCh := a.manager.registerOutboundFolderEventChannel(folderID)
+	defer a.manager.unregisterOutboundFolderEventChannel(folderID, responseCh)
+
+	request := FolderTransferRequest{
+		Type:         TypeFolderTransferRequest,
+		FolderID:     folderID,
+		FolderName:   "evil",
+		TotalFiles:   1,
+		TotalSize:    1,
+		Manifest:     []FolderManifestEntry{{RelativePath: "../escape.txt", Size: 1}},
+		FromDeviceID: "peer-a",
+		ToDeviceID:   "peer-b",
+		Timestamp:    time.Now().UnixMilli(),
+	}
+	if err := a.manager.signFolderTransferRequest(&request); err != nil {
+		t.Fatalf("signFolderTransferRequest failed: %v", err)
+	}
+
+	conn := a.manager.getConnection("peer-b")
+	if conn == nil {
+		t.Fatalf("expected connection to peer-b")
+	}
+	if err := conn.SendMessage(request); err != nil {
+		t.Fatalf("send folder request failed: %v", err)
+	}
+
+	select {
+	case response := <-responseCh:
+		if !strings.EqualFold(response.Status, folderResponseStatusRejected) {
+			t.Fatalf("expected rejected folder response, got %q", response.Status)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for folder rejection response")
+	}
+}
+
 func TestFileTransferChecksumMismatchFails(t *testing.T) {
 	aFiles := filepath.Join(t.TempDir(), "a-files")
 	bFiles := filepath.Join(t.TempDir(), "b-files")
@@ -515,6 +831,28 @@ func waitForFileStatus(t *testing.T, store *storage.Store, fileID, expected stri
 		t.Fatalf("timed out waiting for file %q status=%q, final err=%v", fileID, expected, err)
 	}
 	t.Fatalf("timed out waiting for file %q status=%q, final=%q", fileID, expected, meta.TransferStatus)
+	return nil
+}
+
+func waitForFileStatusOneOf(t *testing.T, store *storage.Store, fileID string, expected []string, timeout time.Duration) *storage.FileMetadata {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		meta, err := store.GetFileByID(fileID)
+		if err == nil {
+			for _, status := range expected {
+				if meta.TransferStatus == status {
+					return meta
+				}
+			}
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	meta, err := store.GetFileByID(fileID)
+	if err != nil {
+		t.Fatalf("timed out waiting for file %q status in %v, final err=%v", fileID, expected, err)
+	}
+	t.Fatalf("timed out waiting for file %q status in %v, final=%q", fileID, expected, meta.TransferStatus)
 	return nil
 }
 

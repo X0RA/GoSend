@@ -94,6 +94,9 @@ type FileProgress struct {
 	TotalBytes        int64
 	ChunkIndex        int
 	TotalChunks       int
+	SpeedBytesPerSec  float64
+	ETASeconds        int64
+	Status            string
 	TransferCompleted bool
 }
 
@@ -189,10 +192,16 @@ type PeerManager struct {
 	drainMu      sync.Mutex
 	activeDrains map[string]bool
 
-	fileMu                 sync.Mutex
-	outboundFileTransfers  map[string]*outboundFileTransfer
-	inboundFileTransfers   map[string]*inboundFileTransfer
-	outboundFileEventChans map[string]chan fileTransferEvent
+	fileMu                   sync.Mutex
+	outboundFileTransfers    map[string]*outboundFileTransfer
+	inboundFileTransfers     map[string]*inboundFileTransfer
+	inboundFolderTransfers   map[string]*inboundFolderTransfer
+	outboundFileEventChans   map[string]chan fileTransferEvent
+	outboundFolderEventChans map[string]chan FolderTransferResponse
+
+	transferQueueMu        sync.Mutex
+	outboundTransferQueue  map[string][]string
+	activeOutboundTransfer map[string]string
 
 	rekeyMu             sync.Mutex
 	pendingRekeyWaiters map[string]chan rekeyWaitResult
@@ -275,26 +284,30 @@ func NewPeerManager(options PeerManagerOptions) (*PeerManager, error) {
 	}
 
 	manager := &PeerManager{
-		options:                options,
-		connections:            make(map[string]*PeerConnection),
-		knownKeys:              make(map[string]string),
-		outboundAddPending:     make(map[string]bool),
-		outboundAddResponse:    make(map[string]chan PeerAddResponse),
-		inboundAddPending:      make(map[string]chan bool),
-		addRequests:            make(chan AddRequestNotification, 64),
-		reconnectWorkers:       make(map[string]context.CancelFunc),
-		suppressReconnect:      make(map[string]bool),
-		lastAddRequestAt:       make(map[string]time.Time),
-		fileRequestHistory:     make(map[string][]time.Time),
-		discoveredEndpoints:    make(map[string][]string),
-		endpointHealth:         make(map[string]map[string]int),
-		activeDrains:           make(map[string]bool),
-		outboundFileTransfers:  make(map[string]*outboundFileTransfer),
-		inboundFileTransfers:   make(map[string]*inboundFileTransfer),
-		outboundFileEventChans: make(map[string]chan fileTransferEvent),
-		pendingRekeyWaiters:    make(map[string]chan rekeyWaitResult),
-		errors:                 make(chan error, 64),
-		randomSource:           options.RandomSource,
+		options:                  options,
+		connections:              make(map[string]*PeerConnection),
+		knownKeys:                make(map[string]string),
+		outboundAddPending:       make(map[string]bool),
+		outboundAddResponse:      make(map[string]chan PeerAddResponse),
+		inboundAddPending:        make(map[string]chan bool),
+		addRequests:              make(chan AddRequestNotification, 64),
+		reconnectWorkers:         make(map[string]context.CancelFunc),
+		suppressReconnect:        make(map[string]bool),
+		lastAddRequestAt:         make(map[string]time.Time),
+		fileRequestHistory:       make(map[string][]time.Time),
+		discoveredEndpoints:      make(map[string][]string),
+		endpointHealth:           make(map[string]map[string]int),
+		activeDrains:             make(map[string]bool),
+		outboundFileTransfers:    make(map[string]*outboundFileTransfer),
+		inboundFileTransfers:     make(map[string]*inboundFileTransfer),
+		inboundFolderTransfers:   make(map[string]*inboundFolderTransfer),
+		outboundFileEventChans:   make(map[string]chan fileTransferEvent),
+		outboundFolderEventChans: make(map[string]chan FolderTransferResponse),
+		outboundTransferQueue:    make(map[string][]string),
+		activeOutboundTransfer:   make(map[string]string),
+		pendingRekeyWaiters:      make(map[string]chan rekeyWaitResult),
+		errors:                   make(chan error, 64),
+		randomSource:             options.RandomSource,
 	}
 	if manager.randomSource == nil {
 		manager.randomSource = rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -704,6 +717,20 @@ loop:
 				continue
 			}
 			m.handleFileComplete(conn, complete)
+		case TypeFolderTransferRequest:
+			var request FolderTransferRequest
+			if err := json.Unmarshal(payload, &request); err != nil {
+				m.reportError(err)
+				continue
+			}
+			m.handleFolderTransferRequest(conn, request)
+		case TypeFolderTransferResponse:
+			var response FolderTransferResponse
+			if err := json.Unmarshal(payload, &response); err != nil {
+				m.reportError(err)
+				continue
+			}
+			m.handleFolderTransferResponse(conn, response)
 		}
 	}
 
@@ -2007,7 +2034,7 @@ func (m *PeerManager) hasPendingOutboundTransferForPeer(peerDeviceID string) boo
 			continue
 		}
 		transfer.mu.Lock()
-		pending := !transfer.Done && !transfer.Rejected
+		pending := !transfer.Done && !transfer.Rejected && !transfer.Canceled
 		transfer.mu.Unlock()
 		if pending {
 			return true

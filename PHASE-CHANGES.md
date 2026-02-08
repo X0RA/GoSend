@@ -198,45 +198,45 @@ This phase extends the file transfer system to support batch operations and fold
 
 Currently, file transfer is one file at a time. Users should be able to select multiple files and have them queued for sequential transfer.
 
-- [ ] Add a `transfer_queue` structure in `peer_manager.go` (or a dedicated `transfer_queue.go`) that holds a per-peer ordered list of pending file send operations
-- [ ] Update `SendFile` to enqueue rather than immediately start a transfer; a background worker per peer pops from the queue and initiates the next transfer when the current one completes
-- [ ] Update `ui/file_handler.go` to support the native file picker returning multiple file selections
-- [ ] Update `ui/chat_window.go` to invoke multi-file send when multiple paths are returned from the picker
-- [ ] Show queued transfers in the chat window as pending transfer cards (filename + "Waiting..." status) that update to active progress when their turn arrives
-- [ ] Add the ability to cancel a queued transfer before it starts
+- [x] Add a `transfer_queue` structure in `peer_manager.go` (or a dedicated `transfer_queue.go`) that holds a per-peer ordered list of pending file send operations
+- [x] Update `SendFile` to enqueue rather than immediately start a transfer; a background worker per peer pops from the queue and initiates the next transfer when the current one completes
+- [x] Update `ui/file_handler.go` to support the native file picker returning multiple file selections
+- [x] Update `ui/chat_window.go` to invoke multi-file send when multiple paths are returned from the picker
+- [x] Show queued transfers in the chat window as pending transfer cards (filename + "Waiting..." status) that update to active progress when their turn arrives
+- [x] Add the ability to cancel a queued transfer before it starts
 
 ### 5.2 — Folder Transfer with Structure Preservation
 
 Transferring an entire folder should preserve the directory hierarchy on the receiving end. This is modeled as a batch of file transfers wrapped in a folder metadata envelope.
 
-- [ ] Define a `folder_transfer_request` message type in `protocol.go` containing: `folder_id`, `folder_name`, `total_files`, `total_size`, list of relative file paths with individual sizes, `from_device_id`, `to_device_id`, `timestamp`, `signature`
-- [ ] Define a `folder_transfer_response` message type (accepted/rejected) with the same signing pattern
-- [ ] On the sender side in `file_transfer.go`, recursively enumerate the folder, build the manifest, send the folder request, and upon acceptance, queue each file with its relative path as metadata
-- [ ] On the receiver side, create the root folder in the download directory, then accept each file transfer and write to the correct relative path within that folder
-- [ ] Handle edge cases: empty subdirectories (send a manifest entry with zero size), symlinks (skip or follow based on a policy), and filename sanitization to prevent path traversal (reject any relative path containing `..` or absolute paths)
-- [ ] Update `storage/files.go` to store folder transfer metadata linking individual file records to their parent folder transfer
+- [x] Define a `folder_transfer_request` message type in `protocol.go` containing: `folder_id`, `folder_name`, `total_files`, `total_size`, list of relative file paths with individual sizes, `from_device_id`, `to_device_id`, `timestamp`, `signature`
+- [x] Define a `folder_transfer_response` message type (accepted/rejected) with the same signing pattern
+- [x] On the sender side in `file_transfer.go`, recursively enumerate the folder, build the manifest, send the folder request, and upon acceptance, queue each file with its relative path as metadata
+- [x] On the receiver side, create the root folder in the download directory, then accept each file transfer and write to the correct relative path within that folder
+- [x] Handle edge cases: empty subdirectories (send a manifest entry with zero size), symlinks (skip or follow based on a policy), and filename sanitization to prevent path traversal (reject any relative path containing `..` or absolute paths)
+- [x] Update `storage/files.go` to store folder transfer metadata linking individual file records to their parent folder transfer
 
 ### 5.3 — Drag-and-Drop for Files and Folders
 
 Drag-and-drop onto the chat window should be the primary way to initiate file and folder transfers. Dropping a file triggers a single file send; dropping a folder triggers the folder transfer flow from 5.2; dropping multiple items queues them all.
 
-- [ ] Implement the Fyne `desktop.DragContainer` or `widget.BaseWidget` `Droppable` interface on the chat window's content area in `ui/chat_window.go`
-- [ ] On drop, inspect each dropped URI: classify as file or directory
-- [ ] For single files, initiate a standard `SendFile` (or enqueue into the multi-file queue)
-- [ ] For directories, initiate the folder transfer flow from 5.2
-- [ ] For multiple mixed items (files and folders), enqueue all of them into the transfer queue in the order they were dropped
-- [ ] Show a visual drop target indicator (e.g., a highlighted border or overlay text "Drop files here") when a drag enters the chat area
-- [ ] Add tests (or at minimum manual test scripts) covering drag of single file, multiple files, single folder, and mixed items
+- [x] Implement the Fyne `desktop.DragContainer` or `widget.BaseWidget` `Droppable` interface on the chat window's content area in `ui/chat_window.go`
+- [x] On drop, inspect each dropped URI: classify as file or directory
+- [x] For single files, initiate a standard `SendFile` (or enqueue into the multi-file queue)
+- [x] For directories, initiate the folder transfer flow from 5.2
+- [x] For multiple mixed items (files and folders), enqueue all of them into the transfer queue in the order they were dropped
+- [x] Show a visual drop target indicator (e.g., a highlighted border or overlay text "Drop files here") when a drag enters the chat area
+- [x] Add tests (or at minimum manual test scripts) covering drag of single file, multiple files, single folder, and mixed items
 
 ### 5.4 — Transfer Queue Visibility and Management
 
 When multiple transfers are active or queued, users need visibility into what's happening and the ability to manage the queue.
 
-- [ ] Add a transfer queue panel accessible from the status bar or a dedicated icon in the top bar of the UI
-- [ ] The panel lists all active and pending transfers (both send and receive) grouped by peer, showing: filename, direction (sending/receiving), progress bar with percentage, transfer speed, and estimated time remaining for active transfers
-- [ ] Each queued or active transfer should have a cancel button that either dequeues it (if pending) or aborts it (if in progress) with a confirmation prompt
-- [ ] Completed transfers remain in the list briefly (e.g., 30 seconds) with a "Complete" badge before being removed, or can be cleared manually
-- [ ] Failed transfers show an error message and a retry button
+- [x] Add a transfer queue panel accessible from the status bar or a dedicated icon in the top bar of the UI
+- [x] The panel lists all active and pending transfers (both send and receive) grouped by peer, showing: filename, direction (sending/receiving), progress bar with percentage, transfer speed, and estimated time remaining for active transfers
+- [x] Each queued or active transfer should have a cancel button that either dequeues it (if pending) or aborts it (if in progress) with a confirmation prompt
+- [x] Completed transfers remain in the list briefly (e.g., 30 seconds) with a "Complete" badge before being removed, or can be cleared manually
+- [x] Failed transfers show an error message and a retry button
 
 ---
 

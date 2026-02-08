@@ -101,6 +101,8 @@ type Message struct {
 type FileMetadata struct {
 	FileID            string
 	MessageID         string
+	FolderID          string
+	RelativePath      string
 	FromDeviceID      string
 	ToDeviceID        string
 	Filename          string
@@ -110,6 +112,19 @@ type FileMetadata struct {
 	Checksum          string
 	TimestampReceived *int64
 	TransferStatus    string
+}
+
+// FolderTransferMetadata stores one folder transfer envelope.
+type FolderTransferMetadata struct {
+	FolderID       string
+	FromDeviceID   string
+	ToDeviceID     string
+	FolderName     string
+	RootPath       string
+	TotalFiles     int
+	TotalSize      int64
+	TransferStatus string
+	Timestamp      int64
 }
 
 // TransferCheckpoint stores resumable transfer progress state.

@@ -32,24 +32,26 @@ const (
 )
 
 const (
-	TypeHandshakeChallenge = "handshake_challenge"
-	TypeHandshake          = "handshake"
-	TypeHandshakeResponse  = "handshake_response"
-	TypePeerAddRequest     = "peer_add_request"
-	TypePeerAddResponse    = "peer_add_response"
-	TypePeerRemove         = "peer_remove"
-	TypePeerDisconnect     = "peer_disconnect"
-	TypePing               = "ping"
-	TypePong               = "pong"
-	TypeMessage            = "message"
-	TypeRekeyRequest       = "rekey_request"
-	TypeRekeyResponse      = "rekey_response"
-	TypeFileRequest        = "file_request"
-	TypeFileResponse       = "file_response"
-	TypeFileData           = "file_data"
-	TypeFileComplete       = "file_complete"
-	TypeAck                = "ack"
-	TypeError              = "error"
+	TypeHandshakeChallenge     = "handshake_challenge"
+	TypeHandshake              = "handshake"
+	TypeHandshakeResponse      = "handshake_response"
+	TypePeerAddRequest         = "peer_add_request"
+	TypePeerAddResponse        = "peer_add_response"
+	TypePeerRemove             = "peer_remove"
+	TypePeerDisconnect         = "peer_disconnect"
+	TypePing                   = "ping"
+	TypePong                   = "pong"
+	TypeMessage                = "message"
+	TypeRekeyRequest           = "rekey_request"
+	TypeRekeyResponse          = "rekey_response"
+	TypeFileRequest            = "file_request"
+	TypeFileResponse           = "file_response"
+	TypeFileData               = "file_data"
+	TypeFileComplete           = "file_complete"
+	TypeFolderTransferRequest  = "folder_transfer_request"
+	TypeFolderTransferResponse = "folder_transfer_response"
+	TypeAck                    = "ack"
+	TypeError                  = "error"
 )
 
 var (
@@ -193,6 +195,8 @@ type RekeyResponse struct {
 type FileRequest struct {
 	Type         string `json:"type"`
 	FileID       string `json:"file_id"`
+	FolderID     string `json:"folder_id,omitempty"`
+	RelativePath string `json:"relative_path,omitempty"`
 	FromDeviceID string `json:"from_device_id"`
 	ToDeviceID   string `json:"to_device_id"`
 	Filename     string `json:"filename"`
@@ -237,6 +241,38 @@ type FileComplete struct {
 	Message   string `json:"message,omitempty"`
 	Timestamp int64  `json:"timestamp"`
 	Signature string `json:"signature"`
+}
+
+// FolderManifestEntry describes one file or empty directory in a folder transfer.
+type FolderManifestEntry struct {
+	RelativePath string `json:"relative_path"`
+	Size         int64  `json:"size"`
+	IsDirectory  bool   `json:"is_directory,omitempty"`
+}
+
+// FolderTransferRequest starts a folder transfer envelope.
+type FolderTransferRequest struct {
+	Type         string                `json:"type"`
+	FolderID     string                `json:"folder_id"`
+	FolderName   string                `json:"folder_name"`
+	TotalFiles   int                   `json:"total_files"`
+	TotalSize    int64                 `json:"total_size"`
+	Manifest     []FolderManifestEntry `json:"manifest"`
+	FromDeviceID string                `json:"from_device_id"`
+	ToDeviceID   string                `json:"to_device_id"`
+	Timestamp    int64                 `json:"timestamp"`
+	Signature    string                `json:"signature"`
+}
+
+// FolderTransferResponse accepts or rejects a folder transfer envelope.
+type FolderTransferResponse struct {
+	Type         string `json:"type"`
+	FolderID     string `json:"folder_id"`
+	Status       string `json:"status"`
+	FromDeviceID string `json:"from_device_id"`
+	Message      string `json:"message,omitempty"`
+	Timestamp    int64  `json:"timestamp"`
+	Signature    string `json:"signature"`
 }
 
 // AckMessage confirms message delivery.
