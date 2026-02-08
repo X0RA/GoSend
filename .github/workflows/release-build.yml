@@ -28,10 +28,10 @@ jobs:
             goos: darwin
             goarch: arm64
             ext: ""
-          # - runner: windows-latest
-          #   goos: windows
-          #   goarch: amd64
-          #   ext: ".exe"
+          - runner: windows-latest
+            goos: windows
+            goarch: amd64
+            ext: ".exe"
 
     steps:
       - name: Check out repository
