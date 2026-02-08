@@ -76,6 +76,9 @@ type controller struct {
 	chatMessages  []storage.Message
 	fileTransfers map[string]chatFileEntry
 
+	fileProgressBars   map[string]*widget.ProgressBar
+	fileProgressBarsMu sync.Mutex
+
 	peerList        *widget.List
 	chatHeader      *clickableLabel
 	chatMessagesBox *fyne.Container

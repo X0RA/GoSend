@@ -458,6 +458,10 @@ Note: runtime logic currently uses `storage` structs directly; `models` package 
 - `Makefile` declares `.PHONY run_tests`, but no `run_tests` target is currently defined.
 - No dedicated UI test suite is present.
 
+# Fixed issues:
+
+
+
 # Discrepancies
 
 - Previous README listed `DESIGN.md` and `PHASES.md` as repository files. Current repo does not contain those files.

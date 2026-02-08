@@ -286,12 +286,23 @@ func (c *controller) renderChatTranscript() {
 	c.chatMu.RUnlock()
 
 	files := c.fileTransfersForPeer(peerID)
-	rows := buildConversationRows(messages, files, c.cfg.DeviceID, c.window)
 
 	fyne.Do(func() {
 		if c.chatMessagesBox == nil {
 			return
 		}
+		// Map FileID -> progress bar so we can update the correct bar on progress without rebuilding the list.
+		barMap := make(map[string]*widget.ProgressBar)
+		registerBar := func(fileID string, bar *widget.ProgressBar) {
+			if fileID != "" && bar != nil {
+				barMap[fileID] = bar
+			}
+		}
+		rows := buildConversationRows(messages, files, c.cfg.DeviceID, c.window, registerBar)
+		c.fileProgressBarsMu.Lock()
+		c.fileProgressBars = barMap
+		c.fileProgressBarsMu.Unlock()
+
 		c.chatMessagesBox.RemoveAll()
 		if len(rows) == 0 {
 			empty := widget.NewLabel("No messages yet")
@@ -310,7 +321,7 @@ func (c *controller) renderChatTranscript() {
 	})
 }
 
-func buildConversationRows(messages []storage.Message, files []chatFileEntry, localDeviceID string, parentWindow fyne.Window) []fyne.CanvasObject {
+func buildConversationRows(messages []storage.Message, files []chatFileEntry, localDeviceID string, parentWindow fyne.Window, registerProgressBar onProgressBarCreated) []fyne.CanvasObject {
 	type conversationRow struct {
 		timestamp int64
 		kind      int
@@ -319,31 +330,47 @@ func buildConversationRows(messages []storage.Message, files []chatFileEntry, lo
 	}
 
 	rows := make([]conversationRow, 0, len(messages)+len(files))
+	msgCopies := make([]storage.Message, len(messages))
 	for i := range messages {
-		msg := messages[i]
+		msgCopies[i] = messages[i]
+	}
+	for i := range messages {
 		rows = append(rows, conversationRow{
-			timestamp: msg.TimestampSent,
+			timestamp: msgCopies[i].TimestampSent,
 			kind:      0,
-			message:   &msg,
+			message:   &msgCopies[i],
 		})
 	}
+	// Keep distinct copies so each row has its own file entry (avoids loop variable capture when rendering).
+	fileCopies := make([]chatFileEntry, len(files))
 	for i := range files {
-		file := files[i]
-		timestamp := file.AddedAt
-		if timestamp == 0 {
-			timestamp = time.Now().UnixMilli()
+		fileCopies[i] = files[i]
+	}
+	for i := range files {
+		f := &fileCopies[i]
+		timestamp := f.AddedAt
+		// Keep timestamp stable when 0 so order doesn't jump on each refresh (use 0, tie-break by FileID in sort).
+		if timestamp <= 0 {
+			timestamp = 0
 		}
 		rows = append(rows, conversationRow{
 			timestamp: timestamp,
 			kind:      1,
-			file:      &file,
+			file:      f,
 		})
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
-		if rows[i].timestamp == rows[j].timestamp {
+		if rows[i].timestamp != rows[j].timestamp {
+			return rows[i].timestamp < rows[j].timestamp
+		}
+		if rows[i].kind != rows[j].kind {
 			return rows[i].kind < rows[j].kind
 		}
-		return rows[i].timestamp < rows[j].timestamp
+		// Same timestamp and kind: use FileID for file rows so order is stable when two files share AddedAt.
+		if rows[i].kind == 1 && rows[i].file != nil && rows[j].file != nil {
+			return rows[i].file.FileID < rows[j].file.FileID
+		}
+		return false
 	})
 
 	out := make([]fyne.CanvasObject, 0, len(rows))
@@ -353,7 +380,7 @@ func buildConversationRows(messages []storage.Message, files []chatFileEntry, lo
 			continue
 		}
 		if row.file != nil {
-			out = append(out, renderFileRow(*row.file, parentWindow))
+			out = append(out, renderFileRow(*row.file, parentWindow, registerProgressBar))
 		}
 	}
 	return out
@@ -408,7 +435,10 @@ func isOutgoingMessage(message storage.Message, localDeviceID string) bool {
 	return strings.TrimSpace(localDeviceID) != "" && message.FromDeviceID == localDeviceID
 }
 
-func renderFileRow(file chatFileEntry, parentWindow fyne.Window) fyne.CanvasObject {
+// onProgressBarCreated is called when a file row has a progress bar so the controller can update it by FileID.
+type onProgressBarCreated func(fileID string, bar *widget.ProgressBar)
+
+func renderFileRow(file chatFileEntry, parentWindow fyne.Window, registerProgressBar onProgressBarCreated) fyne.CanvasObject {
 	name := valueOrDefault(file.Filename, file.FileID)
 	title := widget.NewLabel("📄 " + name)
 	title.TextStyle = fyne.TextStyle{Bold: true}
@@ -440,6 +470,9 @@ func renderFileRow(file chatFileEntry, parentWindow fyne.Window) fyne.CanvasObje
 		progress := widget.NewProgressBar()
 		progress.SetValue(float64(file.BytesTransferred) / float64(file.TotalBytes))
 		items = append(items, progress)
+		if registerProgressBar != nil && file.FileID != "" {
+			registerProgressBar(file.FileID, progress)
+		}
 	}
 	if file.TransferCompleted && storedPath != "" {
 		showPathBtn := widget.NewButton("Show Path", func() {
@@ -518,9 +551,6 @@ func (c *controller) upsertFileTransfer(entry chatFileEntry) {
 	if entry.FileID == "" {
 		return
 	}
-	if entry.AddedAt == 0 {
-		entry.AddedAt = time.Now().UnixMilli()
-	}
 
 	c.chatMu.Lock()
 	existing, exists := c.fileTransfers[entry.FileID]
@@ -557,6 +587,11 @@ func (c *controller) upsertFileTransfer(entry chatFileEntry) {
 		}
 		if entry.AddedAt == 0 {
 			entry.AddedAt = existing.AddedAt
+		}
+	} else {
+		// New entry: set AddedAt once so order in chat stays stable (never overwrite on later progress).
+		if entry.AddedAt == 0 {
+			entry.AddedAt = time.Now().UnixMilli()
 		}
 	}
 	c.fileTransfers[entry.FileID] = entry
@@ -621,9 +656,6 @@ func (c *controller) handleFileProgress(progress network.FileProgress) {
 	if entry.TotalBytes == 0 {
 		entry.TotalBytes = entry.Filesize
 	}
-	if entry.AddedAt == 0 {
-		entry.AddedAt = time.Now().UnixMilli()
-	}
 	c.upsertFileTransfer(entry)
 
 	c.fileHandler.UpdateProgress(TransferProgress{
@@ -635,7 +667,23 @@ func (c *controller) handleFileProgress(progress network.FileProgress) {
 		Failed:           strings.EqualFold(entry.Status, "failed") || strings.EqualFold(entry.Status, "rejected"),
 	})
 
-	if entry.PeerDeviceID != "" {
+	if entry.PeerDeviceID == "" {
+		return
+	}
+	if entry.TransferCompleted {
+		// Full refresh so we replace progress bar with "Show Path" and update status text.
 		c.refreshChatForPeer(entry.PeerDeviceID)
+		return
+	}
+	// Update only this file's progress bar in place so concurrent transfers don't swap or glitch.
+	c.fileProgressBarsMu.Lock()
+	bar := c.fileProgressBars[progress.FileID]
+	c.fileProgressBarsMu.Unlock()
+	if bar != nil && entry.TotalBytes > 0 {
+		value := float64(entry.BytesTransferred) / float64(entry.TotalBytes)
+		fyne.Do(func() {
+			bar.SetValue(value)
+			bar.Refresh()
+		})
 	}
 }
