@@ -56,6 +56,13 @@ const (
 	SecuritySeverityCritical = "critical"
 )
 
+const (
+	// PeerTrustLevelNormal is the default trust level for known peers.
+	PeerTrustLevelNormal = "normal"
+	// PeerTrustLevelTrusted marks peers explicitly trusted by the user.
+	PeerTrustLevelTrusted = "trusted"
+)
+
 // Peer is the SQLite representation of a known remote device.
 type Peer struct {
 	DeviceID          string
@@ -129,6 +136,16 @@ type SecurityEventFilter struct {
 	Offset        int
 }
 
+// PeerSettings stores user-controlled behavior for one known peer.
+type PeerSettings struct {
+	PeerDeviceID      string
+	AutoAcceptFiles   bool
+	MaxFileSize       int64
+	DownloadDirectory string
+	CustomName        string
+	TrustLevel        string
+}
+
 func validatePeerStatus(status string) error {
 	switch status {
 	case peerStatusOnline, peerStatusOffline, peerStatusPending, peerStatusBlocked:
@@ -180,6 +197,15 @@ func validateSecuritySeverity(severity string) error {
 		return nil
 	default:
 		return fmt.Errorf("invalid security event severity %q", severity)
+	}
+}
+
+func validatePeerTrustLevel(trustLevel string) error {
+	switch trustLevel {
+	case PeerTrustLevelNormal, PeerTrustLevelTrusted:
+		return nil
+	default:
+		return fmt.Errorf("invalid peer trust level %q", trustLevel)
 	}
 }
 

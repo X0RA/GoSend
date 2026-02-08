@@ -113,13 +113,16 @@ type PeerManagerOptions struct {
 	OnMessageReceived func(storage.Message)
 	OnQueueOverflow   func(peerDeviceID string, droppedCount int)
 
-	FilesDir            string
-	FileChunkSize       int
-	FileResponseTimeout time.Duration
-	FileCompleteTimeout time.Duration // timeout waiting for receiver's FileComplete after all chunks sent
-	MaxChunkRetries     int
-	OnFileRequest       func(FileRequestNotification) (bool, error)
-	OnFileProgress      func(FileProgress)
+	FilesDir              string
+	MaxReceiveFileSize    int64
+	GetDownloadDirectory  func() string
+	GetMaxReceiveFileSize func() int64
+	FileChunkSize         int
+	FileResponseTimeout   time.Duration
+	FileCompleteTimeout   time.Duration // timeout waiting for receiver's FileComplete after all chunks sent
+	MaxChunkRetries       int
+	OnFileRequest         func(FileRequestNotification) (bool, error)
+	OnFileProgress        func(FileProgress)
 }
 
 // PeerManager manages peer add/remove/disconnect flows plus reconnect behavior.
@@ -214,6 +217,9 @@ func NewPeerManager(options PeerManagerOptions) (*PeerManager, error) {
 	if options.FilesDir == "" {
 		options.FilesDir = "./files"
 	}
+	if options.MaxReceiveFileSize < 0 {
+		options.MaxReceiveFileSize = 0
+	}
 
 	manager := &PeerManager{
 		options:                options,
@@ -244,7 +250,7 @@ func (m *PeerManager) Start() error {
 
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 
-	if err := os.MkdirAll(m.options.FilesDir, 0o700); err != nil {
+	if err := os.MkdirAll(m.currentDownloadDirectory(), 0o700); err != nil {
 		return fmt.Errorf("create files dir: %w", err)
 	}
 
@@ -1641,6 +1647,9 @@ func (m *PeerManager) persistPeerConnection(conn *PeerConnection, status string,
 		if err := m.options.Store.AddPeer(peer); err != nil {
 			return err
 		}
+		if err := m.options.Store.EnsurePeerSettingsExist(peerID); err != nil {
+			return err
+		}
 		m.setKnownKey(peerID, conn.PeerPublicKey())
 		return nil
 	}
@@ -1713,6 +1722,32 @@ func (m *PeerManager) lookupKnownKey(peerDeviceID string) string {
 	m.knownKeyMu.RLock()
 	defer m.knownKeyMu.RUnlock()
 	return m.knownKeys[peerDeviceID]
+}
+
+func (m *PeerManager) currentDownloadDirectory() string {
+	if m.options.GetDownloadDirectory != nil {
+		if path := strings.TrimSpace(m.options.GetDownloadDirectory()); path != "" {
+			return path
+		}
+	}
+	if path := strings.TrimSpace(m.options.FilesDir); path != "" {
+		return path
+	}
+	return "./files"
+}
+
+func (m *PeerManager) currentMaxReceiveFileSize() int64 {
+	if m.options.GetMaxReceiveFileSize != nil {
+		limit := m.options.GetMaxReceiveFileSize()
+		if limit > 0 {
+			return limit
+		}
+		return 0
+	}
+	if m.options.MaxReceiveFileSize > 0 {
+		return m.options.MaxReceiveFileSize
+	}
+	return 0
 }
 
 func (m *PeerManager) setKnownKey(peerDeviceID, key string) {
@@ -1857,8 +1892,8 @@ func fingerprintFromBase64(keyBase64 string) (string, error) {
 
 // NotifyPeerDiscovered is called when mDNS discovers a peer on the network.
 // If the peer is a known (added) peer that is not currently connected,
-// it updates the stored endpoint and starts a reconnect attempt.
-func (m *PeerManager) NotifyPeerDiscovered(deviceID, ip string, port int) {
+// it updates the stored endpoint/device name and starts a reconnect attempt.
+func (m *PeerManager) NotifyPeerDiscovered(deviceID, deviceName, ip string, port int) {
 	if deviceID == "" || deviceID == m.options.Identity.DeviceID {
 		return
 	}
@@ -1869,6 +1904,10 @@ func (m *PeerManager) NotifyPeerDiscovered(deviceID, ip string, port int) {
 	}
 	if peer.Status == peerStatusBlocked {
 		return
+	}
+
+	if strings.TrimSpace(deviceName) != "" && deviceName != peer.DeviceName {
+		_ = m.options.Store.UpdatePeerDeviceName(deviceID, deviceName)
 	}
 
 	if ip != "" && port > 0 {

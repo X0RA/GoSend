@@ -104,6 +104,127 @@ func TestFileTransferRejected(t *testing.T) {
 	waitForFileStatus(t, b.store, fileID, "rejected", 8*time.Second)
 }
 
+func TestFileTransferAutoRejectedByMaxReceiveSize(t *testing.T) {
+	aFiles := filepath.Join(t.TempDir(), "a-files")
+	bFiles := filepath.Join(t.TempDir(), "b-files")
+	sourcePath := createFixtureFile(t, t.TempDir(), "too-large.bin", 512*1024)
+
+	a := newTestManager(t, testManagerConfig{
+		deviceID:      "peer-a",
+		name:          "Peer A",
+		filesDir:      aFiles,
+		fileChunkSize: 32 * 1024,
+	})
+	defer a.stop()
+
+	var callbackMu sync.Mutex
+	callbackCount := 0
+	b := newTestManager(t, testManagerConfig{
+		deviceID:           "peer-b",
+		name:               "Peer B",
+		filesDir:           bFiles,
+		fileChunkSize:      32 * 1024,
+		maxReceiveFileSize: 128 * 1024,
+		approveFile: func(FileRequestNotification) (bool, error) {
+			callbackMu.Lock()
+			callbackCount++
+			callbackMu.Unlock()
+			return true, nil
+		},
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a"); err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+
+	fileID, err := a.manager.SendFile("peer-b", sourcePath)
+	if err != nil {
+		t.Fatalf("SendFile failed: %v", err)
+	}
+
+	waitForFileStatus(t, a.store, fileID, "rejected", 8*time.Second)
+	waitForFileStatus(t, b.store, fileID, "rejected", 8*time.Second)
+
+	callbackMu.Lock()
+	finalCount := callbackCount
+	callbackMu.Unlock()
+	if finalCount != 0 {
+		t.Fatalf("expected no manual file approval callback for oversized file, got %d", finalCount)
+	}
+}
+
+func TestFileTransferAutoAcceptAndPeerDownloadOverride(t *testing.T) {
+	aFiles := filepath.Join(t.TempDir(), "a-files")
+	bFiles := filepath.Join(t.TempDir(), "b-files")
+	bPeerDownloads := filepath.Join(t.TempDir(), "peer-downloads")
+	sourcePath := createFixtureFile(t, t.TempDir(), "auto-accept.bin", 300*1024)
+
+	a := newTestManager(t, testManagerConfig{
+		deviceID:      "peer-a",
+		name:          "Peer A",
+		filesDir:      aFiles,
+		fileChunkSize: 32 * 1024,
+	})
+	defer a.stop()
+
+	var callbackMu sync.Mutex
+	callbackCount := 0
+	b := newTestManager(t, testManagerConfig{
+		deviceID:           "peer-b",
+		name:               "Peer B",
+		filesDir:           bFiles,
+		fileChunkSize:      32 * 1024,
+		maxReceiveFileSize: 100 * 1024,
+		approveFile: func(FileRequestNotification) (bool, error) {
+			callbackMu.Lock()
+			callbackCount++
+			callbackMu.Unlock()
+			return false, nil
+		},
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a"); err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+
+	if err := b.store.UpdatePeerSettings(storage.PeerSettings{
+		PeerDeviceID:      "peer-a",
+		AutoAcceptFiles:   true,
+		MaxFileSize:       1024 * 1024,
+		DownloadDirectory: bPeerDownloads,
+		CustomName:        "",
+		TrustLevel:        storage.PeerTrustLevelNormal,
+	}); err != nil {
+		t.Fatalf("UpdatePeerSettings failed: %v", err)
+	}
+
+	fileID, err := a.manager.SendFile("peer-b", sourcePath)
+	if err != nil {
+		t.Fatalf("SendFile failed: %v", err)
+	}
+
+	waitForFileStatus(t, a.store, fileID, "complete", 12*time.Second)
+	received := waitForFileStatus(t, b.store, fileID, "complete", 12*time.Second)
+	if !strings.HasPrefix(received.StoredPath, bPeerDownloads) {
+		t.Fatalf("expected received path under peer override directory %q, got %q", bPeerDownloads, received.StoredPath)
+	}
+
+	callbackMu.Lock()
+	finalCount := callbackCount
+	callbackMu.Unlock()
+	if finalCount != 0 {
+		t.Fatalf("expected no manual file approval callback for auto-accepted peer, got %d", finalCount)
+	}
+}
+
 func TestFileTransferResumeAfterReconnect(t *testing.T) {
 	aFiles := filepath.Join(t.TempDir(), "a-files")
 	bFiles := filepath.Join(t.TempDir(), "b-files")

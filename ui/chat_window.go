@@ -93,7 +93,9 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 	c.chatHeader = newClickableLabel("Select a peer to start chatting", c.showSelectedPeerFingerprint)
 	c.chatHeader.SetTextStyle(fyne.TextStyle{Bold: true})
 	c.chatHeader.SetColor(colorMuted)
-	header := container.NewPadded(c.chatHeader)
+	c.peerSettingsBtn = newHintButtonWithIcon("", theme.SettingsIcon(), "Peer settings", c.showSelectedPeerSettingsDialog, c.handleHoverHint)
+	c.peerSettingsBtn.Hide()
+	header := container.NewPadded(container.NewBorder(nil, nil, nil, c.peerSettingsBtn, c.chatHeader))
 
 	emptyLabel := widget.NewLabel("No messages yet")
 	emptyLabel.Alignment = fyne.TextAlignCenter
@@ -129,7 +131,13 @@ func (c *controller) updateChatHeader() {
 	if selectedPeerID != "" {
 		if peer := c.peerByID(selectedPeerID); peer != nil {
 			hasPeer = true
-			peerName = peer.DeviceName
+			peerName = c.peerDisplayName(peer)
+			if strings.TrimSpace(peerName) == "" {
+				peerName = peer.DeviceName
+			}
+			if strings.TrimSpace(peerName) == "" {
+				peerName = peer.DeviceID
+			}
 			if strings.EqualFold(peer.Status, "online") {
 				statusColor = colorOnline
 			}
@@ -149,6 +157,13 @@ func (c *controller) updateChatHeader() {
 				if c.messageInput != nil {
 					c.messageInput.SetText("")
 				}
+			}
+		}
+		if c.peerSettingsBtn != nil {
+			if hasPeer {
+				c.peerSettingsBtn.Show()
+			} else {
+				c.peerSettingsBtn.Hide()
 			}
 		}
 	})
@@ -241,7 +256,18 @@ func (c *controller) showSelectedPeerFingerprint() {
 	}
 
 	fingerprint := crypto.FormatFingerprint(peer.KeyFingerprint)
-	message := fmt.Sprintf("%s\n\nDevice ID: %s\nFingerprint: %s", peer.DeviceName, peer.DeviceID, fingerprint)
+	displayName := c.peerDisplayName(peer)
+	if strings.TrimSpace(displayName) == "" {
+		displayName = peer.DeviceName
+	}
+	if strings.TrimSpace(displayName) == "" {
+		displayName = peer.DeviceID
+	}
+	message := fmt.Sprintf("%s\n\nDevice ID: %s\nFingerprint: %s", displayName, peer.DeviceID, fingerprint)
+	settings := c.peerSettingsByID(peer.DeviceID)
+	if settings != nil && strings.TrimSpace(settings.CustomName) != "" && settings.CustomName != peer.DeviceName {
+		message += fmt.Sprintf("\nDevice Name: %s", valueOrDefault(peer.DeviceName, peer.DeviceID))
+	}
 	dialog.ShowInformation("Peer Fingerprint", message, c.window)
 }
 

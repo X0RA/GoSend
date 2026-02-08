@@ -430,8 +430,21 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 		return
 	}
 
+	peerSettings := m.getPeerSettingsSnapshot(request.FromDeviceID)
+	downloadDir := m.resolveInboundDownloadDirectory(peerSettings)
+	finalPath := filepath.Join(downloadDir, prefixedFilename(request.FileID, request.Filename))
+	tempPath := finalPath + ".part"
+
+	effectiveSizeLimit := m.resolveReceiveLimit(peerSettings)
 	accept := true
-	if m.options.OnFileRequest != nil {
+	rejectMessage := "file transfer rejected by user"
+
+	if effectiveSizeLimit > 0 && request.Filesize > effectiveSizeLimit {
+		accept = false
+		rejectMessage = fmt.Sprintf("file size exceeds configured limit (%d bytes)", effectiveSizeLimit)
+	} else if peerSettings != nil && peerSettings.AutoAcceptFiles {
+		accept = true
+	} else if m.options.OnFileRequest != nil {
 		decision, err := m.options.OnFileRequest(FileRequestNotification{
 			FileID:       request.FileID,
 			FromDeviceID: request.FromDeviceID,
@@ -446,9 +459,6 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 		}
 		accept = decision
 	}
-
-	finalPath := filepath.Join(m.options.FilesDir, prefixedFilename(request.FileID, request.Filename))
-	tempPath := finalPath + ".part"
 
 	inbound := m.getInboundTransfer(request.FileID)
 	if !accept {
@@ -474,7 +484,7 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 			Status:       fileResponseStatusRejected,
 			FromDeviceID: m.options.Identity.DeviceID,
 			Timestamp:    time.Now().UnixMilli(),
-			Message:      "file transfer rejected by user",
+			Message:      rejectMessage,
 		}
 		if err := m.signFileResponse(&response); err != nil {
 			m.reportError(err)
@@ -485,7 +495,7 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 	}
 
 	if inbound == nil {
-		if err := os.MkdirAll(m.options.FilesDir, 0o700); err != nil {
+		if err := os.MkdirAll(downloadDir, 0o700); err != nil {
 			m.reportError(err)
 			return
 		}
@@ -916,6 +926,50 @@ func (m *PeerManager) upsertFileMetadata(meta storage.FileMetadata) error {
 		return nil
 	}
 	return err
+}
+
+func (m *PeerManager) getPeerSettingsSnapshot(peerDeviceID string) *storage.PeerSettings {
+	if strings.TrimSpace(peerDeviceID) == "" || m.options.Store == nil {
+		return nil
+	}
+
+	settings, err := m.options.Store.GetPeerSettings(peerDeviceID)
+	if err == nil {
+		return settings
+	}
+	if !errors.Is(err, storage.ErrNotFound) {
+		m.reportError(fmt.Errorf("load peer settings for %q: %w", peerDeviceID, err))
+		return nil
+	}
+
+	if ensureErr := m.options.Store.EnsurePeerSettingsExist(peerDeviceID); ensureErr != nil {
+		m.reportError(fmt.Errorf("ensure peer settings for %q: %w", peerDeviceID, ensureErr))
+		return nil
+	}
+	settings, err = m.options.Store.GetPeerSettings(peerDeviceID)
+	if err != nil {
+		if !errors.Is(err, storage.ErrNotFound) {
+			m.reportError(fmt.Errorf("reload peer settings for %q: %w", peerDeviceID, err))
+		}
+		return nil
+	}
+	return settings
+}
+
+func (m *PeerManager) resolveInboundDownloadDirectory(settings *storage.PeerSettings) string {
+	if settings != nil {
+		if peerDir := strings.TrimSpace(settings.DownloadDirectory); peerDir != "" {
+			return peerDir
+		}
+	}
+	return m.currentDownloadDirectory()
+}
+
+func (m *PeerManager) resolveReceiveLimit(settings *storage.PeerSettings) int64 {
+	if settings != nil && settings.MaxFileSize > 0 {
+		return settings.MaxFileSize
+	}
+	return m.currentMaxReceiveFileSize()
 }
 
 func (m *PeerManager) verifyFileRequest(conn *PeerConnection, request FileRequest) error {

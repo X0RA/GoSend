@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -14,7 +15,25 @@ import (
 
 	"gosend/config"
 	appcrypto "gosend/crypto"
+	"gosend/storage"
 )
+
+const (
+	maxSizePresetUseGlobal = "Use global default"
+	maxSizePresetUnlimited = "Unlimited"
+	maxSizePreset100MB     = "100 MB"
+	maxSizePreset500MB     = "500 MB"
+	maxSizePreset1GB       = "1 GB"
+	maxSizePreset5GB       = "5 GB"
+	maxSizePresetCustom    = "Custom"
+)
+
+var maxSizePresetValues = map[string]int64{
+	maxSizePreset100MB: 100 * 1024 * 1024,
+	maxSizePreset500MB: 500 * 1024 * 1024,
+	maxSizePreset1GB:   1024 * 1024 * 1024,
+	maxSizePreset5GB:   5 * 1024 * 1024 * 1024,
+}
 
 func (c *controller) showSettingsDialog() {
 	nameEntry := widget.NewEntry()
@@ -45,6 +64,53 @@ func (c *controller) showSettingsDialog() {
 		portEntry.Disable()
 	}
 
+	downloadDirEntry := widget.NewEntry()
+	downloadDirEntry.SetText(c.currentDownloadDirectory())
+	browseDownloadDirBtn := widget.NewButton("Browse...", func() {
+		go func() {
+			path, err := c.pickFolderPath()
+			if err != nil {
+				if err != errFilePickerCancelled {
+					c.setStatus(fmt.Sprintf("Select download folder failed: %v", err))
+				}
+				return
+			}
+			fyne.Do(func() {
+				downloadDirEntry.SetText(path)
+			})
+		}()
+	})
+
+	maxSizeSelect := widget.NewSelect([]string{
+		maxSizePresetUnlimited,
+		maxSizePreset100MB,
+		maxSizePreset500MB,
+		maxSizePreset1GB,
+		maxSizePreset5GB,
+		maxSizePresetCustom,
+	}, nil)
+	maxSizeCustomEntry := widget.NewEntry()
+	maxSizeCustomEntry.SetPlaceHolder("Bytes")
+	maxSizeSelect.OnChanged = func(selected string) {
+		if selected == maxSizePresetCustom {
+			maxSizeCustomEntry.Enable()
+			return
+		}
+		maxSizeCustomEntry.Disable()
+		if selected == maxSizePresetUnlimited {
+			maxSizeCustomEntry.SetText("0")
+			return
+		}
+		if presetBytes, ok := maxSizePresetValues[selected]; ok {
+			maxSizeCustomEntry.SetText(strconv.FormatInt(presetBytes, 10))
+		}
+	}
+	maxSizeSelect.SetSelected(selectMaxSizePreset(c.cfg.MaxReceiveFileSize, false))
+	if maxSizeSelect.Selected == maxSizePresetCustom {
+		maxSizeCustomEntry.SetText(strconv.FormatInt(c.cfg.MaxReceiveFileSize, 10))
+		maxSizeCustomEntry.Enable()
+	}
+
 	fingerprintLabel := widget.NewLabel(appcrypto.FormatFingerprint(c.cfg.KeyFingerprint))
 	fingerprintLabel.Wrapping = fyne.TextWrapBreak
 	deviceIDLabel := widget.NewLabel(c.cfg.DeviceID)
@@ -61,6 +127,8 @@ func (c *controller) showSettingsDialog() {
 		widget.NewFormItem("Fingerprint", fingerprintLabel),
 		widget.NewFormItem("Port Mode", portModeGroup),
 		widget.NewFormItem("Port", portEntry),
+		widget.NewFormItem("Download Location", container.NewBorder(nil, nil, nil, browseDownloadDirBtn, downloadDirEntry)),
+		widget.NewFormItem("Max File Size", container.NewHBox(maxSizeSelect, maxSizeCustomEntry)),
 	)
 
 	content := container.NewVBox(
@@ -95,26 +163,272 @@ func (c *controller) showSettingsDialog() {
 			port = parsed
 		}
 
-		changed := c.cfg.DeviceName != name || c.cfg.PortMode != portMode || c.cfg.ListeningPort != port
+		downloadDir := strings.TrimSpace(downloadDirEntry.Text)
+		if downloadDir == "" {
+			dialog.ShowError(fmt.Errorf("download location is required"), c.window)
+			return
+		}
+		if err := os.MkdirAll(downloadDir, 0o700); err != nil {
+			dialog.ShowError(fmt.Errorf("create download location: %w", err), c.window)
+			return
+		}
+
+		maxReceiveFileSize, err := parseMaxSizeSelection(maxSizeSelect.Selected, maxSizeCustomEntry.Text, false)
+		if err != nil {
+			dialog.ShowError(err, c.window)
+			return
+		}
+
+		needsRestart := c.cfg.DeviceName != name || c.cfg.PortMode != portMode || c.cfg.ListeningPort != port
+		changed := needsRestart ||
+			c.cfg.DownloadDirectory != downloadDir ||
+			c.cfg.MaxReceiveFileSize != maxReceiveFileSize
 		if !changed {
 			c.setStatus("Settings saved")
 			return
 		}
+
 		c.cfg.DeviceName = name
 		c.cfg.PortMode = portMode
 		c.cfg.ListeningPort = port
+		c.cfg.DownloadDirectory = downloadDir
+		c.cfg.MaxReceiveFileSize = maxReceiveFileSize
 
 		if err := config.Save(c.cfgPath, c.cfg); err != nil {
 			dialog.ShowError(err, c.window)
 			return
 		}
 
-		c.setStatus("Settings saved. Restart required to apply name/port changes.")
-		dialog.ShowInformation("Restart Required", "Settings were saved. Restart the app to apply device name/port changes.", c.window)
+		if needsRestart {
+			c.setStatus("Settings saved. Restart required to apply device name/port changes.")
+			dialog.ShowInformation("Restart Required", "Settings were saved. Restart the app to apply device name/port changes.", c.window)
+			return
+		}
+
+		c.setStatus("Settings saved")
 	}, c.window)
 
-	dlg.Resize(fyne.NewSize(520, 420))
+	dlg.Resize(fyne.NewSize(640, 520))
 	dlg.Show()
+}
+
+func (c *controller) showSelectedPeerSettingsDialog() {
+	peerID := c.currentSelectedPeerID()
+	if peerID == "" {
+		c.setStatus("Select a peer first")
+		return
+	}
+
+	peer := c.peerByID(peerID)
+	if peer == nil {
+		c.setStatus("Selected peer no longer exists")
+		return
+	}
+
+	if err := c.store.EnsurePeerSettingsExist(peerID); err != nil {
+		dialog.ShowError(fmt.Errorf("load peer settings: %w", err), c.window)
+		return
+	}
+	settings, err := c.store.GetPeerSettings(peerID)
+	if err != nil {
+		dialog.ShowError(fmt.Errorf("load peer settings: %w", err), c.window)
+		return
+	}
+
+	customNameEntry := widget.NewEntry()
+	customNameEntry.SetText(settings.CustomName)
+
+	autoAcceptCheck := widget.NewCheck("", nil)
+	autoAcceptCheck.SetChecked(settings.AutoAcceptFiles)
+
+	trustLevel := widget.NewRadioGroup([]string{"Normal", "Trusted"}, nil)
+	if settings.TrustLevel == storage.PeerTrustLevelTrusted {
+		trustLevel.SetSelected("Trusted")
+	} else {
+		trustLevel.SetSelected("Normal")
+	}
+
+	maxSizeSelect := widget.NewSelect([]string{
+		maxSizePresetUseGlobal,
+		maxSizePreset100MB,
+		maxSizePreset500MB,
+		maxSizePreset1GB,
+		maxSizePreset5GB,
+		maxSizePresetCustom,
+	}, nil)
+	maxSizeCustomEntry := widget.NewEntry()
+	maxSizeCustomEntry.SetPlaceHolder("Bytes")
+	maxSizeSelect.OnChanged = func(selected string) {
+		if selected == maxSizePresetCustom {
+			maxSizeCustomEntry.Enable()
+			return
+		}
+		maxSizeCustomEntry.Disable()
+		if selected == maxSizePresetUseGlobal {
+			maxSizeCustomEntry.SetText("0")
+			return
+		}
+		if presetBytes, ok := maxSizePresetValues[selected]; ok {
+			maxSizeCustomEntry.SetText(strconv.FormatInt(presetBytes, 10))
+		}
+	}
+	maxSizeSelect.SetSelected(selectMaxSizePreset(settings.MaxFileSize, true))
+	if maxSizeSelect.Selected == maxSizePresetCustom {
+		maxSizeCustomEntry.SetText(strconv.FormatInt(settings.MaxFileSize, 10))
+		maxSizeCustomEntry.Enable()
+	}
+
+	useGlobalDownloadCheck := widget.NewCheck("Use global download directory", nil)
+	downloadDirectoryEntry := widget.NewEntry()
+	downloadDirectoryEntry.SetText(settings.DownloadDirectory)
+	browseDownloadDirectoryBtn := widget.NewButton("Browse...", func() {
+		go func() {
+			path, err := c.pickFolderPath()
+			if err != nil {
+				if err != errFilePickerCancelled {
+					c.setStatus(fmt.Sprintf("Select peer download folder failed: %v", err))
+				}
+				return
+			}
+			fyne.Do(func() {
+				downloadDirectoryEntry.SetText(path)
+			})
+		}()
+	})
+
+	setDownloadControlsEnabled := func(enabled bool) {
+		if enabled {
+			downloadDirectoryEntry.Enable()
+			browseDownloadDirectoryBtn.Enable()
+			return
+		}
+		downloadDirectoryEntry.Disable()
+		browseDownloadDirectoryBtn.Disable()
+	}
+	useGlobalDownloadCheck.OnChanged = func(checked bool) {
+		setDownloadControlsEnabled(!checked)
+	}
+	if strings.TrimSpace(settings.DownloadDirectory) == "" {
+		useGlobalDownloadCheck.SetChecked(true)
+		setDownloadControlsEnabled(false)
+	} else {
+		useGlobalDownloadCheck.SetChecked(false)
+		setDownloadControlsEnabled(true)
+	}
+
+	deviceNameLabel := widget.NewLabel(valueOrDefault(peer.DeviceName, peer.DeviceID))
+	deviceNameLabel.Wrapping = fyne.TextWrapBreak
+	deviceIDLabel := widget.NewLabel(peer.DeviceID)
+	deviceIDLabel.Wrapping = fyne.TextWrapBreak
+	fingerprintLabel := widget.NewLabel(appcrypto.FormatFingerprint(peer.KeyFingerprint))
+	fingerprintLabel.Wrapping = fyne.TextWrapBreak
+
+	form := widget.NewForm(
+		widget.NewFormItem("Device Name", deviceNameLabel),
+		widget.NewFormItem("Device ID", deviceIDLabel),
+		widget.NewFormItem("Fingerprint", fingerprintLabel),
+		widget.NewFormItem("Custom Name", customNameEntry),
+		widget.NewFormItem("Trust Level", trustLevel),
+		widget.NewFormItem("Auto-Accept Files", autoAcceptCheck),
+		widget.NewFormItem("Max File Size", container.NewHBox(maxSizeSelect, maxSizeCustomEntry)),
+		widget.NewFormItem("Download Directory", container.NewVBox(
+			useGlobalDownloadCheck,
+			container.NewBorder(nil, nil, nil, browseDownloadDirectoryBtn, downloadDirectoryEntry),
+		)),
+	)
+
+	dlg := dialog.NewCustomConfirm("Peer Settings", "Save", "Close", form, func(save bool) {
+		if !save {
+			return
+		}
+
+		trustLevelValue := storage.PeerTrustLevelNormal
+		if trustLevel.Selected == "Trusted" {
+			trustLevelValue = storage.PeerTrustLevelTrusted
+		}
+
+		maxFileSize, err := parseMaxSizeSelection(maxSizeSelect.Selected, maxSizeCustomEntry.Text, true)
+		if err != nil {
+			dialog.ShowError(err, c.window)
+			return
+		}
+
+		downloadDirectory := ""
+		if !useGlobalDownloadCheck.Checked {
+			downloadDirectory = strings.TrimSpace(downloadDirectoryEntry.Text)
+			if downloadDirectory == "" {
+				dialog.ShowError(fmt.Errorf("peer download directory is required when override is enabled"), c.window)
+				return
+			}
+			if err := os.MkdirAll(downloadDirectory, 0o700); err != nil {
+				dialog.ShowError(fmt.Errorf("create peer download directory: %w", err), c.window)
+				return
+			}
+		}
+
+		if err := c.store.UpdatePeerSettings(storage.PeerSettings{
+			PeerDeviceID:      peer.DeviceID,
+			AutoAcceptFiles:   autoAcceptCheck.Checked,
+			MaxFileSize:       maxFileSize,
+			DownloadDirectory: downloadDirectory,
+			CustomName:        strings.TrimSpace(customNameEntry.Text),
+			TrustLevel:        trustLevelValue,
+		}); err != nil {
+			dialog.ShowError(err, c.window)
+			return
+		}
+
+		c.refreshPeersFromStore()
+		c.refreshChatForPeer(peer.DeviceID)
+		c.setStatus("Peer settings saved")
+	}, c.window)
+	dlg.Resize(fyne.NewSize(660, 560))
+	dlg.Show()
+}
+
+func selectMaxSizePreset(size int64, allowGlobalDefault bool) string {
+	if allowGlobalDefault && size == 0 {
+		return maxSizePresetUseGlobal
+	}
+	if !allowGlobalDefault && size == 0 {
+		return maxSizePresetUnlimited
+	}
+	for label, value := range maxSizePresetValues {
+		if value == size {
+			return label
+		}
+	}
+	return maxSizePresetCustom
+}
+
+func parseMaxSizeSelection(selected, customText string, allowGlobalDefault bool) (int64, error) {
+	switch selected {
+	case maxSizePresetUseGlobal:
+		if !allowGlobalDefault {
+			return 0, fmt.Errorf("invalid max file size selection")
+		}
+		return 0, nil
+	case maxSizePresetUnlimited:
+		if allowGlobalDefault {
+			return 0, fmt.Errorf("invalid max file size selection")
+		}
+		return 0, nil
+	case maxSizePresetCustom:
+		value, err := strconv.ParseInt(strings.TrimSpace(customText), 10, 64)
+		if err != nil || value < 0 {
+			return 0, fmt.Errorf("custom max file size must be a non-negative byte value")
+		}
+		if allowGlobalDefault && value == 0 {
+			return 0, fmt.Errorf("custom max file size must be greater than 0, or use global default")
+		}
+		return value, nil
+	default:
+		value, ok := maxSizePresetValues[selected]
+		if !ok {
+			return 0, fmt.Errorf("invalid max file size selection")
+		}
+		return value, nil
+	}
 }
 
 func (c *controller) confirmResetKeys(fingerprintLabel *widget.Label) {

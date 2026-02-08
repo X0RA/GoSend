@@ -48,6 +48,7 @@ func TestOpenCreatesDatabaseAndAppliesMigrations(t *testing.T) {
 		"seen_message_ids",
 		"key_rotation_events",
 		"security_events",
+		"peer_settings",
 	}
 	for _, table := range expectedTables {
 		var count int

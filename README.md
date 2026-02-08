@@ -21,8 +21,9 @@ GoSend is a local-network peer-to-peer desktop app built in Go. It uses mDNS for
 - Replay defenses for chat messages: per-connection sequence checks, persistent seen ID table, and timestamp skew checks.
 - Trusted key rotations persist immediately to the pinned peer key plus an auditable `key_rotation_events` trail.
 - Structured `security_events` logging captures handshake failures, signature failures, replay rejections, key-rotation decisions, and queue-limit triggers.
-- File transfer with request/accept/reject, signed chunk ack/nack + signed file completion, reconnect resume from chunk, and end checksum verification.
-- Cross-platform GUI (Fyne) with peer list, chat pane, discovery dialog, settings dialog, key-change prompt, file-transfer prompts/progress, and chat header color that reflects online status.
+- File transfer with request/accept/reject, signed chunk ack/nack + signed file completion, reconnect resume from chunk, end checksum verification, global receive limits/download location, and per-peer auto-accept/limit/directory overrides.
+- Per-peer controls include custom names, trust level (`normal`/`trusted`), and trusted badges in the peer list.
+- Cross-platform GUI (Fyne) with peer list, chat pane, discovery dialog, device settings dialog, peer settings dialog, key-change prompt, file-transfer prompts/progress, and chat header color that reflects online status.
 
 ## Quick Start
 
@@ -122,6 +123,8 @@ Default first-run config values:
 - `device_name`: hostname (fallback `P2P Chat Device`).
 - `port_mode`: `automatic`.
 - `listening_port`: `0` (ephemeral OS-selected port).
+- `download_directory`: `<data-dir>/files`.
+- `max_receive_file_size`: `0` (unlimited).
 - Key paths are under `<data-dir>/keys`.
 - `key_fingerprint`: computed at startup from Ed25519 public key and persisted.
 
@@ -133,6 +136,8 @@ Default first-run config values:
   "device_name": "string",
   "port_mode": "automatic|fixed",
   "listening_port": 0,
+  "download_directory": "string",
+  "max_receive_file_size": 0,
   "ed25519_private_key_path": "string",
   "ed25519_public_key_path": "string",
   "key_fingerprint": "hex"
@@ -145,12 +150,15 @@ Normalization (for older configs):
 - Fixed mode with `listening_port=0` is normalized to `9999` (`DefaultListeningPort`).
 - Automatic mode never requires a fixed port.
 - Missing key path fields are backfilled to the default keys directory.
+- Missing `download_directory` is backfilled to `<data-dir>/files`.
+- Negative `max_receive_file_size` values are normalized to `0` (unlimited).
 - Legacy `x25519_private_key_path` fields are silently removed when old configs are rewritten.
 
 Runtime application:
 
 - Config is loaded at startup; fingerprint is recomputed from the Ed25519 public key and persisted if changed.
 - Name/port changes from the Settings UI are saved immediately but require restart to apply to the active listener and discovery services.
+- Download location and max receive file size changes are saved immediately and used for future incoming file requests; active transfers continue with the paths/limits resolved when that request was accepted.
 
 ## Protocol and Security (Current Behavior)
 
@@ -245,8 +253,10 @@ Outbound:
 
 Inbound:
 
-- User accept/reject prompt via UI callback.
-- Accepted transfers write to `<files>/<file_id>_<basename>.part` with random-access chunk writes.
+- For each incoming `file_request`, the manager resolves peer settings (`peer_settings`) and computes effective receive policy.
+- Effective size limit is peer `max_file_size` when set (`>0`), otherwise global `max_receive_file_size`; oversized requests are auto-rejected with a descriptive message.
+- If within limit and `auto_accept_files=true`, the request is auto-accepted; otherwise the UI accept/reject callback is invoked.
+- Accepted transfers write to `<resolved-download-dir>/<file_id>_<basename>.part`, where the resolved directory is peer `download_directory` override first, then global `download_directory`.
 - On `file_complete`, receiver verifies checksum and renames `.part` to final file.
 
 Completion/failure:
@@ -260,7 +270,7 @@ Completion/failure:
 
 Persistence uses `github.com/mattn/go-sqlite3` with a single DB (`app.db`) under the app data directory. DSN enables foreign keys (`_foreign_keys=on`); busy timeout `5000ms`. The database is opened in WAL mode (`PRAGMA journal_mode=WAL`) with startup checkpointing (`PRAGMA wal_checkpoint(TRUNCATE)`) and a periodic 24-hour checkpoint loop. Schema migrations are versioned with `PRAGMA user_version`.
 
-Tables store: **peers** — identity, pinned Ed25519 public key, fingerprint, status, timestamps, last known endpoint. **messages** — content, content type, sent/received timestamps, read flag, delivery status, signature. **files** — file IDs, sender/receiver, filename/type/size/path/checksum, transfer status. **seen_message_ids** — replay defense. **key_rotation_events** — trusted/rejected key-change decisions with old/new fingerprints. **security_events** — structured security logs with severity and JSON details. Status enums: peer `online`/`offline`/`pending`/`blocked`; delivery `pending`/`sent`/`delivered`/`failed`; file `pending`/`accepted`/`rejected`/`complete`/`failed`. Updates in practice: peer add accepted → peer row created/updated to `online`; disconnect → `offline`; message sent → `sent`, after ACK → `delivered`; offline messages stored as `pending` and drained on reconnect; file request/accept/reject/complete update `files.transfer_status`; received message IDs go into `seen_message_ids`; key-change trust/reject decisions write to `key_rotation_events` and (when trusted) update `peers.ed25519_public_key` + `peers.key_fingerprint`. Pending queue prune: messages older than 7 days marked `failed`. Security-event retention pruning defaults to 90 days.
+Tables store: **peers** — identity, pinned Ed25519 public key, fingerprint, status, timestamps, last known endpoint. **messages** — content, content type, sent/received timestamps, read flag, delivery status, signature. **files** — file IDs, sender/receiver, filename/type/size/path/checksum, transfer status. **seen_message_ids** — replay defense. **key_rotation_events** — trusted/rejected key-change decisions with old/new fingerprints. **security_events** — structured security logs with severity and JSON details. **peer_settings** — per-peer transfer policy (`auto_accept_files`, `max_file_size`, `download_directory`) plus presentation/trust metadata (`custom_name`, `trust_level`). Status enums: peer `online`/`offline`/`pending`/`blocked`; delivery `pending`/`sent`/`delivered`/`failed`; file `pending`/`accepted`/`rejected`/`complete`/`failed`. Updates in practice: peer add accepted → peer row created/updated to `online` and default `peer_settings` ensured; disconnect → `offline`; message sent → `sent`, after ACK → `delivered`; offline messages stored as `pending` and drained on reconnect; file request/accept/reject/complete update `files.transfer_status`; received message IDs go into `seen_message_ids`; key-change trust/reject decisions write to `key_rotation_events` and (when trusted) update `peers.ed25519_public_key` + `peers.key_fingerprint`. Pending queue prune: messages older than 7 days marked `failed`. Security-event retention pruning defaults to 90 days.
 
 Schema:
 
@@ -326,6 +336,15 @@ CREATE TABLE security_events (
   severity       TEXT NOT NULL CHECK(severity IN ('info','warning','critical')),
   timestamp      INTEGER NOT NULL
 );
+
+CREATE TABLE peer_settings (
+  peer_device_id      TEXT PRIMARY KEY REFERENCES peers(device_id) ON DELETE CASCADE,
+  auto_accept_files   INTEGER NOT NULL DEFAULT 0,
+  max_file_size       INTEGER NOT NULL DEFAULT 0,
+  download_directory  TEXT NOT NULL DEFAULT '',
+  custom_name         TEXT NOT NULL DEFAULT '',
+  trust_level         TEXT NOT NULL CHECK(trust_level IN ('normal','trusted')) DEFAULT 'normal'
+);
 ```
 
 Indexes:
@@ -343,13 +362,13 @@ The GUI (Fyne) is a single-window desktop app that wires user intent to the netw
 
 Layout:
 
-- Left pane: known peers list from DB (self filtered out), plus discovery dialog entry point.
+- Left pane: known peers list from DB (self filtered out), plus discovery dialog entry point. Rows use custom peer names when set, show the original device name as secondary text, and append `[Trusted]` for trusted peers.
 - Right pane: selected peer chat transcript (messages + file transfer rows), compose box, Send and Attach actions.
 - Top bar: app title, discovery refresh, settings. Bottom bar: global runtime feedback (errors, queue warnings, connect state).
 - Text messages show a copy button (clipboard icon); file/image messages do not. Chat composer is hidden until a peer is selected.
-- Chat header is clickable to show the selected peer fingerprint; its color reflects online/offline status.
+- Chat header is clickable to show the selected peer fingerprint; its color reflects online/offline status; a peer-settings gear button appears when a peer is selected.
 - Composer: message box on the left, `Send` above `Attach` on the right. `Enter` sends; `Shift+Enter` newline.
-- Hovering key buttons (peer info, settings, refresh, discover, send, attach) shows a tooltip and status hint.
+- Hovering key buttons (peer info, peer settings, app settings, refresh, discover, send, attach) shows a tooltip and status hint.
 
 Runtime loops:
 
@@ -358,13 +377,16 @@ Runtime loops:
 - Manager error loop: streams async errors from the network manager to the status label.
 - Poll loop (every 2s): refreshes peer list and current chat transcript from SQLite.
 
-Dialogs: discovery (peers + Add, dark panels), incoming peer add confirmation, incoming file accept/reject, key-change trust/deny, settings.
+Dialogs: discovery (peers + Add, dark panels), incoming peer add confirmation, incoming file accept/reject, key-change trust/deny, device settings, peer settings.
 
-Key flows: Add peer (discovery → select → dial → `peer_add_request`); incoming add (accept/reject). Message (Enter to send); file (picker → `SendFile`, progress). Key change (trust/reject with fingerprints). Incoming file (accept/reject with name/size/type).
+Key flows: Add peer (discovery → select → dial → `peer_add_request`); incoming add (accept/reject). Message (Enter to send); file (picker → `SendFile`, progress). Key change (trust/reject with fingerprints). Incoming file (auto-accept or accept/reject with name/size/type based on per-peer/global settings). Peer settings (chat-header gear → save custom name/trust/transfer policy).
 
 Settings:
 
-- Device name, port mode (`automatic`/`fixed`), fixed port, fingerprint display, key reset (regenerates Ed25519 key files and updates fingerprint). Name/port are persisted immediately; restart required to apply to active services.
+- Device settings include name, port mode (`automatic`/`fixed`), fixed port, global download location, global max receive file size, fingerprint display, and key reset (regenerates Ed25519 key files and updates fingerprint).
+- Name/port are persisted immediately; restart is required to apply those two fields to active services.
+- Download location/max receive file size are persisted immediately and affect future incoming requests without restart.
+- Peer settings include read-only identity fields (device name/ID/fingerprint), custom name, trust level, auto-accept files, max file size override, and download directory override.
 
 Theme:
 
@@ -380,7 +402,6 @@ Theme:
 ├── AGENTS.md
 ├── Makefile
 ├── README.md
-├── STACK.md
 ├── main.go
 ├── tools.go
 ├── go.mod
@@ -430,6 +451,8 @@ Theme:
 │   ├── messages_test.go
 │   ├── peers.go
 │   ├── peers_test.go
+│   ├── security_events.go
+│   ├── security_events_test.go
 │   ├── seen_ids.go
 │   ├── seen_ids_test.go
 │   ├── testutil_test.go
@@ -456,13 +479,12 @@ Theme:
 - `go.sum`: Dependency checksum lockfile.
 - `AGENTS.md`: Local coding-agent instructions for this repository.
 - `README.md`: Project documentation.
-- `STACK.md`: System architecture and technology stack narrative.
 - `bin/gosend`: Built binary artifact (generated by `make build`).
 
 ### `config/`
 
-- `config/config.go`: Data dir resolution, directory creation, config load/save, default config generation, and legacy config normalization/migration (including `port_mode` and legacy X25519 path removal).
-- `config/config_test.go`: Tests first-run creation, stable reload behavior, legacy port mode normalization, and legacy X25519 path migration cleanup.
+- `config/config.go`: Data dir resolution, directory creation, config load/save, default config generation, and legacy config normalization/migration (including `port_mode`, `download_directory`, `max_receive_file_size`, and legacy X25519 path removal).
+- `config/config_test.go`: Tests first-run creation, stable reload behavior, legacy port mode/download-path normalization, and legacy X25519 path migration cleanup.
 
 ### `crypto/`
 
@@ -492,11 +514,11 @@ Note: runtime logic currently uses `storage` structs directly; `models` package 
 
 ### `storage/`
 
-- `storage/types.go`: Core storage data types, status/content constants, validators, null helpers, and shared errors.
-- `storage/database.go`: SQLite open/create helpers, migrations, schema versioning, and connection lifecycle.
+- `storage/types.go`: Core storage data types, status/content constants, peer-trust constants, validators, null helpers, and shared errors.
+- `storage/database.go`: SQLite open/create helpers, migrations (`peer_settings` included), schema versioning, and connection lifecycle.
 - `storage/database_test.go`: Verifies DB creation, migrations, schema version, and expected table presence.
-- `storage/peers.go`: Peer CRUD + endpoint/status updates, pinned-key updates, and key-rotation event history helpers.
-- `storage/peers_test.go`: Peer CRUD, endpoint/status update, pinned-key update, and key-rotation event tests.
+- `storage/peers.go`: Peer CRUD + endpoint/status updates, discovery-driven device-name updates, per-peer settings CRUD/default ensure, pinned-key updates, and key-rotation event history helpers.
+- `storage/peers_test.go`: Peer CRUD, endpoint/status update, per-peer settings CRUD/defaults, pinned-key update, and key-rotation event tests.
 - `storage/messages.go`: Message insert/read/update APIs, pending queue reads, and expired queue pruning.
 - `storage/messages_test.go`: Message CRUD, ordering, status updates, pending retrieval, and prune behavior.
 - `storage/files.go`: File metadata insert/read and transfer-status updates.
@@ -515,21 +537,21 @@ Note: runtime logic currently uses `storage` structs directly; `models` package 
 - `network/handshake.go`: Handshake options/defaults, key-change decision flow, and session-key derivation helpers.
 - `network/client.go`: Outbound dial + handshake + session setup.
 - `network/server.go`: Listener accept loop and inbound handshake/session setup.
-- `network/peer_manager.go`: High-level peer lifecycle manager: add/approve/remove/disconnect, message send/receive, queue drain/limits, reconnect workers, discovery-triggered reconnect.
-- `network/file_transfer.go`: File transfer protocol implementation: request/response, chunk send/ack/nack, resume, checksum verification, status persistence, progress callbacks.
+- `network/peer_manager.go`: High-level peer lifecycle manager: add/approve/remove/disconnect, message send/receive, queue drain/limits, reconnect workers, discovery-triggered reconnect, dynamic global file-policy callbacks, and default peer-settings creation on first persisted peer.
+- `network/file_transfer.go`: File transfer protocol implementation: request/response, chunk send/ack/nack, resume, checksum verification, status persistence, progress callbacks, per-peer/global receive-limit enforcement, and per-peer/global download-directory resolution.
 - `network/integration_test.go`: Handshake/session/keepalive/ping-timeout/key-change decision, replay, and control-frame-limit integration tests.
 - `network/connection_test.go`: Epoch transition decrypt-window tests for rekey key rotation.
 - `network/rekey_test.go`: Rekey trigger/rekey-under-load/concurrent-transfer/failure-handling tests.
-- `network/peer_manager_test.go`: Add/remove/restart/simultaneous-add/spoof-protection/pending-cleanup behavior tests.
+- `network/peer_manager_test.go`: Add/remove/restart/simultaneous-add/spoof-protection/pending-cleanup behavior tests, including peer-settings row creation for accepted peers.
 - `network/messaging_test.go`: Delivery updates, offline queue drain, replay rejection, sequence rejection, signature tamper rejection, spoofed ack rejection tests.
-- `network/file_transfer_test.go`: Accepted/rejected transfer flows, reconnect resume, and checksum mismatch failure tests.
+- `network/file_transfer_test.go`: Accepted/rejected transfer flows, reconnect resume, checksum mismatch failure tests, max-receive-limit auto-reject, and auto-accept directory override behavior.
 
 ### `ui/`
 
-- `ui/main_window.go`: Application controller, service startup/shutdown, event loops, status updates, dialogs, and cross-layer wiring.
-- `ui/peers_list.go`: Peer list pane, discovery dialog rendering, discovered-peer add flow, and peer selection.
-- `ui/chat_window.go`: Chat pane rendering, message send flow, file attach flow, transcript composition, transfer row rendering/progress.
-- `ui/settings.go`: Settings dialog (device name, fingerprint, port mode/port) and key reset workflow.
+- `ui/main_window.go`: Application controller, service startup/shutdown, event loops, status updates, dialogs, dynamic file-policy wiring into `PeerManager`, and cross-layer wiring.
+- `ui/peers_list.go`: Peer list pane, discovery dialog rendering, discovered-peer add flow, peer selection, custom-name sorting/secondary labels, and trusted badge rendering.
+- `ui/chat_window.go`: Chat pane rendering, message send flow, file attach flow, transcript composition, transfer row rendering/progress, custom peer-name header, and peer-settings entry point.
+- `ui/settings.go`: Device settings dialog (name, fingerprint, port mode/port, download location, max file size), per-peer settings dialog (custom name/trust/transfer overrides), and key reset workflow.
 - `ui/file_handler.go`: Picker/progress helper used by UI for file selection and transfer progress state.
 - `ui/clickable_label.go`: Clickable label widget used by chat header for peer fingerprint interactions.
 - `ui/theme.go`: Theme/palette helpers, rounded UI primitives, and hover/tooltip button behavior.

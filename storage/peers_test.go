@@ -161,3 +161,84 @@ func TestUpdatePeerIdentityAndKeyRotationEvents(t *testing.T) {
 		t.Fatalf("expected older event decision %q, got %q", KeyRotationDecisionTrusted, events[1].Decision)
 	}
 }
+
+func TestPeerSettingsCRUDAndPeerNameUpdate(t *testing.T) {
+	store := newTestStore(t)
+
+	now := nowUnixMilli()
+	if err := store.AddPeer(Peer{
+		DeviceID:         "peer-settings",
+		DeviceName:       "Original Name",
+		Ed25519PublicKey: "pub-key",
+		KeyFingerprint:   "fingerprint",
+		Status:           peerStatusOnline,
+		AddedTimestamp:   now,
+	}); err != nil {
+		t.Fatalf("AddPeer failed: %v", err)
+	}
+
+	if err := store.EnsurePeerSettingsExist("peer-settings"); err != nil {
+		t.Fatalf("EnsurePeerSettingsExist failed: %v", err)
+	}
+	defaults, err := store.GetPeerSettings("peer-settings")
+	if err != nil {
+		t.Fatalf("GetPeerSettings defaults failed: %v", err)
+	}
+	if defaults.AutoAcceptFiles {
+		t.Fatalf("expected default auto_accept_files=false")
+	}
+	if defaults.MaxFileSize != 0 {
+		t.Fatalf("expected default max_file_size=0, got %d", defaults.MaxFileSize)
+	}
+	if defaults.DownloadDirectory != "" {
+		t.Fatalf("expected default download_directory empty, got %q", defaults.DownloadDirectory)
+	}
+	if defaults.CustomName != "" {
+		t.Fatalf("expected default custom_name empty, got %q", defaults.CustomName)
+	}
+	if defaults.TrustLevel != PeerTrustLevelNormal {
+		t.Fatalf("expected default trust_level %q, got %q", PeerTrustLevelNormal, defaults.TrustLevel)
+	}
+
+	if err := store.UpdatePeerSettings(PeerSettings{
+		PeerDeviceID:      "peer-settings",
+		AutoAcceptFiles:   true,
+		MaxFileSize:       12345,
+		DownloadDirectory: "/tmp/downloads",
+		CustomName:        "Laptop",
+		TrustLevel:        PeerTrustLevelTrusted,
+	}); err != nil {
+		t.Fatalf("UpdatePeerSettings failed: %v", err)
+	}
+
+	updated, err := store.GetPeerSettings("peer-settings")
+	if err != nil {
+		t.Fatalf("GetPeerSettings updated failed: %v", err)
+	}
+	if !updated.AutoAcceptFiles {
+		t.Fatalf("expected auto_accept_files=true")
+	}
+	if updated.MaxFileSize != 12345 {
+		t.Fatalf("unexpected max_file_size: %d", updated.MaxFileSize)
+	}
+	if updated.DownloadDirectory != "/tmp/downloads" {
+		t.Fatalf("unexpected download_directory: %q", updated.DownloadDirectory)
+	}
+	if updated.CustomName != "Laptop" {
+		t.Fatalf("unexpected custom_name: %q", updated.CustomName)
+	}
+	if updated.TrustLevel != PeerTrustLevelTrusted {
+		t.Fatalf("unexpected trust_level: %q", updated.TrustLevel)
+	}
+
+	if err := store.UpdatePeerDeviceName("peer-settings", "Changed Name"); err != nil {
+		t.Fatalf("UpdatePeerDeviceName failed: %v", err)
+	}
+	peer, err := store.GetPeer("peer-settings")
+	if err != nil {
+		t.Fatalf("GetPeer failed: %v", err)
+	}
+	if peer.DeviceName != "Changed Name" {
+		t.Fatalf("unexpected peer device_name: %q", peer.DeviceName)
+	}
+}

@@ -69,6 +69,12 @@ func TestPeerAddFlowWithApprovalQueue(t *testing.T) {
 
 	waitForPeerStatus(t, a.store, "peer-b", peerStatusOnline, 2*time.Second)
 	waitForPeerStatus(t, b.store, "peer-a", peerStatusOnline, 2*time.Second)
+	if _, err := a.store.GetPeerSettings("peer-b"); err != nil {
+		t.Fatalf("expected peer settings row for peer-b, got error: %v", err)
+	}
+	if _, err := b.store.GetPeerSettings("peer-a"); err != nil {
+		t.Fatalf("expected peer settings row for peer-a, got error: %v", err)
+	}
 }
 
 func TestConnectDoesNotAutoAddPeer(t *testing.T) {
@@ -597,16 +603,17 @@ func (m *testManager) stop() {
 }
 
 type testManagerConfig struct {
-	deviceID        string
-	name            string
-	approve         func(notification AddRequestNotification) (bool, error)
-	onKeyChange     KeyChangeDecisionFunc
-	approveFile     func(notification FileRequestNotification) (bool, error)
-	onFileProgress  func(progress FileProgress)
-	filesDir        string
-	fileChunkSize   int
-	rekeyInterval   time.Duration
-	rekeyAfterBytes uint64
+	deviceID           string
+	name               string
+	approve            func(notification AddRequestNotification) (bool, error)
+	onKeyChange        KeyChangeDecisionFunc
+	approveFile        func(notification FileRequestNotification) (bool, error)
+	onFileProgress     func(progress FileProgress)
+	filesDir           string
+	maxReceiveFileSize int64
+	fileChunkSize      int
+	rekeyInterval      time.Duration
+	rekeyAfterBytes    uint64
 }
 
 func newTestManager(t *testing.T, cfg testManagerConfig) *testManager {
@@ -652,6 +659,7 @@ func newTestManagerWithConfig(t *testing.T, store *storage.Store, identity Local
 		OnFileRequest:        cfg.approveFile,
 		OnFileProgress:       cfg.onFileProgress,
 		FilesDir:             filesDir,
+		MaxReceiveFileSize:   cfg.maxReceiveFileSize,
 		FileChunkSize:        chunkSize,
 		FileResponseTimeout:  2 * time.Second,
 		MaxChunkRetries:      3,

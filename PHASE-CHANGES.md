@@ -102,43 +102,43 @@ This phase introduces the user-facing trust and file management settings that ma
 
 Users need control over where files are saved and how large incoming files can be before they're automatically rejected. These are app-wide defaults that apply to all peers unless overridden.
 
-- [ ] Add `download_directory` field to `DeviceConfig` in `config/config.go`, defaulting to `<data-dir>/files/`
-- [ ] Add `max_receive_file_size` field to `DeviceConfig` (int64, bytes; 0 means unlimited)
-- [ ] Update the settings UI in `ui/settings.go` to include a "Download Location" row with a folder picker dialog
-- [ ] Update the settings UI to include a "Max File Size" entry with common presets (100 MB, 500 MB, 1 GB, 5 GB, Unlimited) selectable via dropdown
-- [ ] Update `peer_manager.go`'s file request handler to check incoming `file_request.Filesize` against the configured limit and auto-reject with a descriptive message if exceeded
-- [ ] Update `file_transfer.go`'s receive path to use the configured download directory instead of the hardcoded `FilesDir`
-- [ ] Ensure existing file transfers in progress are not affected by a settings change mid-transfer
+- [x] Add `download_directory` field to `DeviceConfig` in `config/config.go`, defaulting to `<data-dir>/files/`
+- [x] Add `max_receive_file_size` field to `DeviceConfig` (int64, bytes; 0 means unlimited)
+- [x] Update the settings UI in `ui/settings.go` to include a "Download Location" row with a folder picker dialog
+- [x] Update the settings UI to include a "Max File Size" entry with common presets (100 MB, 500 MB, 1 GB, 5 GB, Unlimited) selectable via dropdown
+- [x] Update `peer_manager.go`'s file request handler to check incoming `file_request.Filesize` against the configured limit and auto-reject with a descriptive message if exceeded
+- [x] Update `file_transfer.go`'s receive path to use the configured download directory instead of the hardcoded `FilesDir`
+- [x] Ensure existing file transfers in progress are not affected by a settings change mid-transfer
 
 ### 3.2 — Per-Peer Settings Table and Trust Profiles
 
 This is the core feature for trusted peer usability. Each peer gets configurable behavior for file acceptance, size limits, and download location, so users can say "auto-accept everything from my phone" while requiring approval from other devices.
 
-- [ ] Create a `peer_settings` table in `storage/database.go` with schema migration, containing: `peer_device_id` (FK to peers), `auto_accept_files` (boolean, default false), `max_file_size` (int64, 0 = use global default), `download_directory` (text, empty = use global default), `custom_name` (text, empty = use peer's chosen name), `trust_level` (text: normal/trusted, default normal)
-- [ ] Add CRUD methods in `storage/peers.go`: `GetPeerSettings`, `UpdatePeerSettings`, `EnsurePeerSettingsExist` (creates default row on peer add)
-- [ ] Update `peer_manager.go`'s file request handler to check per-peer settings before prompting the user: if `auto_accept_files` is true and filesize is within the peer's `max_file_size` limit (or unlimited), accept automatically without invoking the `OnFileRequest` callback
-- [ ] Update the file receive path to resolve the download directory from per-peer settings first, falling back to global settings
-- [ ] Call `EnsurePeerSettingsExist` when a new peer is added (in the add-request acceptance flow)
+- [x] Create a `peer_settings` table in `storage/database.go` with schema migration, containing: `peer_device_id` (FK to peers), `auto_accept_files` (boolean, default false), `max_file_size` (int64, 0 = use global default), `download_directory` (text, empty = use global default), `custom_name` (text, empty = use peer's chosen name), `trust_level` (text: normal/trusted, default normal)
+- [x] Add CRUD methods in `storage/peers.go`: `GetPeerSettings`, `UpdatePeerSettings`, `EnsurePeerSettingsExist` (creates default row on peer add)
+- [x] Update `peer_manager.go`'s file request handler to check per-peer settings before prompting the user: if `auto_accept_files` is true and filesize is within the peer's `max_file_size` limit (or unlimited), accept automatically without invoking the `OnFileRequest` callback
+- [x] Update the file receive path to resolve the download directory from per-peer settings first, falling back to global settings
+- [x] Call `EnsurePeerSettingsExist` when a new peer is added (in the add-request acceptance flow)
 
 ### 3.3 — Peer Rename Feature
 
 Users should be able to assign custom display names to peers after adding them. The peer's actual chosen name is preserved and shown as secondary context, but the renamed label takes priority everywhere in the UI.
 
-- [ ] The `custom_name` column in the `peer_settings` table (created in 3.2) stores the user-assigned name
-- [ ] Update `ui/peers_list.go` to display the custom name as the primary label when set, with the peer's original device name shown as smaller subtext beneath it
-- [ ] Update `ui/chat_window.go` to use the custom name in the chat header when set
-- [ ] Add a "Rename Peer" option to the peer context menu or peer settings dialog, implemented as a simple text entry dialog that writes to `peer_settings.custom_name`
-- [ ] Ensure that mDNS discovery name updates from the peer (if they change their device name) update the stored `device_name` in the `peers` table but do not overwrite the user's custom rename
+- [x] The `custom_name` column in the `peer_settings` table (created in 3.2) stores the user-assigned name
+- [x] Update `ui/peers_list.go` to display the custom name as the primary label when set, with the peer's original device name shown as smaller subtext beneath it
+- [x] Update `ui/chat_window.go` to use the custom name in the chat header when set
+- [x] Add a "Rename Peer" option to the peer context menu or peer settings dialog, implemented as a simple text entry dialog that writes to `peer_settings.custom_name`
+- [x] Ensure that mDNS discovery name updates from the peer (if they change their device name) update the stored `device_name` in the `peers` table but do not overwrite the user's custom rename
 
 ### 3.4 — Per-Peer Settings UI
 
 Surface the per-peer settings in an accessible dialog so users can configure trust per device.
 
-- [ ] Add a "Peer Settings" button or gear icon to the peer list item or chat header, opening a dialog for the selected peer
-- [ ] The dialog should display: peer's device name (read-only), custom name entry, device ID (read-only), fingerprint (read-only, formatted as grouped hex for readability), trust level toggle (Normal / Trusted)
-- [ ] The dialog should include file transfer settings: auto-accept files toggle, max file size override (entry with presets or "Use global default"), download directory override (folder picker or "Use global default")
-- [ ] Save changes immediately to the `peer_settings` table on dialog confirm
-- [ ] Show the peer's trust level as a subtle visual badge (e.g., a small shield icon) next to their name in the peer list for trusted peers
+- [x] Add a "Peer Settings" button or gear icon to the peer list item or chat header, opening a dialog for the selected peer
+- [x] The dialog should display: peer's device name (read-only), custom name entry, device ID (read-only), fingerprint (read-only, formatted as grouped hex for readability), trust level toggle (Normal / Trusted)
+- [x] The dialog should include file transfer settings: auto-accept files toggle, max file size override (entry with presets or "Use global default"), download directory override (folder picker or "Use global default")
+- [x] Save changes immediately to the `peer_settings` table on dialog confirm
+- [x] Show the peer's trust level as a subtle visual badge (e.g., a small shield icon) next to their name in the peer list for trusted peers
 
 ---
 

@@ -227,6 +227,37 @@ func (s *Store) UpdatePeerEndpoint(deviceID, ip string, port int, lastSeenTimest
 	return nil
 }
 
+// UpdatePeerDeviceName updates the stored peer device name.
+func (s *Store) UpdatePeerDeviceName(deviceID, deviceName string) error {
+	if deviceID == "" {
+		return errors.New("device_id is required")
+	}
+	if strings.TrimSpace(deviceName) == "" {
+		return errors.New("device_name is required")
+	}
+
+	res, err := s.db.Exec(
+		`UPDATE peers
+		SET device_name = ?
+		WHERE device_id = ?`,
+		deviceName,
+		deviceID,
+	)
+	if err != nil {
+		return fmt.Errorf("update peer device name %q: %w", deviceID, err)
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read rows affected for update peer device name %q: %w", deviceID, err)
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+
+	return nil
+}
+
 // UpdatePeerIdentity updates the pinned Ed25519 public key and fingerprint for a peer.
 func (s *Store) UpdatePeerIdentity(deviceID, ed25519PublicKey, keyFingerprint string) error {
 	if deviceID == "" {
@@ -255,6 +286,116 @@ func (s *Store) UpdatePeerIdentity(deviceID, ed25519PublicKey, keyFingerprint st
 	rowsAffected, err := res.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("read rows affected for update peer identity %q: %w", deviceID, err)
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+
+	return nil
+}
+
+// EnsurePeerSettingsExist creates a default peer_settings row when absent.
+func (s *Store) EnsurePeerSettingsExist(peerDeviceID string) error {
+	if peerDeviceID == "" {
+		return errors.New("peer_device_id is required")
+	}
+
+	_, err := s.db.Exec(
+		`INSERT INTO peer_settings (
+			peer_device_id,
+			auto_accept_files,
+			max_file_size,
+			download_directory,
+			custom_name,
+			trust_level
+		) VALUES (?, 0, 0, '', '', ?)
+		ON CONFLICT(peer_device_id) DO NOTHING`,
+		peerDeviceID,
+		PeerTrustLevelNormal,
+	)
+	if err != nil {
+		return fmt.Errorf("ensure peer settings for %q: %w", peerDeviceID, err)
+	}
+
+	return nil
+}
+
+// GetPeerSettings fetches one peer settings row.
+func (s *Store) GetPeerSettings(peerDeviceID string) (*PeerSettings, error) {
+	if peerDeviceID == "" {
+		return nil, errors.New("peer_device_id is required")
+	}
+
+	row := s.db.QueryRow(
+		`SELECT
+			peer_device_id,
+			auto_accept_files,
+			max_file_size,
+			download_directory,
+			custom_name,
+			trust_level
+		FROM peer_settings
+		WHERE peer_device_id = ?`,
+		peerDeviceID,
+	)
+
+	settings, err := scanPeerSettings(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get peer settings for %q: %w", peerDeviceID, err)
+	}
+
+	return settings, nil
+}
+
+// UpdatePeerSettings updates one peer settings row.
+func (s *Store) UpdatePeerSettings(settings PeerSettings) error {
+	if settings.PeerDeviceID == "" {
+		return errors.New("peer_device_id is required")
+	}
+	if settings.MaxFileSize < 0 {
+		return errors.New("max_file_size must be >= 0")
+	}
+	if settings.TrustLevel == "" {
+		settings.TrustLevel = PeerTrustLevelNormal
+	}
+	if err := validatePeerTrustLevel(settings.TrustLevel); err != nil {
+		return err
+	}
+
+	if err := s.EnsurePeerSettingsExist(settings.PeerDeviceID); err != nil {
+		return err
+	}
+
+	autoAccept := 0
+	if settings.AutoAcceptFiles {
+		autoAccept = 1
+	}
+
+	res, err := s.db.Exec(
+		`UPDATE peer_settings
+		SET auto_accept_files = ?,
+		    max_file_size = ?,
+		    download_directory = ?,
+		    custom_name = ?,
+		    trust_level = ?
+		WHERE peer_device_id = ?`,
+		autoAccept,
+		settings.MaxFileSize,
+		settings.DownloadDirectory,
+		settings.CustomName,
+		settings.TrustLevel,
+		settings.PeerDeviceID,
+	)
+	if err != nil {
+		return fmt.Errorf("update peer settings for %q: %w", settings.PeerDeviceID, err)
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read rows affected for update peer settings %q: %w", settings.PeerDeviceID, err)
 	}
 	if rowsAffected == 0 {
 		return ErrNotFound
@@ -393,4 +534,24 @@ func scanKeyRotationEvent(row scanner) (*KeyRotationEvent, error) {
 		return nil, err
 	}
 	return &event, nil
+}
+
+func scanPeerSettings(row scanner) (*PeerSettings, error) {
+	var (
+		settings   PeerSettings
+		autoAccept int
+	)
+	if err := row.Scan(
+		&settings.PeerDeviceID,
+		&autoAccept,
+		&settings.MaxFileSize,
+		&settings.DownloadDirectory,
+		&settings.CustomName,
+		&settings.TrustLevel,
+	); err != nil {
+		return nil, err
+	}
+
+	settings.AutoAcceptFiles = autoAccept == 1
+	return &settings, nil
 }

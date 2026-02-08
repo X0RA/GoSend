@@ -64,6 +64,7 @@ type controller struct {
 
 	peersMu        sync.RWMutex
 	peers          []storage.Peer
+	peerSettings   map[string]storage.PeerSettings
 	selectedPeerID string
 
 	discoveredMu    sync.RWMutex
@@ -81,6 +82,7 @@ type controller struct {
 
 	peerList        *widget.List
 	chatHeader      *clickableLabel
+	peerSettingsBtn *hintButton
 	chatMessagesBox *fyne.Container
 	chatScroll      *container.Scroll
 	messageInput    *messageEntry
@@ -156,6 +158,7 @@ func newController(app fyne.App, options RunOptions) (*controller, error) {
 		ctx:           ctx,
 		cancel:        cancel,
 		discovered:    make(map[string]discovery.DiscoveredPeer),
+		peerSettings:  make(map[string]storage.PeerSettings),
 		fileTransfers: make(map[string]chatFileEntry),
 	}
 
@@ -201,9 +204,12 @@ func (c *controller) startServices() error {
 			c.setStatus(fmt.Sprintf("Queue overflow for %s: dropped %d pending messages", peerDeviceID, droppedCount))
 			c.refreshChatForPeer(peerDeviceID)
 		},
-		FilesDir:       filepath.Join(c.dataDir, "files"),
-		OnFileRequest:  c.promptFileRequestDecision,
-		OnFileProgress: c.handleFileProgress,
+		FilesDir:              c.currentDownloadDirectory(),
+		MaxReceiveFileSize:    c.currentMaxReceiveFileSize(),
+		GetDownloadDirectory:  c.currentDownloadDirectory,
+		GetMaxReceiveFileSize: c.currentMaxReceiveFileSize,
+		OnFileRequest:         c.promptFileRequestDecision,
+		OnFileProgress:        c.handleFileProgress,
 	})
 	if err != nil {
 		return fmt.Errorf("create peer manager: %w", err)
@@ -634,7 +640,7 @@ func (c *controller) tryReconnectDiscoveredPeer(peer discovery.DiscoveredPeer) {
 	if !c.isKnownPeer(peer.DeviceID) {
 		return
 	}
-	c.manager.NotifyPeerDiscovered(peer.DeviceID, peer.Addresses[0], peer.Port)
+	c.manager.NotifyPeerDiscovered(peer.DeviceID, peer.DeviceName, peer.Addresses[0], peer.Port)
 }
 
 func (c *controller) reconnectDiscoveredKnownPeers() {
@@ -802,6 +808,41 @@ func (c *controller) pickFilePath() (string, error) {
 	}
 }
 
+func (c *controller) pickFolderPath() (string, error) {
+	type pickResult struct {
+		path string
+		err  error
+	}
+	result := make(chan pickResult, 1)
+
+	fyne.Do(func() {
+		dlg := dialog.NewFolderOpen(func(folder fyne.ListableURI, err error) {
+			if err != nil {
+				result <- pickResult{err: err}
+				return
+			}
+			if folder == nil {
+				result <- pickResult{err: errFilePickerCancelled}
+				return
+			}
+			path := folder.Path()
+			if strings.TrimSpace(path) == "" {
+				result <- pickResult{err: errFilePickerCancelled}
+				return
+			}
+			result <- pickResult{path: path}
+		}, c.window)
+		dlg.Show()
+	})
+
+	select {
+	case <-c.ctx.Done():
+		return "", errors.New("application is shutting down")
+	case picked := <-result:
+		return picked.path, picked.err
+	}
+}
+
 func (c *controller) peerByID(deviceID string) *storage.Peer {
 	if strings.TrimSpace(deviceID) == "" {
 		return nil
@@ -815,6 +856,42 @@ func (c *controller) peerByID(deviceID string) *storage.Peer {
 		}
 	}
 	return nil
+}
+
+func (c *controller) peerSettingsByID(deviceID string) *storage.PeerSettings {
+	if strings.TrimSpace(deviceID) == "" {
+		return nil
+	}
+	c.peersMu.RLock()
+	defer c.peersMu.RUnlock()
+	settings, ok := c.peerSettings[deviceID]
+	if !ok {
+		return nil
+	}
+	copySettings := settings
+	return &copySettings
+}
+
+func (c *controller) peerDisplayName(peer *storage.Peer) string {
+	if peer == nil {
+		return ""
+	}
+	settings := c.peerSettingsByID(peer.DeviceID)
+	if settings != nil && strings.TrimSpace(settings.CustomName) != "" {
+		return strings.TrimSpace(settings.CustomName)
+	}
+	return peer.DeviceName
+}
+
+func (c *controller) peerTrustLevel(peerDeviceID string) string {
+	settings := c.peerSettingsByID(peerDeviceID)
+	if settings == nil {
+		return storage.PeerTrustLevelNormal
+	}
+	if settings.TrustLevel == "" {
+		return storage.PeerTrustLevelNormal
+	}
+	return settings.TrustLevel
 }
 
 func (c *controller) listPeersSnapshot() []storage.Peer {
@@ -894,4 +971,28 @@ func formatBytes(size int64) string {
 		exp = len(prefixes) - 1
 	}
 	return fmt.Sprintf("%.1f %s", float64(size)/float64(div), prefixes[exp])
+}
+
+func (c *controller) currentDownloadDirectory() string {
+	if c == nil || c.cfg == nil {
+		return ""
+	}
+	path := strings.TrimSpace(c.cfg.DownloadDirectory)
+	if path != "" {
+		return path
+	}
+	if strings.TrimSpace(c.dataDir) != "" {
+		return filepath.Join(c.dataDir, "files")
+	}
+	return ""
+}
+
+func (c *controller) currentMaxReceiveFileSize() int64 {
+	if c == nil || c.cfg == nil {
+		return 0
+	}
+	if c.cfg.MaxReceiveFileSize <= 0 {
+		return 0
+	}
+	return c.cfg.MaxReceiveFileSize
 }

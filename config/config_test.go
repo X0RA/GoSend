@@ -24,6 +24,13 @@ func TestLoadOrCreateCreatesAndReloadsConfig(t *testing.T) {
 	if firstCfg.ListeningPort != 0 {
 		t.Fatalf("expected automatic mode listening port 0, got %d", firstCfg.ListeningPort)
 	}
+	expectedDownloadDir := filepath.Join(tempDir, "files")
+	if firstCfg.DownloadDirectory != expectedDownloadDir {
+		t.Fatalf("expected default download directory %q, got %q", expectedDownloadDir, firstCfg.DownloadDirectory)
+	}
+	if firstCfg.MaxReceiveFileSize != 0 {
+		t.Fatalf("expected default max receive file size 0, got %d", firstCfg.MaxReceiveFileSize)
+	}
 
 	expectedConfigPath := filepath.Join(tempDir, "config.json")
 	if firstPath != expectedConfigPath {
@@ -46,6 +53,12 @@ func TestLoadOrCreateCreatesAndReloadsConfig(t *testing.T) {
 	}
 	if secondCfg.PortMode != firstCfg.PortMode {
 		t.Fatalf("expected stable port mode, got %q then %q", firstCfg.PortMode, secondCfg.PortMode)
+	}
+	if secondCfg.DownloadDirectory != firstCfg.DownloadDirectory {
+		t.Fatalf("expected stable download directory, got %q then %q", firstCfg.DownloadDirectory, secondCfg.DownloadDirectory)
+	}
+	if secondCfg.MaxReceiveFileSize != firstCfg.MaxReceiveFileSize {
+		t.Fatalf("expected stable max receive file size, got %d then %d", firstCfg.MaxReceiveFileSize, secondCfg.MaxReceiveFileSize)
 	}
 }
 
@@ -78,6 +91,9 @@ func TestLoadOrCreateNormalizesLegacyPortModeFromExistingPort(t *testing.T) {
 	}
 	if cfg.ListeningPort != 9999 {
 		t.Fatalf("expected legacy fixed listening port to be retained, got %d", cfg.ListeningPort)
+	}
+	if cfg.DownloadDirectory != filepath.Join(tempDir, "files") {
+		t.Fatalf("expected legacy config to default download directory to data files dir, got %q", cfg.DownloadDirectory)
 	}
 }
 

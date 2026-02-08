@@ -31,6 +31,8 @@ type DeviceConfig struct {
 	DeviceName            string `json:"device_name"`
 	PortMode              string `json:"port_mode"`
 	ListeningPort         int    `json:"listening_port"`
+	DownloadDirectory     string `json:"download_directory"`
+	MaxReceiveFileSize    int64  `json:"max_receive_file_size"`
 	Ed25519PrivateKeyPath string `json:"ed25519_private_key_path"`
 	Ed25519PublicKeyPath  string `json:"ed25519_public_key_path"`
 	KeyFingerprint        string `json:"key_fingerprint"`
@@ -173,6 +175,8 @@ func defaultConfig(dataDir string) (*DeviceConfig, error) {
 		DeviceName:            deviceName,
 		PortMode:              PortModeAutomatic,
 		ListeningPort:         0,
+		DownloadDirectory:     filepath.Join(dataDir, "files"),
+		MaxReceiveFileSize:    0,
 		Ed25519PrivateKeyPath: filepath.Join(keysDir, "ed25519_private.pem"),
 		Ed25519PublicKeyPath:  filepath.Join(keysDir, "ed25519_public.pem"),
 		KeyFingerprint:        "",
@@ -226,6 +230,15 @@ func normalizeDefaults(cfg *DeviceConfig, dataDir string) bool {
 
 	if cfg.Ed25519PublicKeyPath == "" {
 		cfg.Ed25519PublicKeyPath = filepath.Join(keysDir, "ed25519_public.pem")
+		updated = true
+	}
+
+	if cfg.DownloadDirectory == "" {
+		cfg.DownloadDirectory = filepath.Join(dataDir, "files")
+		updated = true
+	}
+	if cfg.MaxReceiveFileSize < 0 {
+		cfg.MaxReceiveFileSize = 0
 		updated = true
 	}
 

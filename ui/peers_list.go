@@ -54,14 +54,34 @@ func (c *controller) buildPeersListPane() fyne.CanvasObject {
 				return
 			}
 
-			name.SetText(peer.DeviceName)
+			displayName := c.peerDisplayName(peer)
+			if strings.TrimSpace(displayName) == "" {
+				displayName = peer.DeviceID
+			}
+			if c.peerTrustLevel(peer.DeviceID) == storage.PeerTrustLevelTrusted {
+				displayName += " [Trusted]"
+			}
+			name.SetText(displayName)
+
+			statusText := "Offline"
+			if strings.EqualFold(peer.Status, "online") {
+				statusText = "Online"
+			}
+			settings := c.peerSettingsByID(peer.DeviceID)
+			if settings != nil && strings.TrimSpace(settings.CustomName) != "" {
+				secondary := strings.TrimSpace(peer.DeviceName)
+				if secondary == "" {
+					secondary = peer.DeviceID
+				}
+				statusText = fmt.Sprintf("%s • %s", secondary, statusText)
+			}
 			if strings.EqualFold(peer.Status, "online") {
 				dot.FillColor = colorOnline
-				status.Text = "Online"
+				status.Text = statusText
 				status.Color = colorOnline
 			} else {
 				dot.FillColor = colorOffline
-				status.Text = "Offline"
+				status.Text = statusText
 				status.Color = colorMuted
 			}
 			dot.Refresh()
@@ -101,11 +121,36 @@ func (c *controller) refreshPeersFromStore() {
 		}
 		filtered = append(filtered, peer)
 	}
+
+	settingsByPeerID := make(map[string]storage.PeerSettings, len(filtered))
+	for _, peer := range filtered {
+		if err := c.store.EnsurePeerSettingsExist(peer.DeviceID); err != nil {
+			c.setStatus(fmt.Sprintf("Ensure peer settings failed: %v", err))
+			continue
+		}
+		settings, err := c.store.GetPeerSettings(peer.DeviceID)
+		if err != nil {
+			c.setStatus(fmt.Sprintf("Load peer settings failed: %v", err))
+			continue
+		}
+		settingsByPeerID[peer.DeviceID] = *settings
+	}
+
+	peerDisplayName := func(peer storage.Peer) string {
+		settings, ok := settingsByPeerID[peer.DeviceID]
+		if ok && strings.TrimSpace(settings.CustomName) != "" {
+			return strings.TrimSpace(settings.CustomName)
+		}
+		return strings.TrimSpace(peer.DeviceName)
+	}
+
 	sort.Slice(filtered, func(i, j int) bool {
-		if filtered[i].DeviceName == filtered[j].DeviceName {
+		left := peerDisplayName(filtered[i])
+		right := peerDisplayName(filtered[j])
+		if left == right {
 			return filtered[i].DeviceID < filtered[j].DeviceID
 		}
-		return filtered[i].DeviceName < filtered[j].DeviceName
+		return left < right
 	})
 
 	selectedID := ""
@@ -113,6 +158,7 @@ func (c *controller) refreshPeersFromStore() {
 
 	c.peersMu.Lock()
 	c.peers = filtered
+	c.peerSettings = settingsByPeerID
 	if c.selectedPeerID != "" {
 		for i := range c.peers {
 			if c.peers[i].DeviceID == c.selectedPeerID {

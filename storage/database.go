@@ -114,6 +114,16 @@ ON security_events (event_type, timestamp DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_security_events_peer
 ON security_events (peer_device_id, timestamp DESC, id DESC);
 `,
+	`
+CREATE TABLE IF NOT EXISTS peer_settings (
+  peer_device_id      TEXT PRIMARY KEY REFERENCES peers(device_id) ON DELETE CASCADE,
+  auto_accept_files   INTEGER NOT NULL DEFAULT 0,
+  max_file_size       INTEGER NOT NULL DEFAULT 0,
+  download_directory  TEXT NOT NULL DEFAULT '',
+  custom_name         TEXT NOT NULL DEFAULT '',
+  trust_level         TEXT NOT NULL CHECK(trust_level IN ('normal','trusted')) DEFAULT 'normal'
+);
+`,
 }
 
 // Store is a thin wrapper around a SQLite connection.
