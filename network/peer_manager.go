@@ -37,9 +37,10 @@ const (
 	maxQueuedMessages     = 500
 	maxQueuedBytesPerPeer = 50 * 1024 * 1024
 
-	defaultFileChunkSize      = 256 * 1024
-	defaultFileResponseTimout = 10 * time.Second
-	defaultFileChunkRetries   = 3
+	defaultFileChunkSize       = 256 * 1024
+	defaultFileResponseTimout  = 10 * time.Second
+	defaultFileCompleteTimeout = 5 * time.Minute // receiver may need time to checksum/rename large files
+	defaultFileChunkRetries    = 3
 )
 
 var defaultReconnectBackoff = []time.Duration{
@@ -102,6 +103,7 @@ type PeerManagerOptions struct {
 	FilesDir            string
 	FileChunkSize       int
 	FileResponseTimeout time.Duration
+	FileCompleteTimeout time.Duration // timeout waiting for receiver's FileComplete after all chunks sent
 	MaxChunkRetries     int
 	OnFileRequest       func(FileRequestNotification) (bool, error)
 	OnFileProgress      func(FileProgress)
@@ -178,6 +180,9 @@ func NewPeerManager(options PeerManagerOptions) (*PeerManager, error) {
 	}
 	if options.FileResponseTimeout <= 0 {
 		options.FileResponseTimeout = defaultFileResponseTimout
+	}
+	if options.FileCompleteTimeout <= 0 {
+		options.FileCompleteTimeout = defaultFileCompleteTimeout
 	}
 	if options.MaxChunkRetries <= 0 {
 		options.MaxChunkRetries = defaultFileChunkRetries

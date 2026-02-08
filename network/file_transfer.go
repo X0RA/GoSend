@@ -665,13 +665,41 @@ func (m *PeerManager) handleFileComplete(conn *PeerConnection, complete FileComp
 	if inbound == nil {
 		m.fileMu.Lock()
 		ch := m.outboundFileEventChans[complete.FileID]
+		outbound := m.outboundFileTransfers[complete.FileID]
 		m.fileMu.Unlock()
-		if ch == nil {
+		if ch != nil {
+			select {
+			case ch <- fileTransferEvent{Complete: &complete}:
+			default:
+			}
 			return
 		}
-		select {
-		case ch <- fileTransferEvent{Complete: &complete}:
-		default:
+		// Sender timed out waiting; if receiver sends FileComplete late, still mark complete so sender UI updates
+		if outbound != nil && complete.Status == fileCompleteStatusComplete {
+			outbound.mu.Lock()
+			allSent := outbound.BytesSent == outbound.Filesize
+			if allSent && !outbound.Done {
+				outbound.Done = true
+				outbound.Running = false
+				fileID := outbound.FileID
+				peerID := outbound.PeerDeviceID
+				filesize := outbound.Filesize
+				totalChunks := outbound.TotalChunks
+				outbound.mu.Unlock()
+				_ = m.options.Store.UpdateTransferStatus(fileID, "complete")
+				m.emitFileProgress(FileProgress{
+					FileID:            fileID,
+					PeerDeviceID:      peerID,
+					Direction:         fileTransferDirectionSend,
+					BytesTransferred:  filesize,
+					TotalBytes:        filesize,
+					ChunkIndex:        totalChunks - 1,
+					TotalChunks:       totalChunks,
+					TransferCompleted: true,
+				})
+			} else {
+				outbound.mu.Unlock()
+			}
 		}
 		return
 	}
@@ -809,7 +837,11 @@ func (m *PeerManager) waitForFileResponse(ctx context.Context, events <-chan fil
 }
 
 func (m *PeerManager) waitForFileComplete(ctx context.Context, events <-chan fileTransferEvent, match func(FileComplete) bool) (FileComplete, error) {
-	timer := time.NewTimer(m.options.FileResponseTimeout)
+	timeout := m.options.FileCompleteTimeout
+	if timeout <= 0 {
+		timeout = m.options.FileResponseTimeout
+	}
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
 	for {

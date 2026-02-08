@@ -205,6 +205,7 @@ Outbound:
 - Chunks are read from source file and encrypted as `file_data` with per-chunk nonce.
 - Receiver responds with `chunk_ack` / `chunk_nack`.
 - Each chunk retries up to `MaxChunkRetries` (default 3).
+- After all chunks are sent, sender sends `file_complete` and waits for the receiver’s `file_complete` (after checksum and rename). This wait uses `FileCompleteTimeout` (default 5 minutes) so large files have time to be verified; chunk acks use `FileResponseTimeout` (default 10s). If the receiver’s completion arrives after the sender timed out, the sender still applies completion so the UI updates.
 
 Inbound:
 
