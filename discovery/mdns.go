@@ -52,7 +52,6 @@ type Config struct {
 	SelfDeviceID      string
 	DeviceName        string
 	ListeningPort     int
-	KeyFingerprint    string
 	Ed25519PublicKey  []byte
 	KnownPeerProvider func() []KnownPeerIdentity
 	Now               func() time.Time

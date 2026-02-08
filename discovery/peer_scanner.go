@@ -35,7 +35,6 @@ type Event struct {
 type DiscoveredPeer struct {
 	DeviceID       string
 	DeviceName     string
-	KeyFingerprint string
 	DiscoveryToken string
 	Version        int
 	HostName       string
@@ -356,7 +355,6 @@ func parseEntry(entry *zeroconf.ServiceEntry, cfg Config) (DiscoveredPeer, bool)
 	return DiscoveredPeer{
 		DeviceID:       deviceID,
 		DeviceName:     name,
-		KeyFingerprint: strings.TrimSpace(txt["key_fingerprint"]),
 		DiscoveryToken: token,
 		Version:        version,
 		HostName:       entry.HostName,
@@ -435,7 +433,6 @@ func txtToMap(text []string) map[string]string {
 func peersEqual(a, b DiscoveredPeer) bool {
 	if a.DeviceID != b.DeviceID ||
 		a.DeviceName != b.DeviceName ||
-		a.KeyFingerprint != b.KeyFingerprint ||
 		a.DiscoveryToken != b.DiscoveryToken ||
 		a.Version != b.Version ||
 		a.HostName != b.HostName ||

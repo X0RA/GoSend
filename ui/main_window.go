@@ -258,7 +258,6 @@ func (c *controller) startServices() error {
 		SelfDeviceID:      c.cfg.DeviceID,
 		DeviceName:        c.cfg.DeviceName,
 		ListeningPort:     activePort,
-		KeyFingerprint:    c.cfg.KeyFingerprint,
 		Ed25519PublicKey:  c.identity.Ed25519PublicKey,
 		KnownPeerProvider: c.discoveryKnownPeers,
 	})
