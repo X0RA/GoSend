@@ -199,14 +199,22 @@ func TestPeerSettingsCRUDAndPeerNameUpdate(t *testing.T) {
 	if defaults.TrustLevel != PeerTrustLevelNormal {
 		t.Fatalf("expected default trust_level %q, got %q", PeerTrustLevelNormal, defaults.TrustLevel)
 	}
+	if defaults.NotificationsMuted {
+		t.Fatalf("expected default notifications_muted=false")
+	}
+	if defaults.Verified {
+		t.Fatalf("expected default verified=false")
+	}
 
 	if err := store.UpdatePeerSettings(PeerSettings{
-		PeerDeviceID:      "peer-settings",
-		AutoAcceptFiles:   true,
-		MaxFileSize:       12345,
-		DownloadDirectory: "/tmp/downloads",
-		CustomName:        "Laptop",
-		TrustLevel:        PeerTrustLevelTrusted,
+		PeerDeviceID:       "peer-settings",
+		AutoAcceptFiles:    true,
+		MaxFileSize:        12345,
+		DownloadDirectory:  "/tmp/downloads",
+		CustomName:         "Laptop",
+		TrustLevel:         PeerTrustLevelTrusted,
+		NotificationsMuted: true,
+		Verified:           true,
 	}); err != nil {
 		t.Fatalf("UpdatePeerSettings failed: %v", err)
 	}
@@ -230,6 +238,23 @@ func TestPeerSettingsCRUDAndPeerNameUpdate(t *testing.T) {
 	if updated.TrustLevel != PeerTrustLevelTrusted {
 		t.Fatalf("unexpected trust_level: %q", updated.TrustLevel)
 	}
+	if !updated.NotificationsMuted {
+		t.Fatalf("expected notifications_muted=true")
+	}
+	if !updated.Verified {
+		t.Fatalf("expected verified=true")
+	}
+
+	if err := store.ResetPeerVerified("peer-settings"); err != nil {
+		t.Fatalf("ResetPeerVerified failed: %v", err)
+	}
+	resetSettings, err := store.GetPeerSettings("peer-settings")
+	if err != nil {
+		t.Fatalf("GetPeerSettings after reset failed: %v", err)
+	}
+	if resetSettings.Verified {
+		t.Fatalf("expected verified=false after reset")
+	}
 
 	if err := store.UpdatePeerDeviceName("peer-settings", "Changed Name"); err != nil {
 		t.Fatalf("UpdatePeerDeviceName failed: %v", err)
@@ -240,5 +265,16 @@ func TestPeerSettingsCRUDAndPeerNameUpdate(t *testing.T) {
 	}
 	if peer.DeviceName != "Changed Name" {
 		t.Fatalf("unexpected peer device_name: %q", peer.DeviceName)
+	}
+
+	if err := store.UpdatePeerIdentity("peer-settings", "rotated-key", "rotated-fingerprint"); err != nil {
+		t.Fatalf("UpdatePeerIdentity failed: %v", err)
+	}
+	afterRotation, err := store.GetPeerSettings("peer-settings")
+	if err != nil {
+		t.Fatalf("GetPeerSettings after key rotation failed: %v", err)
+	}
+	if afterRotation.Verified {
+		t.Fatalf("expected verified=false after key rotation")
 	}
 }

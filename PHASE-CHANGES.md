@@ -248,69 +248,69 @@ This phase focuses on the user experience layer and operational hygiene features
 
 File transfers should appear as rich inline cards within the chat transcript, not just status text. This gives users immediate visual feedback in the context where they initiated the transfer.
 
-- [ ] Define a new chat row widget in `ui/chat_window.go` for file transfers, displaying: filename, file size, a progress bar, transfer speed, and status text (Waiting / Sending / Receiving / Complete / Failed)
-- [ ] For completed received files, render the filename as a clickable link that opens the file's containing folder (using `fyne.CurrentApp().OpenURL` or OS-specific open command)
-- [ ] For failed transfers, show a retry button inline that re-initiates the send
-- [ ] Wire the `OnFileProgress` callback from `PeerManager` into the chat view to update the progress bar in real time
-- [ ] Ensure that transfer cards are persisted in the chat history (they already have entries in the `files` table) and display correctly when scrolling back through history
+- [x] Define a new chat row widget in `ui/chat_window.go` for file transfers, displaying: filename, file size, a progress bar, transfer speed, and status text (Waiting / Sending / Receiving / Complete / Failed)
+- [x] For completed received files, render the filename as a clickable link that opens the file's containing folder (using `fyne.CurrentApp().OpenURL` or OS-specific open command)
+- [x] For failed transfers, show a retry button inline that re-initiates the send
+- [x] Wire the `OnFileProgress` callback from `PeerManager` into the chat view to update the progress bar in real time
+- [x] Ensure that transfer cards are persisted in the chat history (they already have entries in the `files` table) and display correctly when scrolling back through history
 
 ### 6.2 — Desktop Notifications
 
 When the app is not in focus, incoming messages and file requests should produce system-level desktop notifications so users don't miss them.
 
-- [ ] Implement desktop notifications using `fyne.CurrentApp().SendNotification()` for incoming messages when the app window is not focused or the user is viewing a different peer's chat
-- [ ] Implement notifications for incoming file requests (showing filename and sender name)
-- [ ] Add a global notification toggle in `ui/settings.go` (on/off, default on)
-- [ ] Add a per-peer notification mute option in the peer settings (from Phase 3.4), so users can silence noisy peers while keeping notifications for others
-- [ ] Ensure notifications do not fire for auto-accepted file transfers from trusted peers (to avoid notification spam for devices that are configured to auto-accept)
+- [x] Implement desktop notifications using `fyne.CurrentApp().SendNotification()` for incoming messages when the app window is not focused or the user is viewing a different peer's chat
+- [x] Implement notifications for incoming file requests (showing filename and sender name)
+- [x] Add a global notification toggle in `ui/settings.go` (on/off, default on)
+- [x] Add a per-peer notification mute option in the peer settings (from Phase 3.4), so users can silence noisy peers while keeping notifications for others
+- [x] Ensure notifications do not fire for auto-accepted file transfers from trusted peers (to avoid notification spam for devices that are configured to auto-accept)
 
 ### 6.3 — Fingerprint Verification and Copy
 
 The fingerprint display is functional but minimal. Making it easy to compare fingerprints out-of-band directly improves the security of the trust model.
 
-- [ ] Update fingerprint display throughout the UI to use grouped hex format (e.g., `AB12 CD34 EF56 7890`) instead of a continuous string, for easier verbal comparison
-- [ ] Add a "Copy Fingerprint" button next to the fingerprint display in the device settings dialog
-- [ ] In the peer settings dialog (from Phase 3.4), show both the local fingerprint and the peer's fingerprint side by side with copy buttons for each, so users can compare them during a phone call or in-person meeting
-- [ ] Add a "Verified" toggle in the peer settings that the user can set after manually verifying fingerprints out-of-band; once set, display a small checkmark badge next to the peer's name in the peer list
-- [ ] Store the `verified` boolean in the `peer_settings` table; automatically reset it to false if the peer's key ever changes (key rotation from Phase 2.1)
+- [x] Update fingerprint display throughout the UI to use grouped hex format (e.g., `AB12 CD34 EF56 7890`) instead of a continuous string, for easier verbal comparison
+- [x] Add a "Copy Fingerprint" button next to the fingerprint display in the device settings dialog
+- [x] In the peer settings dialog (from Phase 3.4), show both the local fingerprint and the peer's fingerprint side by side with copy buttons for each, so users can compare them during a phone call or in-person meeting
+- [x] Add a "Verified" toggle in the peer settings that the user can set after manually verifying fingerprints out-of-band; once set, display a small checkmark badge next to the peer's name in the peer list
+- [x] Store the `verified` boolean in the `peer_settings` table; automatically reset it to false if the peer's key ever changes (key rotation from Phase 2.1)
 
 ### 6.4 — Connection State Indicators
 
 The peer list currently shows online/offline. Users should see more granular states to understand what the app is doing, especially during reconnection or file transfer.
 
-- [ ] Add "Connecting..." state display in `ui/peers_list.go` for peers that are mid-handshake
-- [ ] Add "Reconnecting..." state with an indication of backoff progress (e.g., "Reconnecting in 45s...")
-- [ ] Add "Transferring..." state with a small inline progress indicator for peers with active file transfers
-- [ ] Map these visual states from the internal connection lifecycle states (`CONNECTING`, `READY`, `IDLE`, `DISCONNECTING`) and from the file transfer manager's active transfer tracking
-- [ ] Ensure state transitions update the peer list promptly rather than waiting for the 2-second poll interval (consider event-driven updates for connection state changes)
+- [x] Add "Connecting..." state display in `ui/peers_list.go` for peers that are mid-handshake
+- [x] Add "Reconnecting..." state with an indication of backoff progress (e.g., "Reconnecting in 45s...")
+- [x] Add "Transferring..." state with a small inline progress indicator for peers with active file transfers
+- [x] Map these visual states from the internal connection lifecycle states (`CONNECTING`, `READY`, `IDLE`, `DISCONNECTING`) and from the file transfer manager's active transfer tracking
+- [x] Ensure state transitions update the peer list promptly rather than waiting for the 2-second poll interval (consider event-driven updates for connection state changes)
 
 ### 6.5 — Data Retention and Cleanup Policies
 
 Message history, file metadata, and the seen-message-ID table grow indefinitely. Users should be able to configure automatic cleanup, and the app should maintain itself without manual intervention.
 
-- [ ] Add `message_retention_days` field to `DeviceConfig` in `config/config.go` with options: 30, 90, 365, and 0 (forever, the default)
-- [ ] Add `cleanup_downloaded_files` boolean to `DeviceConfig` (default false) — when enabled, files older than the retention period are deleted from disk
-- [ ] Implement a background cleanup job in `peer_manager.go` or a dedicated `maintenance.go` that runs on startup and then once every 24 hours
-- [ ] The cleanup job deletes messages from `storage/messages.go` older than the retention period, prunes `seen_message_ids` entries older than 14 days, removes completed file metadata older than the retention period, and optionally deletes the corresponding files from disk
-- [ ] Add the retention settings to the settings UI in `ui/settings.go` as a dropdown (30 days / 90 days / 1 year / Keep forever)
-- [ ] Add a manual "Clear Chat History" button per peer in the peer settings dialog, with a confirmation prompt
+- [x] Add `message_retention_days` field to `DeviceConfig` in `config/config.go` with options: 30, 90, 365, and 0 (forever, the default)
+- [x] Add `cleanup_downloaded_files` boolean to `DeviceConfig` (default false) — when enabled, files older than the retention period are deleted from disk
+- [x] Implement a background cleanup job in `peer_manager.go` or a dedicated `maintenance.go` that runs on startup and then once every 24 hours
+- [x] The cleanup job deletes messages from `storage/messages.go` older than the retention period, prunes `seen_message_ids` entries older than 14 days, removes completed file metadata older than the retention period, and optionally deletes the corresponding files from disk
+- [x] Add the retention settings to the settings UI in `ui/settings.go` as a dropdown (30 days / 90 days / 1 year / Keep forever)
+- [x] Add a manual "Clear Chat History" button per peer in the peer settings dialog, with a confirmation prompt
 
 ### 6.6 — Chat History Search
 
 As conversations grow, finding a specific message or file becomes important. A simple search feature makes long-lived peer relationships manageable.
 
-- [ ] Add a search bar to the top of the chat view in `ui/chat_window.go`, toggled by a search icon button
-- [ ] Implement search in `storage/messages.go` using SQL `LIKE` matching against the `content` column, filtered by the selected peer's device ID
-- [ ] Display search results as a filtered view of the chat transcript, with matched terms highlighted if Fyne's text rendering supports it (otherwise just show the filtered list)
-- [ ] Add a filter toggle to show only file transfers in the chat view (queries the `files` table for the selected peer)
-- [ ] Ensure search is performant by adding an index on `messages(from_device_id, to_device_id, content)` if not already present
+- [x] Add a search bar to the top of the chat view in `ui/chat_window.go`, toggled by a search icon button
+- [x] Implement search in `storage/messages.go` using SQL `LIKE` matching against the `content` column, filtered by the selected peer's device ID
+- [x] Display search results as a filtered view of the chat transcript, with matched terms highlighted if Fyne's text rendering supports it (otherwise just show the filtered list)
+- [x] Add a filter toggle to show only file transfers in the chat view (queries the `files` table for the selected peer)
+- [x] Ensure search is performant by adding an index on `messages(from_device_id, to_device_id, content)` if not already present
 
 ### 6.7 — Graceful Settings Hot-Reload (Device Name)
 
 Currently all settings changes require a restart. At minimum, device name changes should apply immediately since they don't require rebinding any network resources.
 
-- [ ] Update the settings save path in `ui/settings.go` to detect when only the device name changed (no port change)
-- [ ] When only the name changed, propagate the new name to the mDNS advertiser in `discovery/mdns.go` by restarting the mDNS registration with the updated instance name
-- [ ] Update active connections to use the new name for future protocol messages (update `PeerManager.options.Identity.DeviceName`)
-- [ ] Remove the "Restart required" prompt when only the name was changed; keep it only for port changes
-- [ ] Add a test that verifies a name change is reflected in mDNS advertisements without a full restart
+- [x] Update the settings save path in `ui/settings.go` to detect when only the device name changed (no port change)
+- [x] When only the name changed, propagate the new name to the mDNS advertiser in `discovery/mdns.go` by restarting the mDNS registration with the updated instance name
+- [x] Update active connections to use the new name for future protocol messages (update `PeerManager.options.Identity.DeviceName`)
+- [x] Remove the "Restart required" prompt when only the name was changed; keep it only for port changes
+- [x] Add a test that verifies a name change is reflected in mDNS advertisements without a full restart

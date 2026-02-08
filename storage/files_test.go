@@ -195,3 +195,99 @@ func TestFolderTransferMetadataAndFileLinking(t *testing.T) {
 		t.Fatalf("expected folder transfer status %q, got %q", transferStatusComplete, updatedFolder.TransferStatus)
 	}
 }
+
+func TestFileRetentionAndPeerQueries(t *testing.T) {
+	store := newTestStore(t)
+	mustAddPeer(t, store, "self", "Self")
+	mustAddPeer(t, store, "peer-a", "Peer A")
+	mustAddPeer(t, store, "peer-b", "Peer B")
+
+	oldTS := nowUnixMilli() - 100_000
+	newTS := nowUnixMilli()
+
+	oldReceived := FileMetadata{
+		FileID:            "file-old",
+		FromDeviceID:      "peer-a",
+		ToDeviceID:        "self",
+		Filename:          "report-old.txt",
+		Filesize:          1024,
+		StoredPath:        "/tmp/report-old.txt",
+		Checksum:          "sum-old",
+		TimestampReceived: &oldTS,
+		TransferStatus:    transferStatusComplete,
+	}
+	if err := store.SaveFileMetadata(oldReceived); err != nil {
+		t.Fatalf("SaveFileMetadata oldReceived failed: %v", err)
+	}
+
+	newReceived := FileMetadata{
+		FileID:         "file-new",
+		FromDeviceID:   "peer-a",
+		ToDeviceID:     "self",
+		Filename:       "photo-new.png",
+		RelativePath:   "images/photo-new.png",
+		Filesize:       2048,
+		StoredPath:     "/tmp/photo-new.png",
+		Checksum:       "sum-new",
+		TransferStatus: transferStatusComplete,
+	}
+	if err := store.SaveFileMetadata(newReceived); err != nil {
+		t.Fatalf("SaveFileMetadata newReceived failed: %v", err)
+	}
+	if err := store.UpdateFileTimestampReceived("file-new", newTS); err != nil {
+		t.Fatalf("UpdateFileTimestampReceived failed: %v", err)
+	}
+
+	otherPeerFile := FileMetadata{
+		FileID:         "file-peer-b",
+		FromDeviceID:   "peer-b",
+		ToDeviceID:     "self",
+		Filename:       "peer-b-note.txt",
+		Filesize:       128,
+		StoredPath:     "/tmp/peer-b-note.txt",
+		Checksum:       "sum-b",
+		TransferStatus: transferStatusPending,
+	}
+	if err := store.SaveFileMetadata(otherPeerFile); err != nil {
+		t.Fatalf("SaveFileMetadata otherPeerFile failed: %v", err)
+	}
+
+	peerAFiles, err := store.ListFilesForPeer("peer-a", 50, 0)
+	if err != nil {
+		t.Fatalf("ListFilesForPeer failed: %v", err)
+	}
+	if len(peerAFiles) != 2 {
+		t.Fatalf("expected 2 files for peer-a, got %d", len(peerAFiles))
+	}
+
+	searchResults, err := store.SearchFilesForPeer("peer-a", "photo", 50, 0)
+	if err != nil {
+		t.Fatalf("SearchFilesForPeer failed: %v", err)
+	}
+	if len(searchResults) != 1 || searchResults[0].FileID != "file-new" {
+		t.Fatalf("unexpected search results: %+v", searchResults)
+	}
+
+	oldCompleted, err := store.ListCompletedFilesOlderThan(newTS - 50_000)
+	if err != nil {
+		t.Fatalf("ListCompletedFilesOlderThan failed: %v", err)
+	}
+	if len(oldCompleted) != 1 || oldCompleted[0].FileID != "file-old" {
+		t.Fatalf("unexpected old completed files: %+v", oldCompleted)
+	}
+
+	deletedForPeer, err := store.DeleteFileMetadataForPeer("peer-b")
+	if err != nil {
+		t.Fatalf("DeleteFileMetadataForPeer failed: %v", err)
+	}
+	if deletedForPeer != 1 {
+		t.Fatalf("expected 1 deleted file for peer-b, got %d", deletedForPeer)
+	}
+
+	if err := store.DeleteFileMetadata("file-old"); err != nil {
+		t.Fatalf("DeleteFileMetadata file-old failed: %v", err)
+	}
+	if _, err := store.GetFileByID("file-old"); err == nil {
+		t.Fatalf("expected ErrNotFound for deleted file-old")
+	}
+}

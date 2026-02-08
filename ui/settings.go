@@ -11,6 +11,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"gosend/config"
@@ -26,6 +27,11 @@ const (
 	maxSizePreset1GB       = "1 GB"
 	maxSizePreset5GB       = "5 GB"
 	maxSizePresetCustom    = "Custom"
+
+	retentionPresetKeepForever = "Keep forever"
+	retentionPreset30Days      = "30 days"
+	retentionPreset90Days      = "90 days"
+	retentionPreset1Year       = "1 year"
 )
 
 var maxSizePresetValues = map[string]int64{
@@ -33,6 +39,13 @@ var maxSizePresetValues = map[string]int64{
 	maxSizePreset500MB: 500 * 1024 * 1024,
 	maxSizePreset1GB:   1024 * 1024 * 1024,
 	maxSizePreset5GB:   5 * 1024 * 1024 * 1024,
+}
+
+var messageRetentionValues = map[string]int{
+	retentionPresetKeepForever: 0,
+	retentionPreset30Days:      30,
+	retentionPreset90Days:      90,
+	retentionPreset1Year:       365,
 }
 
 func (c *controller) showSettingsDialog() {
@@ -111,8 +124,28 @@ func (c *controller) showSettingsDialog() {
 		maxSizeCustomEntry.Enable()
 	}
 
+	notificationsEnabled := widget.NewCheck("", nil)
+	notificationsEnabled.SetChecked(c.cfg.NotificationsEnabled)
+
+	retentionSelect := widget.NewSelect([]string{
+		retentionPresetKeepForever,
+		retentionPreset30Days,
+		retentionPreset90Days,
+		retentionPreset1Year,
+	}, nil)
+	retentionSelect.SetSelected(selectRetentionPreset(c.cfg.MessageRetentionDays))
+
+	cleanupDownloadedFiles := widget.NewCheck("Delete downloaded files when purging old metadata", nil)
+	cleanupDownloadedFiles.SetChecked(c.cfg.CleanupDownloadedFiles)
+
 	fingerprintLabel := widget.NewLabel(appcrypto.FormatFingerprint(c.cfg.KeyFingerprint))
 	fingerprintLabel.Wrapping = fyne.TextWrapBreak
+	copyFingerprintBtn := widget.NewButtonWithIcon("", theme.ContentCopyIcon(), func() {
+		if c.window != nil && c.window.Clipboard() != nil {
+			c.window.Clipboard().SetContent(fingerprintLabel.Text)
+		}
+		c.setStatus("Fingerprint copied")
+	})
 	deviceIDLabel := widget.NewLabel(c.cfg.DeviceID)
 	deviceIDLabel.Wrapping = fyne.TextWrapBreak
 
@@ -124,11 +157,14 @@ func (c *controller) showSettingsDialog() {
 	form := widget.NewForm(
 		widget.NewFormItem("Device Name", nameEntry),
 		widget.NewFormItem("Device ID", deviceIDLabel),
-		widget.NewFormItem("Fingerprint", fingerprintLabel),
+		widget.NewFormItem("Fingerprint", container.NewBorder(nil, nil, nil, copyFingerprintBtn, fingerprintLabel)),
 		widget.NewFormItem("Port Mode", portModeGroup),
 		widget.NewFormItem("Port", portEntry),
 		widget.NewFormItem("Download Location", container.NewBorder(nil, nil, nil, browseDownloadDirBtn, downloadDirEntry)),
 		widget.NewFormItem("Max File Size", container.NewHBox(maxSizeSelect, maxSizeCustomEntry)),
+		widget.NewFormItem("Notifications", notificationsEnabled),
+		widget.NewFormItem("Message Retention", retentionSelect),
+		widget.NewFormItem("File Cleanup", cleanupDownloadedFiles),
 	)
 
 	content := container.NewVBox(
@@ -178,11 +214,21 @@ func (c *controller) showSettingsDialog() {
 			dialog.ShowError(err, c.window)
 			return
 		}
+		retentionDays, err := parseRetentionSelection(retentionSelect.Selected)
+		if err != nil {
+			dialog.ShowError(err, c.window)
+			return
+		}
 
-		needsRestart := c.cfg.DeviceName != name || c.cfg.PortMode != portMode || c.cfg.ListeningPort != port
-		changed := needsRestart ||
+		nameChanged := c.cfg.DeviceName != name
+		portChanged := c.cfg.PortMode != portMode || c.cfg.ListeningPort != port
+		changed := nameChanged ||
+			portChanged ||
 			c.cfg.DownloadDirectory != downloadDir ||
-			c.cfg.MaxReceiveFileSize != maxReceiveFileSize
+			c.cfg.MaxReceiveFileSize != maxReceiveFileSize ||
+			c.cfg.NotificationsEnabled != notificationsEnabled.Checked ||
+			c.cfg.MessageRetentionDays != retentionDays ||
+			c.cfg.CleanupDownloadedFiles != cleanupDownloadedFiles.Checked
 		if !changed {
 			c.setStatus("Settings saved")
 			return
@@ -193,15 +239,38 @@ func (c *controller) showSettingsDialog() {
 		c.cfg.ListeningPort = port
 		c.cfg.DownloadDirectory = downloadDir
 		c.cfg.MaxReceiveFileSize = maxReceiveFileSize
+		c.cfg.NotificationsEnabled = notificationsEnabled.Checked
+		c.cfg.MessageRetentionDays = retentionDays
+		c.cfg.CleanupDownloadedFiles = cleanupDownloadedFiles.Checked
 
 		if err := config.Save(c.cfgPath, c.cfg); err != nil {
 			dialog.ShowError(err, c.window)
 			return
 		}
 
-		if needsRestart {
-			c.setStatus("Settings saved. Restart required to apply device name/port changes.")
-			dialog.ShowInformation("Restart Required", "Settings were saved. Restart the app to apply device name/port changes.", c.window)
+		if nameChanged && !portChanged {
+			if c.manager != nil {
+				if err := c.manager.UpdateDeviceName(name); err != nil {
+					c.setStatus(fmt.Sprintf("Device name updated in config; runtime update failed: %v", err))
+					dialog.ShowInformation("Restart Recommended", "Device name was saved, but runtime update failed. Restart the app to fully apply it.", c.window)
+					return
+				}
+			}
+			if c.discovery != nil {
+				if err := c.discovery.UpdateDeviceName(name); err != nil {
+					c.setStatus(fmt.Sprintf("Device name updated in config; mDNS update failed: %v", err))
+					dialog.ShowInformation("Restart Recommended", "Device name was saved, but discovery update failed. Restart the app to fully apply it.", c.window)
+					return
+				}
+			}
+			c.identity.DeviceName = name
+			c.setStatus("Settings saved")
+			return
+		}
+
+		if portChanged {
+			c.setStatus("Settings saved. Restart required to apply port changes.")
+			dialog.ShowInformation("Restart Required", "Settings were saved. Restart the app to apply port changes.", c.window)
 			return
 		}
 
@@ -247,6 +316,12 @@ func (c *controller) showSelectedPeerSettingsDialog() {
 	} else {
 		trustLevel.SetSelected("Normal")
 	}
+
+	notificationsMutedCheck := widget.NewCheck("", nil)
+	notificationsMutedCheck.SetChecked(settings.NotificationsMuted)
+
+	verifiedCheck := widget.NewCheck("Verified out-of-band", nil)
+	verifiedCheck.SetChecked(settings.Verified)
 
 	maxSizeSelect := widget.NewSelect([]string{
 		maxSizePresetUseGlobal,
@@ -320,15 +395,32 @@ func (c *controller) showSelectedPeerSettingsDialog() {
 	deviceNameLabel.Wrapping = fyne.TextWrapBreak
 	deviceIDLabel := widget.NewLabel(peer.DeviceID)
 	deviceIDLabel.Wrapping = fyne.TextWrapBreak
-	fingerprintLabel := widget.NewLabel(appcrypto.FormatFingerprint(peer.KeyFingerprint))
-	fingerprintLabel.Wrapping = fyne.TextWrapBreak
+	peerFingerprintLabel := widget.NewLabel(appcrypto.FormatFingerprint(peer.KeyFingerprint))
+	peerFingerprintLabel.Wrapping = fyne.TextWrapBreak
+	localFingerprintLabel := widget.NewLabel(appcrypto.FormatFingerprint(c.cfg.KeyFingerprint))
+	localFingerprintLabel.Wrapping = fyne.TextWrapBreak
+	copyPeerFingerprintBtn := widget.NewButtonWithIcon("", theme.ContentCopyIcon(), func() {
+		if c.window != nil && c.window.Clipboard() != nil {
+			c.window.Clipboard().SetContent(peerFingerprintLabel.Text)
+		}
+		c.setStatus("Peer fingerprint copied")
+	})
+	copyLocalFingerprintBtn := widget.NewButtonWithIcon("", theme.ContentCopyIcon(), func() {
+		if c.window != nil && c.window.Clipboard() != nil {
+			c.window.Clipboard().SetContent(localFingerprintLabel.Text)
+		}
+		c.setStatus("Local fingerprint copied")
+	})
 
 	form := widget.NewForm(
 		widget.NewFormItem("Device Name", deviceNameLabel),
 		widget.NewFormItem("Device ID", deviceIDLabel),
-		widget.NewFormItem("Fingerprint", fingerprintLabel),
+		widget.NewFormItem("Peer Fingerprint", container.NewBorder(nil, nil, nil, copyPeerFingerprintBtn, peerFingerprintLabel)),
+		widget.NewFormItem("Local Fingerprint", container.NewBorder(nil, nil, nil, copyLocalFingerprintBtn, localFingerprintLabel)),
 		widget.NewFormItem("Custom Name", customNameEntry),
 		widget.NewFormItem("Trust Level", trustLevel),
+		widget.NewFormItem("Verified", verifiedCheck),
+		widget.NewFormItem("Mute Notifications", notificationsMutedCheck),
 		widget.NewFormItem("Auto-Accept Files", autoAcceptCheck),
 		widget.NewFormItem("Max File Size", container.NewHBox(maxSizeSelect, maxSizeCustomEntry)),
 		widget.NewFormItem("Download Directory", container.NewVBox(
@@ -337,7 +429,18 @@ func (c *controller) showSelectedPeerSettingsDialog() {
 		)),
 	)
 
-	dlg := dialog.NewCustomConfirm("Peer Settings", "Save", "Close", form, func(save bool) {
+	clearHistoryBtn := widget.NewButton("Clear Chat History", func() {
+		c.confirmClearPeerHistory(peer.DeviceID)
+	})
+	clearHistoryBtn.Importance = widget.DangerImportance
+
+	content := container.NewVBox(
+		form,
+		widget.NewSeparator(),
+		clearHistoryBtn,
+	)
+
+	dlg := dialog.NewCustomConfirm("Peer Settings", "Save", "Close", content, func(save bool) {
 		if !save {
 			return
 		}
@@ -367,12 +470,14 @@ func (c *controller) showSelectedPeerSettingsDialog() {
 		}
 
 		if err := c.store.UpdatePeerSettings(storage.PeerSettings{
-			PeerDeviceID:      peer.DeviceID,
-			AutoAcceptFiles:   autoAcceptCheck.Checked,
-			MaxFileSize:       maxFileSize,
-			DownloadDirectory: downloadDirectory,
-			CustomName:        strings.TrimSpace(customNameEntry.Text),
-			TrustLevel:        trustLevelValue,
+			PeerDeviceID:       peer.DeviceID,
+			AutoAcceptFiles:    autoAcceptCheck.Checked,
+			MaxFileSize:        maxFileSize,
+			DownloadDirectory:  downloadDirectory,
+			CustomName:         strings.TrimSpace(customNameEntry.Text),
+			TrustLevel:         trustLevelValue,
+			NotificationsMuted: notificationsMutedCheck.Checked,
+			Verified:           verifiedCheck.Checked,
 		}); err != nil {
 			dialog.ShowError(err, c.window)
 			return
@@ -384,6 +489,47 @@ func (c *controller) showSelectedPeerSettingsDialog() {
 	}, c.window)
 	dlg.Resize(fyne.NewSize(660, 560))
 	dlg.Show()
+}
+
+func (c *controller) confirmClearPeerHistory(peerID string) {
+	peerID = strings.TrimSpace(peerID)
+	if peerID == "" {
+		return
+	}
+
+	dialog.ShowConfirm(
+		"Clear Chat History",
+		"Delete all messages and transfer history with this peer?",
+		func(confirm bool) {
+			if !confirm {
+				return
+			}
+			go c.clearPeerHistory(peerID)
+		},
+		c.window,
+	)
+}
+
+func (c *controller) clearPeerHistory(peerID string) {
+	if _, err := c.store.DeleteMessagesForPeer(peerID); err != nil {
+		c.setStatus(fmt.Sprintf("Clear messages failed: %v", err))
+		return
+	}
+	if _, err := c.store.DeleteFileMetadataForPeer(peerID); err != nil {
+		c.setStatus(fmt.Sprintf("Clear file history failed: %v", err))
+		return
+	}
+
+	c.chatMu.Lock()
+	for fileID, entry := range c.fileTransfers {
+		if entry.PeerDeviceID == peerID {
+			delete(c.fileTransfers, fileID)
+		}
+	}
+	c.chatMu.Unlock()
+
+	c.refreshChatForPeer(peerID)
+	c.setStatus("Chat history cleared")
 }
 
 func selectMaxSizePreset(size int64, allowGlobalDefault bool) string {
@@ -429,6 +575,27 @@ func parseMaxSizeSelection(selected, customText string, allowGlobalDefault bool)
 		}
 		return value, nil
 	}
+}
+
+func selectRetentionPreset(days int) string {
+	switch days {
+	case 30:
+		return retentionPreset30Days
+	case 90:
+		return retentionPreset90Days
+	case 365:
+		return retentionPreset1Year
+	default:
+		return retentionPresetKeepForever
+	}
+}
+
+func parseRetentionSelection(selected string) (int, error) {
+	days, ok := messageRetentionValues[selected]
+	if !ok {
+		return 0, fmt.Errorf("invalid retention selection")
+	}
+	return days, nil
 }
 
 func (c *controller) confirmResetKeys(fingerprintLabel *widget.Label) {

@@ -10,6 +10,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/grandcat/zeroconf"
@@ -174,6 +175,10 @@ func (b *Broadcaster) Stop() {
 
 // Service coordinates mDNS broadcast and scanning.
 type Service struct {
+	mu sync.Mutex
+
+	cfg Config
+
 	Broadcaster *Broadcaster
 	Scanner     *PeerScanner
 }
@@ -198,6 +203,7 @@ func Start(config Config) (*Service, error) {
 	}
 
 	return &Service{
+		cfg:         cfg,
 		Broadcaster: broadcaster,
 		Scanner:     scanner,
 	}, nil
@@ -208,12 +214,47 @@ func (s *Service) Stop() {
 	if s == nil {
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.Scanner != nil {
 		s.Scanner.Stop()
 	}
 	if s.Broadcaster != nil {
 		s.Broadcaster.Stop()
 	}
+}
+
+// UpdateDeviceName restarts mDNS broadcasting with an updated instance name.
+func (s *Service) UpdateDeviceName(deviceName string) error {
+	if s == nil {
+		return errors.New("discovery service is nil")
+	}
+	deviceName = strings.TrimSpace(deviceName)
+	if deviceName == "" {
+		return errors.New("device name is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.cfg.DeviceName == deviceName {
+		return nil
+	}
+
+	cfg := s.cfg
+	cfg.DeviceName = deviceName
+
+	broadcaster, err := StartBroadcaster(cfg)
+	if err != nil {
+		return err
+	}
+
+	if s.Broadcaster != nil {
+		s.Broadcaster.Stop()
+	}
+	s.Broadcaster = broadcaster
+	s.cfg = cfg
+	return nil
 }
 
 // ComputeDiscoveryToken returns the rotating HMAC token for one device identity at the provided hour.

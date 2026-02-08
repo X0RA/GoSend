@@ -73,16 +73,29 @@ type controller struct {
 	discoveryDialog dialog.Dialog
 	discoveryList   *widget.List
 
-	chatMu        sync.RWMutex
-	chatMessages  []storage.Message
-	fileTransfers map[string]chatFileEntry
+	chatMu            sync.RWMutex
+	chatMessages      []storage.Message
+	chatFiles         []chatFileEntry
+	fileTransfers     map[string]chatFileEntry
+	chatSearchQuery   string
+	chatSearchVisible bool
+	chatFilesOnly     bool
 
 	fileProgressBars   map[string]*widget.ProgressBar
 	fileProgressBarsMu sync.Mutex
 
+	runtimeMu         sync.RWMutex
+	peerRuntimeStates map[string]network.PeerRuntimeState
+
+	appStateMu    sync.RWMutex
+	appForeground bool
+
 	peerList        *widget.List
 	chatHeader      *clickableLabel
 	peerSettingsBtn *hintButton
+	searchBtn       *hintButton
+	chatSearchBar   *fyne.Container
+	chatSearchEntry *widget.Entry
 	chatMessagesBox *fyne.Container
 	chatScroll      *container.Scroll
 	chatDropArea    fyne.CanvasObject
@@ -150,22 +163,31 @@ func newController(app fyne.App, options RunOptions) (*controller, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	ctrl := &controller{
-		app:           app,
-		window:        app.NewWindow("GoSend"),
-		cfg:           options.Config,
-		cfgPath:       options.ConfigPath,
-		dataDir:       options.DataDir,
-		store:         options.Store,
-		identity:      options.Identity,
-		ctx:           ctx,
-		cancel:        cancel,
-		discovered:    make(map[string]discovery.DiscoveredPeer),
-		peerSettings:  make(map[string]storage.PeerSettings),
-		fileTransfers: make(map[string]chatFileEntry),
+		app:               app,
+		window:            app.NewWindow("GoSend"),
+		cfg:               options.Config,
+		cfgPath:           options.ConfigPath,
+		dataDir:           options.DataDir,
+		store:             options.Store,
+		identity:          options.Identity,
+		ctx:               ctx,
+		cancel:            cancel,
+		discovered:        make(map[string]discovery.DiscoveredPeer),
+		peerSettings:      make(map[string]storage.PeerSettings),
+		fileTransfers:     make(map[string]chatFileEntry),
+		peerRuntimeStates: make(map[string]network.PeerRuntimeState),
+		appForeground:     true,
 	}
 
 	ctrl.fileHandler = NewFileHandler(ctrl.pickFilePath)
 	ctrl.window.Resize(fyne.NewSize(1200, 760))
+
+	app.Lifecycle().SetOnEnteredForeground(func() {
+		ctrl.setAppForeground(true)
+	})
+	app.Lifecycle().SetOnExitedForeground(func() {
+		ctrl.setAppForeground(false)
+	})
 
 	ctrl.buildMainWindow()
 	ctrl.window.SetOnDropped(ctrl.handleWindowDropped)
@@ -195,24 +217,24 @@ func (c *controller) startServices() error {
 	}
 
 	manager, err := network.NewPeerManager(network.PeerManagerOptions{
-		Identity:      c.identity,
-		Store:         c.store,
-		ListenAddress: net.JoinHostPort("0.0.0.0", strconv.Itoa(requestedPort)),
-		OnKeyChange:   c.promptKeyChangeDecision,
-		OnMessageReceived: func(_ storage.Message) {
-			c.refreshChatView()
-			c.refreshPeersFromStore()
-		},
+		Identity:          c.identity,
+		Store:             c.store,
+		ListenAddress:     net.JoinHostPort("0.0.0.0", strconv.Itoa(requestedPort)),
+		OnKeyChange:       c.promptKeyChangeDecision,
+		OnMessageReceived: c.handleIncomingMessage,
 		OnQueueOverflow: func(peerDeviceID string, droppedCount int) {
 			c.setStatus(fmt.Sprintf("Queue overflow for %s: dropped %d pending messages", peerDeviceID, droppedCount))
 			c.refreshChatForPeer(peerDeviceID)
 		},
-		FilesDir:              c.currentDownloadDirectory(),
-		MaxReceiveFileSize:    c.currentMaxReceiveFileSize(),
-		GetDownloadDirectory:  c.currentDownloadDirectory,
-		GetMaxReceiveFileSize: c.currentMaxReceiveFileSize,
-		OnFileRequest:         c.promptFileRequestDecision,
-		OnFileProgress:        c.handleFileProgress,
+		OnPeerRuntimeStateChanged: c.handlePeerRuntimeStateChanged,
+		FilesDir:                  c.currentDownloadDirectory(),
+		MaxReceiveFileSize:        c.currentMaxReceiveFileSize(),
+		GetDownloadDirectory:      c.currentDownloadDirectory,
+		GetMaxReceiveFileSize:     c.currentMaxReceiveFileSize,
+		GetMessageRetentionDays:   c.currentMessageRetentionDays,
+		GetCleanupDownloadedFiles: c.cleanupDownloadedFilesEnabled,
+		OnFileRequest:             c.promptFileRequestDecision,
+		OnFileProgress:            c.handleFileProgress,
 	})
 	if err != nil {
 		return fmt.Errorf("create peer manager: %w", err)
@@ -658,6 +680,138 @@ func (c *controller) setStatus(message string) {
 	c.applyStatusLabel(labelText)
 }
 
+func (c *controller) setAppForeground(foreground bool) {
+	c.appStateMu.Lock()
+	c.appForeground = foreground
+	c.appStateMu.Unlock()
+}
+
+func (c *controller) isAppForeground() bool {
+	c.appStateMu.RLock()
+	defer c.appStateMu.RUnlock()
+	return c.appForeground
+}
+
+func (c *controller) handleIncomingMessage(message storage.Message) {
+	c.refreshChatView()
+	c.refreshPeersFromStore()
+	c.maybeNotifyIncomingMessage(message)
+}
+
+func (c *controller) handlePeerRuntimeStateChanged(state network.PeerRuntimeState) {
+	if strings.TrimSpace(state.PeerDeviceID) == "" {
+		return
+	}
+
+	c.runtimeMu.Lock()
+	c.peerRuntimeStates[state.PeerDeviceID] = state
+	c.runtimeMu.Unlock()
+
+	fyne.Do(func() {
+		if c.peerList != nil {
+			c.peerList.Refresh()
+		}
+		c.updateChatHeader()
+	})
+}
+
+func (c *controller) runtimeStateForPeer(peerID string) network.PeerRuntimeState {
+	if strings.TrimSpace(peerID) == "" {
+		return network.PeerRuntimeState{}
+	}
+	c.runtimeMu.RLock()
+	state, ok := c.peerRuntimeStates[peerID]
+	c.runtimeMu.RUnlock()
+	if !ok {
+		state = network.PeerRuntimeState{
+			PeerDeviceID:    peerID,
+			ConnectionState: network.StateDisconnected,
+		}
+	}
+	if c.manager != nil {
+		state.ConnectionState = c.manager.PeerConnectionState(peerID)
+		if snapshot := c.manager.PeerRuntimeStateSnapshot(peerID); snapshot.PeerDeviceID != "" {
+			if snapshot.Reconnecting {
+				state.Reconnecting = true
+				state.NextReconnectAt = snapshot.NextReconnectAt
+			} else if state.Reconnecting && snapshot.NextReconnectAt == 0 {
+				state.Reconnecting = false
+				state.NextReconnectAt = 0
+			}
+		}
+	}
+	return state
+}
+
+func (c *controller) maybeNotifyIncomingMessage(message storage.Message) {
+	peerID := strings.TrimSpace(message.FromDeviceID)
+	if peerID == "" {
+		return
+	}
+	if !c.shouldSendNotification(peerID) {
+		return
+	}
+
+	peerName := c.transferPeerName(peerID)
+	content := strings.TrimSpace(message.Content)
+	if content == "" {
+		content = "New message"
+	}
+	if len(content) > 180 {
+		content = content[:177] + "..."
+	}
+	c.sendDesktopNotification("New message from "+peerName, content)
+}
+
+func (c *controller) maybeNotifyIncomingFileRequest(notification network.FileRequestNotification) {
+	peerID := strings.TrimSpace(notification.FromDeviceID)
+	if peerID == "" {
+		return
+	}
+	if !c.shouldSendNotification(peerID) {
+		return
+	}
+
+	name := strings.TrimSpace(notification.Filename)
+	if name == "" {
+		name = "Unnamed file"
+	}
+	c.sendDesktopNotification(
+		"Incoming file request",
+		fmt.Sprintf("%s wants to send %s", c.transferPeerName(peerID), name),
+	)
+}
+
+func (c *controller) shouldSendNotification(peerID string) bool {
+	if c == nil || c.cfg == nil || !c.cfg.NotificationsEnabled {
+		return false
+	}
+
+	settings := c.peerSettingsByID(peerID)
+	if settings == nil && c.store != nil {
+		if loaded, err := c.store.GetPeerSettings(peerID); err == nil {
+			settings = loaded
+		}
+	}
+	if settings != nil && settings.NotificationsMuted {
+		return false
+	}
+
+	selectedPeerID := c.currentSelectedPeerID()
+	if selectedPeerID != peerID {
+		return true
+	}
+	return !c.isAppForeground()
+}
+
+func (c *controller) sendDesktopNotification(title, content string) {
+	app := fyne.CurrentApp()
+	if app == nil {
+		return
+	}
+	app.SendNotification(fyne.NewNotification(title, content))
+}
+
 func (c *controller) setHoverHint(message string) {
 	c.statusMu.Lock()
 	c.hoverHint = strings.TrimSpace(message)
@@ -947,9 +1101,11 @@ func (c *controller) promptIncomingPeerAddRequest(req network.AddRequestNotifica
 }
 
 func (c *controller) promptFileRequestDecision(notification network.FileRequestNotification) (bool, error) {
+	c.maybeNotifyIncomingFileRequest(notification)
+
 	decision := make(chan bool, 1)
 	info := container.NewVBox(
-		widget.NewLabel(fmt.Sprintf("%s wants to send you a file:", notification.FromDeviceID)),
+		widget.NewLabel(fmt.Sprintf("%s wants to send you a file:", c.transferPeerName(notification.FromDeviceID))),
 		widget.NewLabel(""),
 		widget.NewLabel("Name: "+notification.Filename),
 		widget.NewLabel("Size: "+formatBytes(notification.Filesize)),
@@ -1313,4 +1469,23 @@ func (c *controller) currentMaxReceiveFileSize() int64 {
 		return 0
 	}
 	return c.cfg.MaxReceiveFileSize
+}
+
+func (c *controller) currentMessageRetentionDays() int {
+	if c == nil || c.cfg == nil {
+		return 0
+	}
+	switch c.cfg.MessageRetentionDays {
+	case 30, 90, 365:
+		return c.cfg.MessageRetentionDays
+	default:
+		return 0
+	}
+}
+
+func (c *controller) cleanupDownloadedFilesEnabled() bool {
+	if c == nil || c.cfg == nil {
+		return false
+	}
+	return c.cfg.CleanupDownloadedFiles
 }

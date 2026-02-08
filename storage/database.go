@@ -162,6 +162,20 @@ CREATE TABLE IF NOT EXISTS folder_transfers (
 CREATE INDEX IF NOT EXISTS idx_folder_transfers_peer_time
 ON folder_transfers (to_device_id, from_device_id, timestamp DESC, folder_id);
 `,
+	`
+ALTER TABLE peer_settings ADD COLUMN notifications_muted INTEGER NOT NULL DEFAULT 0;
+`,
+	`
+ALTER TABLE peer_settings ADD COLUMN verified INTEGER NOT NULL DEFAULT 0;
+`,
+	`
+CREATE INDEX IF NOT EXISTS idx_messages_peer_content
+ON messages (from_device_id, to_device_id, content);
+`,
+	`
+CREATE INDEX IF NOT EXISTS idx_files_peer_status_time
+ON files (to_device_id, from_device_id, transfer_status, timestamp_received DESC, file_id);
+`,
 }
 
 // Store is a thin wrapper around a SQLite connection.

@@ -31,6 +31,15 @@ func TestLoadOrCreateCreatesAndReloadsConfig(t *testing.T) {
 	if firstCfg.MaxReceiveFileSize != 0 {
 		t.Fatalf("expected default max receive file size 0, got %d", firstCfg.MaxReceiveFileSize)
 	}
+	if !firstCfg.NotificationsEnabled {
+		t.Fatalf("expected notifications enabled by default")
+	}
+	if firstCfg.MessageRetentionDays != 0 {
+		t.Fatalf("expected default message retention 0, got %d", firstCfg.MessageRetentionDays)
+	}
+	if firstCfg.CleanupDownloadedFiles {
+		t.Fatalf("expected cleanup downloaded files default false")
+	}
 
 	expectedConfigPath := filepath.Join(tempDir, "config.json")
 	if firstPath != expectedConfigPath {
@@ -59,6 +68,15 @@ func TestLoadOrCreateCreatesAndReloadsConfig(t *testing.T) {
 	}
 	if secondCfg.MaxReceiveFileSize != firstCfg.MaxReceiveFileSize {
 		t.Fatalf("expected stable max receive file size, got %d then %d", firstCfg.MaxReceiveFileSize, secondCfg.MaxReceiveFileSize)
+	}
+	if secondCfg.NotificationsEnabled != firstCfg.NotificationsEnabled {
+		t.Fatalf("expected stable notifications setting, got %t then %t", firstCfg.NotificationsEnabled, secondCfg.NotificationsEnabled)
+	}
+	if secondCfg.MessageRetentionDays != firstCfg.MessageRetentionDays {
+		t.Fatalf("expected stable message retention setting, got %d then %d", firstCfg.MessageRetentionDays, secondCfg.MessageRetentionDays)
+	}
+	if secondCfg.CleanupDownloadedFiles != firstCfg.CleanupDownloadedFiles {
+		t.Fatalf("expected stable cleanup downloaded files setting, got %t then %t", firstCfg.CleanupDownloadedFiles, secondCfg.CleanupDownloadedFiles)
 	}
 }
 
@@ -95,6 +113,9 @@ func TestLoadOrCreateNormalizesLegacyPortModeFromExistingPort(t *testing.T) {
 	if cfg.DownloadDirectory != filepath.Join(tempDir, "files") {
 		t.Fatalf("expected legacy config to default download directory to data files dir, got %q", cfg.DownloadDirectory)
 	}
+	if cfg.MessageRetentionDays != 0 {
+		t.Fatalf("expected legacy message retention default 0, got %d", cfg.MessageRetentionDays)
+	}
 }
 
 func TestLoadOrCreateMigratesLegacyX25519PathField(t *testing.T) {
@@ -130,5 +151,54 @@ func TestLoadOrCreateMigratesLegacyX25519PathField(t *testing.T) {
 	}
 	if strings.Contains(string(updatedRaw), "x25519_private_key_path") {
 		t.Fatalf("expected x25519_private_key_path to be removed during migration")
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load migrated config failed: %v", err)
+	}
+	if !cfg.NotificationsEnabled {
+		t.Fatalf("expected missing legacy notifications setting to default to true")
+	}
+}
+
+func TestLoadOrCreateKeepsExplicitNotificationAndNormalizesRetention(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("P2P_CHAT_DATA_DIR", tempDir)
+
+	cfgPath := filepath.Join(tempDir, "config.json")
+	if err := EnsureDataDirectories(tempDir); err != nil {
+		t.Fatalf("EnsureDataDirectories failed: %v", err)
+	}
+
+	explicit := &DeviceConfig{
+		DeviceID:               "explicit-device",
+		DeviceName:             "Explicit",
+		PortMode:               PortModeAutomatic,
+		ListeningPort:          0,
+		DownloadDirectory:      filepath.Join(tempDir, "files"),
+		MaxReceiveFileSize:     0,
+		NotificationsEnabled:   false,
+		MessageRetentionDays:   15,
+		CleanupDownloadedFiles: true,
+		Ed25519PrivateKeyPath:  filepath.Join(tempDir, "keys", "ed25519_private.pem"),
+		Ed25519PublicKeyPath:   filepath.Join(tempDir, "keys", "ed25519_public.pem"),
+	}
+	if err := Save(cfgPath, explicit); err != nil {
+		t.Fatalf("Save explicit config failed: %v", err)
+	}
+
+	cfg, _, err := LoadOrCreate()
+	if err != nil {
+		t.Fatalf("LoadOrCreate failed: %v", err)
+	}
+	if cfg.NotificationsEnabled {
+		t.Fatalf("expected explicit notifications setting false to be preserved")
+	}
+	if cfg.MessageRetentionDays != 0 {
+		t.Fatalf("expected invalid message retention to normalize to 0, got %d", cfg.MessageRetentionDays)
+	}
+	if !cfg.CleanupDownloadedFiles {
+		t.Fatalf("expected explicit cleanup downloaded files setting true to be preserved")
 	}
 }

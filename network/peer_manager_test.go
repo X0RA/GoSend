@@ -101,6 +101,68 @@ func TestConnectDoesNotAutoAddPeer(t *testing.T) {
 	waitForPeerNotFound(t, b.store, "peer-a", 2*time.Second)
 }
 
+func TestUpdateDeviceNameAppliesToFutureProtocolMessages(t *testing.T) {
+	a := newTestManager(t, testManagerConfig{
+		deviceID: "peer-a",
+		name:     "Peer A",
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID: "peer-b",
+		name:     "Peer B",
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+
+	if err := a.manager.UpdateDeviceName("Renamed Peer A"); err != nil {
+		t.Fatalf("UpdateDeviceName failed: %v", err)
+	}
+
+	resultCh := make(chan struct {
+		accepted bool
+		err      error
+	}, 1)
+	go func() {
+		accepted, err := a.manager.SendPeerAddRequest("peer-b")
+		resultCh <- struct {
+			accepted bool
+			err      error
+		}{accepted: accepted, err: err}
+	}()
+
+	select {
+	case req := <-b.manager.PendingAddRequests():
+		if req.PeerDeviceName != "Renamed Peer A" {
+			t.Fatalf("expected renamed peer device name in add request, got %q", req.PeerDeviceName)
+		}
+		if err := b.manager.ApprovePeerAdd(req.PeerDeviceID, true); err != nil {
+			t.Fatalf("ApprovePeerAdd failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for pending add request")
+	}
+
+	res := <-resultCh
+	if res.err != nil {
+		t.Fatalf("SendPeerAddRequest failed: %v", res.err)
+	}
+	if !res.accepted {
+		t.Fatalf("expected add request to be accepted")
+	}
+
+	self, err := a.store.GetPeer("peer-a")
+	if err != nil {
+		t.Fatalf("GetPeer self failed: %v", err)
+	}
+	if self.DeviceName != "Renamed Peer A" {
+		t.Fatalf("expected self device name update to be persisted, got %q", self.DeviceName)
+	}
+}
+
 func TestPeerAddRejectedDoesNotPersistPeer(t *testing.T) {
 	a := newTestManager(t, testManagerConfig{
 		deviceID: "peer-a",

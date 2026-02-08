@@ -128,6 +128,242 @@ func (s *Store) GetFileByID(fileID string) (*FileMetadata, error) {
 	return file, nil
 }
 
+// ListFilesForPeer returns file metadata rows for one conversation peer.
+func (s *Store) ListFilesForPeer(peerID string, limit, offset int) ([]FileMetadata, error) {
+	if peerID == "" {
+		return nil, errors.New("peer_id is required")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	rows, err := s.db.Query(
+		`SELECT
+			file_id,
+			message_id,
+			folder_id,
+			relative_path,
+			from_device_id,
+			to_device_id,
+			filename,
+			filesize,
+			filetype,
+			stored_path,
+			checksum,
+			timestamp_received,
+			transfer_status
+		FROM files
+		WHERE from_device_id = ? OR to_device_id = ?
+		ORDER BY COALESCE(timestamp_received, 0) ASC, rowid ASC
+		LIMIT ? OFFSET ?`,
+		peerID,
+		peerID,
+		limit,
+		offset,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list files for peer %q: %w", peerID, err)
+	}
+	defer rows.Close()
+
+	files := make([]FileMetadata, 0)
+	for rows.Next() {
+		file, scanErr := scanFileMetadata(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan file metadata row: %w", scanErr)
+		}
+		files = append(files, *file)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate file metadata rows: %w", err)
+	}
+	return files, nil
+}
+
+// SearchFilesForPeer returns file rows for one peer matching a text query.
+func (s *Store) SearchFilesForPeer(peerID, query string, limit, offset int) ([]FileMetadata, error) {
+	if peerID == "" {
+		return nil, errors.New("peer_id is required")
+	}
+	if query == "" {
+		return nil, errors.New("query is required")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	pattern := "%" + query + "%"
+
+	rows, err := s.db.Query(
+		`SELECT
+			file_id,
+			message_id,
+			folder_id,
+			relative_path,
+			from_device_id,
+			to_device_id,
+			filename,
+			filesize,
+			filetype,
+			stored_path,
+			checksum,
+			timestamp_received,
+			transfer_status
+		FROM files
+		WHERE (from_device_id = ? OR to_device_id = ?)
+		  AND (filename LIKE ? OR COALESCE(relative_path, '') LIKE ?)
+		ORDER BY COALESCE(timestamp_received, 0) ASC, rowid ASC
+		LIMIT ? OFFSET ?`,
+		peerID,
+		peerID,
+		pattern,
+		pattern,
+		limit,
+		offset,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("search files for peer %q: %w", peerID, err)
+	}
+	defer rows.Close()
+
+	files := make([]FileMetadata, 0)
+	for rows.Next() {
+		file, scanErr := scanFileMetadata(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan searched file metadata row: %w", scanErr)
+		}
+		files = append(files, *file)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate searched file metadata rows: %w", err)
+	}
+	return files, nil
+}
+
+// UpdateFileTimestampReceived sets timestamp_received for one file row.
+func (s *Store) UpdateFileTimestampReceived(fileID string, timestampReceived int64) error {
+	if fileID == "" {
+		return errors.New("file_id is required")
+	}
+	if timestampReceived <= 0 {
+		timestampReceived = nowUnixMilli()
+	}
+
+	res, err := s.db.Exec(
+		`UPDATE files
+		SET timestamp_received = ?
+		WHERE file_id = ?`,
+		timestampReceived,
+		fileID,
+	)
+	if err != nil {
+		return fmt.Errorf("update file timestamp_received %q: %w", fileID, err)
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read rows affected for update file timestamp_received %q: %w", fileID, err)
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ListCompletedFilesOlderThan lists completed files with timestamp_received older than cutoff.
+func (s *Store) ListCompletedFilesOlderThan(cutoffTimestamp int64) ([]FileMetadata, error) {
+	if cutoffTimestamp <= 0 {
+		return nil, errors.New("cutoff timestamp must be > 0")
+	}
+
+	rows, err := s.db.Query(
+		`SELECT
+			file_id,
+			message_id,
+			folder_id,
+			relative_path,
+			from_device_id,
+			to_device_id,
+			filename,
+			filesize,
+			filetype,
+			stored_path,
+			checksum,
+			timestamp_received,
+			transfer_status
+		FROM files
+		WHERE transfer_status = ?
+		  AND timestamp_received IS NOT NULL
+		  AND timestamp_received < ?
+		ORDER BY timestamp_received ASC, file_id ASC`,
+		transferStatusComplete,
+		cutoffTimestamp,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list completed files older than cutoff: %w", err)
+	}
+	defer rows.Close()
+
+	files := make([]FileMetadata, 0)
+	for rows.Next() {
+		file, scanErr := scanFileMetadata(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan completed file metadata row: %w", scanErr)
+		}
+		files = append(files, *file)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate completed file metadata rows: %w", err)
+	}
+	return files, nil
+}
+
+// DeleteFileMetadata removes one files row.
+func (s *Store) DeleteFileMetadata(fileID string) error {
+	if fileID == "" {
+		return errors.New("file_id is required")
+	}
+
+	res, err := s.db.Exec(`DELETE FROM files WHERE file_id = ?`, fileID)
+	if err != nil {
+		return fmt.Errorf("delete file metadata %q: %w", fileID, err)
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read rows affected for delete file metadata %q: %w", fileID, err)
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteFileMetadataForPeer removes all file rows for one conversation peer.
+func (s *Store) DeleteFileMetadataForPeer(peerID string) (int64, error) {
+	if peerID == "" {
+		return 0, errors.New("peer_id is required")
+	}
+
+	res, err := s.db.Exec(
+		`DELETE FROM files
+		WHERE from_device_id = ? OR to_device_id = ?`,
+		peerID,
+		peerID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("delete file metadata for peer %q: %w", peerID, err)
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read rows affected for delete peer file metadata %q: %w", peerID, err)
+	}
+	return rowsAffected, nil
+}
+
 // UpsertFolderTransfer stores folder transfer envelope metadata.
 func (s *Store) UpsertFolderTransfer(folder FolderTransferMetadata) error {
 	if folder.FolderID == "" {

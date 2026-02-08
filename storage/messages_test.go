@@ -137,3 +137,84 @@ func TestMessageCRUD(t *testing.T) {
 		t.Fatalf("expected no pending messages after prune, got %d", len(pendingAfterPrune))
 	}
 }
+
+func TestSearchAndDeleteMessages(t *testing.T) {
+	store := newTestStore(t)
+	mustAddPeer(t, store, "self", "Self")
+	mustAddPeer(t, store, "peer-a", "Peer A")
+	mustAddPeer(t, store, "peer-b", "Peer B")
+
+	now := nowUnixMilli()
+	if err := store.SaveMessage(Message{
+		MessageID:      "msg-1",
+		FromDeviceID:   "self",
+		ToDeviceID:     "peer-a",
+		Content:        "alpha hello",
+		ContentType:    messageContentText,
+		TimestampSent:  now - 30_000,
+		DeliveryStatus: deliveryStatusDelivered,
+	}); err != nil {
+		t.Fatalf("SaveMessage msg-1 failed: %v", err)
+	}
+	if err := store.SaveMessage(Message{
+		MessageID:      "msg-2",
+		FromDeviceID:   "peer-a",
+		ToDeviceID:     "self",
+		Content:        "beta world",
+		ContentType:    messageContentText,
+		TimestampSent:  now - 20_000,
+		DeliveryStatus: deliveryStatusDelivered,
+	}); err != nil {
+		t.Fatalf("SaveMessage msg-2 failed: %v", err)
+	}
+	if err := store.SaveMessage(Message{
+		MessageID:      "msg-3",
+		FromDeviceID:   "peer-b",
+		ToDeviceID:     "self",
+		Content:        "hello from b",
+		ContentType:    messageContentText,
+		TimestampSent:  now - 10_000,
+		DeliveryStatus: deliveryStatusDelivered,
+	}); err != nil {
+		t.Fatalf("SaveMessage msg-3 failed: %v", err)
+	}
+
+	results, err := store.SearchMessages("peer-a", "hello", 100, 0)
+	if err != nil {
+		t.Fatalf("SearchMessages failed: %v", err)
+	}
+	if len(results) != 1 || results[0].MessageID != "msg-1" {
+		t.Fatalf("unexpected search results: %+v", results)
+	}
+
+	deletedOld, err := store.DeleteMessagesOlderThan(now - 25_000)
+	if err != nil {
+		t.Fatalf("DeleteMessagesOlderThan failed: %v", err)
+	}
+	if deletedOld != 1 {
+		t.Fatalf("expected 1 old message deletion, got %d", deletedOld)
+	}
+
+	deletedPeer, err := store.DeleteMessagesForPeer("peer-a")
+	if err != nil {
+		t.Fatalf("DeleteMessagesForPeer failed: %v", err)
+	}
+	if deletedPeer != 1 {
+		t.Fatalf("expected 1 peer-a message deletion after old prune, got %d", deletedPeer)
+	}
+
+	remainingPeerA, err := store.GetMessages("peer-a", 50, 0)
+	if err != nil {
+		t.Fatalf("GetMessages peer-a failed: %v", err)
+	}
+	if len(remainingPeerA) != 0 {
+		t.Fatalf("expected no messages with peer-a, got %d", len(remainingPeerA))
+	}
+	remainingPeerB, err := store.GetMessages("peer-b", 50, 0)
+	if err != nil {
+		t.Fatalf("GetMessages peer-b failed: %v", err)
+	}
+	if len(remainingPeerB) != 1 || remainingPeerB[0].MessageID != "msg-3" {
+		t.Fatalf("expected peer-b message to remain, got %+v", remainingPeerB)
+	}
+}

@@ -170,12 +170,14 @@ type SecurityEventFilter struct {
 
 // PeerSettings stores user-controlled behavior for one known peer.
 type PeerSettings struct {
-	PeerDeviceID      string
-	AutoAcceptFiles   bool
-	MaxFileSize       int64
-	DownloadDirectory string
-	CustomName        string
-	TrustLevel        string
+	PeerDeviceID       string
+	AutoAcceptFiles    bool
+	MaxFileSize        int64
+	DownloadDirectory  string
+	CustomName         string
+	TrustLevel         string
+	NotificationsMuted bool
+	Verified           bool
 }
 
 func validatePeerStatus(status string) error {

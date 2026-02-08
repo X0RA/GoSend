@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -86,6 +87,54 @@ func TestServiceStartAndStop(t *testing.T) {
 		t.Fatalf("expected broadcaster and scanner")
 	}
 	svc.Stop()
+}
+
+func TestServiceUpdateDeviceNameRestartsBroadcaster(t *testing.T) {
+	var (
+		mu            sync.Mutex
+		registerCalls []string
+	)
+
+	cfg := Config{
+		SelfDeviceID:     "self",
+		DeviceName:       "Original Name",
+		ListeningPort:    9999,
+		Ed25519PublicKey: deterministicTestPublicKey("self"),
+		registerFn: func(instance, service, domain string, port int, text []string, ifaces []net.Interface) (*zeroconf.Server, error) {
+			mu.Lock()
+			registerCalls = append(registerCalls, instance)
+			mu.Unlock()
+			return nil, nil
+		},
+		browseFn: func(ctx context.Context, service, domain string, entries chan<- *zeroconf.ServiceEntry) error {
+			<-ctx.Done()
+			return nil
+		},
+	}
+
+	svc, err := Start(cfg)
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer svc.Stop()
+
+	if err := svc.UpdateDeviceName("Updated Name"); err != nil {
+		t.Fatalf("UpdateDeviceName failed: %v", err)
+	}
+
+	mu.Lock()
+	calls := append([]string(nil), registerCalls...)
+	mu.Unlock()
+
+	if len(calls) < 2 {
+		t.Fatalf("expected at least 2 register calls, got %d (%v)", len(calls), calls)
+	}
+	if calls[0] != "Original Name" {
+		t.Fatalf("expected first register call to use original name, got %q", calls[0])
+	}
+	if calls[1] != "Updated Name" {
+		t.Fatalf("expected second register call to use updated name, got %q", calls[1])
+	}
 }
 
 func TestConfigWithDefaultsSetsPeerStaleAfterFromTTL(t *testing.T) {

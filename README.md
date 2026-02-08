@@ -27,7 +27,13 @@ GoSend is a local-network peer-to-peer desktop app built in Go. It uses mDNS for
 - Folder transfer envelope (`folder_transfer_request` / `folder_transfer_response`) with signed manifests, structure-preserving receive paths, and traversal-safe relative-path validation.
 - File transfer with request/accept/reject, signed chunk ack/nack + signed file completion, reconnect resume from chunk, end checksum verification, persistent transfer checkpoints for crash recovery, global receive limits/download location, and per-peer auto-accept/limit/directory overrides.
 - Chat drag-and-drop (single/multi file + folder) plus transfer queue panel with grouped active/pending visibility, speed/ETA display, cancel/retry controls, and short completed-item retention.
-- Per-peer controls include custom names, trust level (`normal`/`trusted`), and trusted badges in the peer list.
+- Inline chat transfer cards are persisted from `files` metadata, show live speed/progress/status, support inline retry, and open the containing folder for completed received files.
+- Desktop notifications for incoming messages and file requests when the app is in background or another peer chat is active, with global enable/disable and per-peer mute.
+- Per-peer controls include custom names, trust level (`normal`/`trusted`), notification mute, fingerprint verification flag, trusted badge, and verified badge in the peer list.
+- Peer list state indicators include `Connecting...`, reconnect countdown (`Reconnecting in Ns...`), and inline `Transferring...` progress.
+- Chat search includes message `LIKE` search plus a files-only filter backed by `files` queries.
+- Configurable data retention and maintenance cleanup (messages/files/seen IDs) plus per-peer clear-history action.
+- Device-name settings hot-reload updates active protocol identity and restarts mDNS advertisement without full app restart (port changes still require restart).
 - Cross-platform GUI (Fyne) with peer list, chat pane, discovery dialog, device settings dialog, peer settings dialog, key-change prompt, file-transfer prompts/progress, and chat header color that reflects online status.
 
 ## Quick Start
@@ -79,13 +85,18 @@ go vet ./...
 go mod tidy
 ```
 
-Manual UI verification for drag/drop and queue UX:
+Manual UI verification for transfer/search/notification UX:
 
 1. Drag one file into an active chat, verify a queued card appears as `Waiting...` then progresses to `complete`.
 2. Drag multiple files together, verify they preserve drop order and run sequentially.
 3. Drag a folder containing nested files + an empty subdirectory, verify receiver preserves structure.
 4. Drag mixed items (files + folders), verify all items enqueue in the original drop order.
 5. Open the transfer queue panel and verify cancel/retry actions and 30-second completed-item retention behavior.
+6. Toggle chat search, query a known message term, and verify transcript rows are filtered.
+7. Enable the files-only search filter and verify only transfer cards are shown for the selected peer.
+8. Background the app or switch to another peer chat, send a message/file request from another client, and verify desktop notifications fire (respecting per-peer mute/global toggle).
+9. In peer settings, toggle Verified and verify `[Verified]` badge appears in the peer list.
+10. Change only device name in settings and verify no restart prompt appears and mDNS-discovered name updates on other clients.
 
 ## GitHub Release Automation
 
@@ -138,6 +149,9 @@ Default first-run config values:
 - `listening_port`: `0` (ephemeral OS-selected port).
 - `download_directory`: `<data-dir>/files`.
 - `max_receive_file_size`: `0` (unlimited).
+- `notifications_enabled`: `true`.
+- `message_retention_days`: `0` (`Keep forever`).
+- `cleanup_downloaded_files`: `false`.
 - Key paths are under `<data-dir>/keys`.
 - `key_fingerprint`: computed at startup from Ed25519 public key and persisted.
 
@@ -151,6 +165,9 @@ Default first-run config values:
   "listening_port": 0,
   "download_directory": "string",
   "max_receive_file_size": 0,
+  "notifications_enabled": true,
+  "message_retention_days": 0,
+  "cleanup_downloaded_files": false,
   "ed25519_private_key_path": "string",
   "ed25519_public_key_path": "string",
   "key_fingerprint": "hex"
@@ -165,12 +182,15 @@ Normalization (for older configs):
 - Missing key path fields are backfilled to the default keys directory.
 - Missing `download_directory` is backfilled to `<data-dir>/files`.
 - Negative `max_receive_file_size` values are normalized to `0` (unlimited).
+- Missing `notifications_enabled` is backfilled to `true`.
+- Invalid `message_retention_days` values are normalized to `0` (`Keep forever`).
 - Legacy `x25519_private_key_path` fields are silently removed when old configs are rewritten.
 
 Runtime application:
 
 - Config is loaded at startup; fingerprint is recomputed from the Ed25519 public key and persisted if changed.
-- Name/port changes from the Settings UI are saved immediately but require restart to apply to the active listener and discovery services.
+- Device-name changes from Settings are applied at runtime (peer manager identity update + mDNS re-registration) without restart.
+- Port changes from Settings are saved immediately and require restart to rebind the TCP listener.
 - Download location and max receive file size changes are saved immediately and used for future incoming file requests; active transfers continue with the paths/limits resolved when that request was accepted.
 
 ## Protocol and Security (Current Behavior)
@@ -302,7 +322,7 @@ Completion/failure:
 
 Persistence uses `github.com/mattn/go-sqlite3` with a single DB (`app.db`) under the app data directory. DSN enables foreign keys (`_foreign_keys=on`); busy timeout `5000ms`. The database is opened in WAL mode (`PRAGMA journal_mode=WAL`) with startup checkpointing (`PRAGMA wal_checkpoint(TRUNCATE)`) and a periodic 24-hour checkpoint loop. Schema migrations are versioned with `PRAGMA user_version`.
 
-Tables store: **peers** — identity, pinned Ed25519 public key, fingerprint, status, timestamps, last known endpoint. **messages** — content, content type, sent/received timestamps, read flag, delivery status, signature. **files** — file IDs, sender/receiver, filename/type/size/path/checksum, transfer status, plus optional `folder_id`/`relative_path` linkage for folder sends. **folder_transfers** — folder envelope metadata (`folder_name`, root path, totals, status). **seen_message_ids** — replay defense. **key_rotation_events** — trusted/rejected key-change decisions with old/new fingerprints. **security_events** — structured security logs with severity and JSON details. **peer_settings** — per-peer transfer policy (`auto_accept_files`, `max_file_size`, `download_directory`) plus presentation/trust metadata (`custom_name`, `trust_level`). **transfer_checkpoints** — resumable send/receive progress (`next_chunk`, `bytes_transferred`, `temp_path`, `updated_at`). Status enums: peer `online`/`offline`/`pending`/`blocked`; delivery `pending`/`sent`/`delivered`/`failed`; file `pending`/`accepted`/`rejected`/`complete`/`failed`. Updates in practice: peer add accepted → peer row created/updated to `online` and default `peer_settings` ensured; disconnect → `offline`; message sent → `sent`, after ACK → `delivered`; offline messages stored as `pending` and drained on reconnect; file request/accept/reject/complete update `files.transfer_status`; folder request/response transitions update `folder_transfers.transfer_status`; received message IDs go into `seen_message_ids`; key-change trust/reject decisions write to `key_rotation_events` and (when trusted) update `peers.ed25519_public_key` + `peers.key_fingerprint`; checkpoint rows are upserted during transfers and removed on definitive completion/failure. Pending queue prune: messages older than 7 days marked `failed`. Security-event retention pruning defaults to 90 days.
+Tables store: **peers** — identity, pinned Ed25519 public key, fingerprint, status, timestamps, last known endpoint. **messages** — content, content type, sent/received timestamps, read flag, delivery status, signature. **files** — file IDs, sender/receiver, filename/type/size/path/checksum, transfer status, plus optional `folder_id`/`relative_path` linkage for folder sends. **folder_transfers** — folder envelope metadata (`folder_name`, root path, totals, status). **seen_message_ids** — replay defense. **key_rotation_events** — trusted/rejected key-change decisions with old/new fingerprints. **security_events** — structured security logs with severity and JSON details. **peer_settings** — per-peer transfer policy (`auto_accept_files`, `max_file_size`, `download_directory`) plus presentation/trust metadata (`custom_name`, `trust_level`, `notifications_muted`, `verified`). **transfer_checkpoints** — resumable send/receive progress (`next_chunk`, `bytes_transferred`, `temp_path`, `updated_at`). Status enums: peer `online`/`offline`/`pending`/`blocked`; delivery `pending`/`sent`/`delivered`/`failed`; file `pending`/`accepted`/`rejected`/`complete`/`failed`. Updates in practice: peer add accepted → peer row created/updated to `online` and default `peer_settings` ensured; disconnect → `offline`; message sent → `sent`, after ACK → `delivered`; offline messages stored as `pending` and drained on reconnect; file request/accept/reject/complete update `files.transfer_status`; folder request/response transitions update `folder_transfers.transfer_status`; received message IDs go into `seen_message_ids`; key-change trust/reject decisions write to `key_rotation_events` and reset `peer_settings.verified`; trusted decisions also update `peers.ed25519_public_key` + `peers.key_fingerprint`; checkpoint rows are upserted during transfers and removed on definitive completion/failure. Pending queue prune: messages older than 7 days marked `failed`. Security-event retention pruning defaults to 90 days. Maintenance cleanup (configurable retention) prunes old messages, old completed file metadata, and seen IDs older than 14 days.
 
 Schema:
 
@@ -389,7 +409,9 @@ CREATE TABLE peer_settings (
   max_file_size       INTEGER NOT NULL DEFAULT 0,
   download_directory  TEXT NOT NULL DEFAULT '',
   custom_name         TEXT NOT NULL DEFAULT '',
-  trust_level         TEXT NOT NULL CHECK(trust_level IN ('normal','trusted')) DEFAULT 'normal'
+  trust_level         TEXT NOT NULL CHECK(trust_level IN ('normal','trusted')) DEFAULT 'normal',
+  notifications_muted INTEGER NOT NULL DEFAULT 0,
+  verified            INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE transfer_checkpoints (
@@ -413,6 +435,8 @@ Indexes:
 - `idx_security_events_peer` on `(peer_device_id, timestamp DESC, id DESC)`
 - `idx_transfer_checkpoints_updated_at` on `(updated_at DESC, file_id, direction)`
 - `idx_folder_transfers_peer_time` on `(to_device_id, from_device_id, timestamp DESC, folder_id)`
+- `idx_messages_peer_content` on `(from_device_id, to_device_id, content)`
+- `idx_files_peer_status_time` on `(to_device_id, from_device_id, transfer_status, timestamp_received DESC, file_id)`
 
 ## UI Summary
 
@@ -420,11 +444,12 @@ The GUI (Fyne) is a single-window desktop app that wires user intent to the netw
 
 Layout:
 
-- Left pane: known peers list from DB (self filtered out), plus discovery dialog entry point. Rows use custom peer names when set, show the original device name as secondary text, and append `[Trusted]` for trusted peers.
-- Right pane: selected peer chat transcript (messages + file transfer rows), compose box, Send and Attach actions.
+- Left pane: known peers list from DB (self filtered out), plus discovery dialog entry point. Rows use custom peer names when set, show the original device name as secondary text, append `[Trusted]` / `[Verified]` badges, and surface runtime states (`Connecting...`, reconnect countdown, transfer progress).
+- Right pane: selected peer chat transcript (messages + persisted file transfer rows), compose box, Send and Attach actions.
 - Top bar: app title, transfer queue panel, discovery refresh, settings. Bottom bar: global runtime feedback (errors, queue warnings, connect state).
 - Text messages show a copy button (clipboard icon); file/image messages do not. Chat composer is hidden until a peer is selected.
 - Chat header is clickable to show the selected peer fingerprint; its color reflects online/offline status; a peer-settings gear button appears when a peer is selected.
+- Chat header includes a search toggle; search supports content filtering and a files-only mode.
 - Composer: message box on the left, `Send` above `Attach` on the right. `Attach` supports multi-file enqueue; folders are supported via drag-and-drop. `Enter` sends; `Shift+Enter` newline.
 - Hovering key buttons (peer info, peer settings, app settings, refresh, discover, send, attach) shows a tooltip and status hint.
 
@@ -441,10 +466,10 @@ Key flows: Add peer (discovery → select → dial → `peer_add_request`); inco
 
 Settings:
 
-- Device settings include name, port mode (`automatic`/`fixed`), fixed port, global download location, global max receive file size, fingerprint display, and key reset (regenerates Ed25519 key files and updates fingerprint).
-- Name/port are persisted immediately; restart is required to apply those two fields to active services.
-- Download location/max receive file size are persisted immediately and affect future incoming requests without restart.
-- Peer settings include read-only identity fields (device name/ID/fingerprint), custom name, trust level, auto-accept files, max file size override, and download directory override.
+- Device settings include name, port mode (`automatic`/`fixed`), fixed port, global download location, global max receive file size, notifications toggle, message retention dropdown, cleanup policy toggle, fingerprint display/copy, and key reset (regenerates Ed25519 key files and updates fingerprint).
+- Device name persists and hot-reloads at runtime (manager identity + mDNS broadcaster restart). Port changes persist immediately and require restart to rebind the listener.
+- Download location/max receive file size and retention/notification settings are persisted immediately and affect future behavior without restart.
+- Peer settings include read-only identity fields (device name/ID plus local+peer fingerprint copy), custom name, trust level, verified toggle, notifications mute, auto-accept files, max file size override, download directory override, and per-peer clear chat history.
 
 Theme:
 

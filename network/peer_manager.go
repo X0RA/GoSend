@@ -52,6 +52,9 @@ const (
 
 	defaultMaxReconnectAttempts = 50
 	defaultReconnectJitter      = 0.25
+
+	defaultMaintenanceInterval = 24 * time.Hour
+	seenIDRetention            = 14 * 24 * time.Hour
 )
 
 var defaultReconnectBackoff = []time.Duration{
@@ -100,6 +103,14 @@ type FileProgress struct {
 	TransferCompleted bool
 }
 
+// PeerRuntimeState captures transient runtime state used for responsive UI indicators.
+type PeerRuntimeState struct {
+	PeerDeviceID    string
+	ConnectionState ConnectionState
+	Reconnecting    bool
+	NextReconnectAt int64
+}
+
 // PeerManagerOptions configures peer lifecycle management.
 type PeerManagerOptions struct {
 	Identity LocalIdentity
@@ -128,27 +139,33 @@ type PeerManagerOptions struct {
 	ConnectionRateLimitPerIP  int
 	ConnectionRateLimitWindow time.Duration
 
-	OnMessageReceived func(storage.Message)
-	OnQueueOverflow   func(peerDeviceID string, droppedCount int)
+	OnMessageReceived         func(storage.Message)
+	OnQueueOverflow           func(peerDeviceID string, droppedCount int)
+	OnPeerRuntimeStateChanged func(PeerRuntimeState)
 
 	FileRequestRateLimit int
 	FileRequestWindow    time.Duration
 
-	FilesDir              string
-	MaxReceiveFileSize    int64
-	GetDownloadDirectory  func() string
-	GetMaxReceiveFileSize func() int64
-	FileChunkSize         int
-	FileResponseTimeout   time.Duration
-	FileCompleteTimeout   time.Duration // timeout waiting for receiver's FileComplete after all chunks sent
-	MaxChunkRetries       int
-	OnFileRequest         func(FileRequestNotification) (bool, error)
-	OnFileProgress        func(FileProgress)
+	FilesDir                  string
+	MaxReceiveFileSize        int64
+	GetDownloadDirectory      func() string
+	GetMaxReceiveFileSize     func() int64
+	GetMessageRetentionDays   func() int
+	GetCleanupDownloadedFiles func() bool
+	FileChunkSize             int
+	FileResponseTimeout       time.Duration
+	FileCompleteTimeout       time.Duration // timeout waiting for receiver's FileComplete after all chunks sent
+	MaxChunkRetries           int
+	OnFileRequest             func(FileRequestNotification) (bool, error)
+	OnFileProgress            func(FileProgress)
 }
 
 // PeerManager manages peer add/remove/disconnect flows plus reconnect behavior.
 type PeerManager struct {
 	options PeerManagerOptions
+
+	identityMu      sync.RWMutex
+	localDeviceName string
 
 	server *Server
 
@@ -205,6 +222,9 @@ type PeerManager struct {
 
 	rekeyMu             sync.Mutex
 	pendingRekeyWaiters map[string]chan rekeyWaitResult
+
+	runtimeStateMu sync.RWMutex
+	runtimeStates  map[string]PeerRuntimeState
 
 	errors chan error
 }
@@ -285,6 +305,7 @@ func NewPeerManager(options PeerManagerOptions) (*PeerManager, error) {
 
 	manager := &PeerManager{
 		options:                  options,
+		localDeviceName:          options.Identity.DeviceName,
 		connections:              make(map[string]*PeerConnection),
 		knownKeys:                make(map[string]string),
 		outboundAddPending:       make(map[string]bool),
@@ -306,6 +327,7 @@ func NewPeerManager(options PeerManagerOptions) (*PeerManager, error) {
 		outboundTransferQueue:    make(map[string][]string),
 		activeOutboundTransfer:   make(map[string]string),
 		pendingRekeyWaiters:      make(map[string]chan rekeyWaitResult),
+		runtimeStates:            make(map[string]PeerRuntimeState),
 		errors:                   make(chan error, 64),
 		randomSource:             options.RandomSource,
 	}
@@ -344,6 +366,10 @@ func (m *PeerManager) Start() error {
 		return err
 	}
 	m.server = server
+
+	m.runMaintenanceCleanup()
+	m.wg.Add(1)
+	go m.maintenanceLoop()
 
 	m.wg.Add(1)
 	go m.serverLoop()
@@ -463,7 +489,7 @@ func (m *PeerManager) SendPeerAddRequest(peerDeviceID string) (bool, error) {
 	request := PeerAddRequest{
 		Type:           TypePeerAddRequest,
 		FromDeviceID:   m.options.Identity.DeviceID,
-		FromDeviceName: m.options.Identity.DeviceName,
+		FromDeviceName: m.currentDeviceName(),
 		Timestamp:      time.Now().UnixMilli(),
 	}
 	if err := m.signPeerAddRequest(&request); err != nil {
@@ -511,6 +537,7 @@ func (m *PeerManager) SendPeerRemove(peerDeviceID string) error {
 	}
 
 	m.markSuppressReconnect(peerDeviceID)
+	m.updateRuntimeState(peerDeviceID, StateDisconnecting, time.Time{})
 	m.stopReconnect(peerDeviceID)
 	_ = m.options.Store.RemovePeer(peerDeviceID)
 	m.removeKnownKey(peerDeviceID)
@@ -541,6 +568,7 @@ func (m *PeerManager) SendPeerDisconnect(peerDeviceID string) error {
 	}
 
 	m.markSuppressReconnect(peerDeviceID)
+	m.updateRuntimeState(peerDeviceID, StateDisconnecting, time.Time{})
 	if err := conn.Disconnect(); err != nil {
 		return err
 	}
@@ -603,6 +631,7 @@ func (m *PeerManager) registerConnection(conn *PeerConnection) {
 	m.connMu.Unlock()
 
 	m.stopReconnect(peerID)
+	m.updateRuntimeState(peerID, conn.State(), time.Time{})
 	if err := m.persistPeerConnection(conn, peerStatusOnline, false); err != nil && !errors.Is(err, storage.ErrNotFound) {
 		m.reportError(err)
 	}
@@ -757,6 +786,7 @@ loop:
 		if err := m.options.Store.UpdatePeerStatus(peerID, peerStatusOffline, time.Now().UnixMilli()); err != nil && !errors.Is(err, storage.ErrNotFound) {
 			m.reportError(err)
 		}
+		m.updateRuntimeState(peerID, StateDisconnected, time.Time{})
 		if m.consumeSuppressReconnect(peerID) {
 			return
 		}
@@ -851,7 +881,7 @@ func (m *PeerManager) handlePeerAddRequest(conn *PeerConnection, request PeerAdd
 		Type:       TypePeerAddResponse,
 		Status:     status,
 		DeviceID:   m.options.Identity.DeviceID,
-		DeviceName: m.options.Identity.DeviceName,
+		DeviceName: m.currentDeviceName(),
 		Timestamp:  time.Now().UnixMilli(),
 	}
 	if err := m.signPeerAddResponse(&response); err != nil {
@@ -1537,16 +1567,22 @@ func (m *PeerManager) startReconnect(peerID string) {
 			m.reconnectMu.Lock()
 			delete(m.reconnectWorkers, peerID)
 			m.reconnectMu.Unlock()
+			if m.getConnection(peerID) == nil {
+				m.updateRuntimeState(peerID, StateDisconnected, time.Time{})
+			}
 		}()
 
 		attempt := 0
 		for {
 			if m.options.MaxReconnectAttempts > 0 && attempt >= m.options.MaxReconnectAttempts {
 				m.reportError(fmt.Errorf("reconnect attempts exhausted for peer %q after %d tries", peerID, attempt))
+				m.updateRuntimeState(peerID, StateDisconnected, time.Time{})
 				return
 			}
 
 			delay := m.backoffForAttempt(attempt)
+			nextAttemptAt := time.Now().Add(delay)
+			m.updateRuntimeState(peerID, StateDisconnected, nextAttemptAt)
 			timer := time.NewTimer(delay)
 			select {
 			case <-timer.C:
@@ -1554,6 +1590,7 @@ func (m *PeerManager) startReconnect(peerID string) {
 				timer.Stop()
 				return
 			}
+			m.updateRuntimeState(peerID, StateConnecting, time.Time{})
 
 			addresses, err := m.resolvePeerAddresses(peerID)
 			if err != nil {
@@ -1595,6 +1632,9 @@ func (m *PeerManager) stopReconnect(peerID string) {
 	m.reconnectMu.Unlock()
 	if exists {
 		cancel()
+	}
+	if m.getConnection(peerID) == nil {
+		m.updateRuntimeState(peerID, StateDisconnected, time.Time{})
 	}
 }
 
@@ -1757,8 +1797,9 @@ func (m *PeerManager) adjustEndpointHealth(peerID, endpoint string, delta int) {
 }
 
 func (m *PeerManager) dialAndRegister(address string) (*PeerConnection, error) {
+	identity := m.identitySnapshot()
 	conn, err := Dial(address, HandshakeOptions{
-		Identity:            m.options.Identity,
+		Identity:            identity,
 		KnownPeerKeys:       m.knownKeysSnapshot(),
 		KnownPeerKeyLookup:  m.lookupKnownKey,
 		OnKeyChangeDecision: m.handleKeyChangeDecision,
@@ -1786,8 +1827,9 @@ func (m *PeerManager) dialAndRegister(address string) (*PeerConnection, error) {
 }
 
 func (m *PeerManager) handshakeOptionsForServer() HandshakeOptions {
+	identity := m.identitySnapshot()
 	return HandshakeOptions{
-		Identity:                     m.options.Identity,
+		Identity:                     identity,
 		KnownPeerKeys:                m.knownKeysSnapshot(),
 		KnownPeerKeyLookup:           m.lookupKnownKey,
 		OnKeyChangeDecision:          m.handleKeyChangeDecision,
@@ -1845,6 +1887,10 @@ func (m *PeerManager) handleKeyChangeDecision(peerDeviceID, existingPublicKeyBas
 		"old_key_fingerprint": oldFingerprint,
 		"new_key_fingerprint": newFingerprint,
 	})
+
+	if err := m.options.Store.ResetPeerVerified(peerDeviceID); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		return false, err
+	}
 
 	if trust {
 		if err := m.options.Store.UpdatePeerIdentity(peerDeviceID, receivedPublicKeyBase64, newFingerprint); err != nil {
@@ -1944,7 +1990,7 @@ func (m *PeerManager) ensureLocalPeerRecord() error {
 
 	localPeer := storage.Peer{
 		DeviceID:          m.options.Identity.DeviceID,
-		DeviceName:        m.options.Identity.DeviceName,
+		DeviceName:        m.currentDeviceName(),
 		Ed25519PublicKey:  pubKeyBase64,
 		KeyFingerprint:    fingerprint,
 		Status:            peerStatusBlocked,
@@ -1986,6 +2032,35 @@ func (m *PeerManager) currentDownloadDirectory() string {
 	return "./files"
 }
 
+func (m *PeerManager) currentDeviceName() string {
+	m.identityMu.RLock()
+	defer m.identityMu.RUnlock()
+	return m.localDeviceName
+}
+
+func (m *PeerManager) identitySnapshot() LocalIdentity {
+	identity := m.options.Identity
+	identity.DeviceName = m.currentDeviceName()
+	return identity
+}
+
+// UpdateDeviceName updates the local runtime device name used for future protocol messages.
+func (m *PeerManager) UpdateDeviceName(deviceName string) error {
+	deviceName = strings.TrimSpace(deviceName)
+	if deviceName == "" {
+		return errors.New("device name is required")
+	}
+
+	m.identityMu.Lock()
+	m.localDeviceName = deviceName
+	m.identityMu.Unlock()
+
+	if err := m.options.Store.UpdatePeerDeviceName(m.options.Identity.DeviceID, deviceName); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		return err
+	}
+	return nil
+}
+
 func (m *PeerManager) currentMaxReceiveFileSize() int64 {
 	if m.options.GetMaxReceiveFileSize != nil {
 		limit := m.options.GetMaxReceiveFileSize()
@@ -2019,6 +2094,68 @@ func (m *PeerManager) getConnection(peerDeviceID string) *PeerConnection {
 	m.connMu.RLock()
 	defer m.connMu.RUnlock()
 	return m.connections[peerDeviceID]
+}
+
+// PeerRuntimeStateSnapshot returns the latest runtime state for one peer.
+func (m *PeerManager) PeerRuntimeStateSnapshot(peerDeviceID string) PeerRuntimeState {
+	if strings.TrimSpace(peerDeviceID) == "" {
+		return PeerRuntimeState{}
+	}
+	m.runtimeStateMu.RLock()
+	state := m.runtimeStates[peerDeviceID]
+	m.runtimeStateMu.RUnlock()
+	if state.PeerDeviceID == "" {
+		state.PeerDeviceID = peerDeviceID
+		state.ConnectionState = StateDisconnected
+	}
+	return state
+}
+
+// PeerConnectionState returns the active transport connection state for one peer.
+func (m *PeerManager) PeerConnectionState(peerDeviceID string) ConnectionState {
+	conn := m.getConnection(peerDeviceID)
+	if conn == nil {
+		return StateDisconnected
+	}
+	return conn.State()
+}
+
+func (m *PeerManager) updateRuntimeState(peerDeviceID string, state ConnectionState, reconnectAt time.Time) {
+	if strings.TrimSpace(peerDeviceID) == "" {
+		return
+	}
+	if state == "" {
+		state = StateDisconnected
+	}
+
+	nextReconnectAt := int64(0)
+	reconnecting := false
+	if !reconnectAt.IsZero() {
+		nextReconnectAt = reconnectAt.UnixMilli()
+		reconnecting = true
+	}
+
+	var callbackState PeerRuntimeState
+	shouldNotify := false
+
+	m.runtimeStateMu.Lock()
+	current := m.runtimeStates[peerDeviceID]
+	next := PeerRuntimeState{
+		PeerDeviceID:    peerDeviceID,
+		ConnectionState: state,
+		Reconnecting:    reconnecting,
+		NextReconnectAt: nextReconnectAt,
+	}
+	if current != next {
+		m.runtimeStates[peerDeviceID] = next
+		shouldNotify = true
+		callbackState = next
+	}
+	m.runtimeStateMu.Unlock()
+
+	if shouldNotify && m.options.OnPeerRuntimeStateChanged != nil {
+		m.options.OnPeerRuntimeStateChanged(callbackState)
+	}
 }
 
 func (m *PeerManager) hasPendingOutboundTransferForPeer(peerDeviceID string) bool {
@@ -2137,6 +2274,104 @@ func (m *PeerManager) onInboundConnectionRateLimited(remoteIP string) {
 		"limit_per_window": limit,
 		"window_seconds":   windowSeconds,
 	})
+}
+
+func (m *PeerManager) maintenanceLoop() {
+	defer m.wg.Done()
+
+	ticker := time.NewTicker(defaultMaintenanceInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+			m.runMaintenanceCleanup()
+		}
+	}
+}
+
+func (m *PeerManager) runMaintenanceCleanup() {
+	if m.options.Store == nil {
+		return
+	}
+
+	retentionDays := m.currentMessageRetentionDays()
+	if retentionDays > 0 {
+		cutoff := time.Now().AddDate(0, 0, -retentionDays).UnixMilli()
+
+		if _, err := m.options.Store.DeleteMessagesOlderThan(cutoff); err != nil {
+			m.reportError(fmt.Errorf("maintenance: delete old messages: %w", err))
+		}
+
+		completed, err := m.options.Store.ListCompletedFilesOlderThan(cutoff)
+		if err != nil {
+			m.reportError(fmt.Errorf("maintenance: list old completed files: %w", err))
+		} else {
+			deleteDownloaded := m.cleanupDownloadedFilesEnabled()
+			localDeviceID := m.options.Identity.DeviceID
+			for _, file := range completed {
+				if deleteDownloaded && file.ToDeviceID == localDeviceID && strings.TrimSpace(file.StoredPath) != "" {
+					if err := os.Remove(file.StoredPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+						m.reportError(fmt.Errorf("maintenance: delete file %q: %w", file.StoredPath, err))
+					}
+				}
+				if err := m.options.Store.DeleteFileMetadata(file.FileID); err != nil && !errors.Is(err, storage.ErrNotFound) {
+					m.reportError(fmt.Errorf("maintenance: delete file metadata %q: %w", file.FileID, err))
+				}
+				m.removeTransferCheckpoint(file.FileID, storage.TransferDirectionSend)
+				m.removeTransferCheckpoint(file.FileID, storage.TransferDirectionReceive)
+				m.purgeInMemoryTransfer(file.FileID)
+			}
+		}
+	}
+
+	seenCutoff := time.Now().Add(-seenIDRetention).UnixMilli()
+	if _, err := m.options.Store.PruneOldEntries(seenCutoff); err != nil {
+		m.reportError(fmt.Errorf("maintenance: prune seen message ids: %w", err))
+	}
+}
+
+func (m *PeerManager) purgeInMemoryTransfer(fileID string) {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return
+	}
+
+	var peerID string
+	m.fileMu.Lock()
+	if outbound := m.outboundFileTransfers[fileID]; outbound != nil {
+		peerID = outbound.PeerDeviceID
+	}
+	delete(m.outboundFileTransfers, fileID)
+	delete(m.inboundFileTransfers, fileID)
+	delete(m.outboundFileEventChans, fileID)
+	m.fileMu.Unlock()
+
+	if peerID != "" {
+		m.removeQueuedOutboundTransfer(peerID, fileID)
+		m.finishOutboundTransfer(peerID, fileID)
+	}
+}
+
+func (m *PeerManager) currentMessageRetentionDays() int {
+	if m.options.GetMessageRetentionDays != nil {
+		switch days := m.options.GetMessageRetentionDays(); days {
+		case 0, 30, 90, 365:
+			return days
+		default:
+			return 0
+		}
+	}
+	return 0
+}
+
+func (m *PeerManager) cleanupDownloadedFilesEnabled() bool {
+	if m.options.GetCleanupDownloadedFiles != nil {
+		return m.options.GetCleanupDownloadedFiles()
+	}
+	return false
 }
 
 func (m *PeerManager) reportError(err error) {

@@ -64,4 +64,21 @@ func TestOpenCreatesDatabaseAndAppliesMigrations(t *testing.T) {
 			t.Fatalf("expected table %q to exist", table)
 		}
 	}
+
+	expectedIndexes := []string{
+		"idx_messages_peer_content",
+		"idx_files_peer_status_time",
+	}
+	for _, idx := range expectedIndexes {
+		var count int
+		if err := store.db.QueryRow(
+			"SELECT COUNT(1) FROM sqlite_master WHERE type='index' AND name = ?",
+			idx,
+		).Scan(&count); err != nil {
+			t.Fatalf("check index %q: %v", idx, err)
+		}
+		if count != 1 {
+			t.Fatalf("expected index %q to exist", idx)
+		}
+	}
 }

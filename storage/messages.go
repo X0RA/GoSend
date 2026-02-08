@@ -126,6 +126,64 @@ func (s *Store) GetMessages(peerID string, limit, offset int) ([]Message, error)
 	return messages, nil
 }
 
+// SearchMessages returns conversation messages containing a text query.
+func (s *Store) SearchMessages(peerID, query string, limit, offset int) ([]Message, error) {
+	if peerID == "" {
+		return nil, errors.New("peer_id is required")
+	}
+	if query == "" {
+		return nil, errors.New("query is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	pattern := "%" + query + "%"
+	rows, err := s.db.Query(
+		`SELECT
+			message_id,
+			from_device_id,
+			to_device_id,
+			content,
+			content_type,
+			timestamp_sent,
+			timestamp_received,
+			is_read,
+			delivery_status,
+			signature
+		FROM messages
+		WHERE (from_device_id = ? OR to_device_id = ?)
+		  AND content LIKE ?
+		ORDER BY timestamp_sent ASC
+		LIMIT ? OFFSET ?`,
+		peerID,
+		peerID,
+		pattern,
+		limit,
+		offset,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("search messages for peer %q: %w", peerID, err)
+	}
+	defer rows.Close()
+
+	messages := make([]Message, 0)
+	for rows.Next() {
+		message, err := scanMessage(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan message row: %w", err)
+		}
+		messages = append(messages, *message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate message rows: %w", err)
+	}
+	return messages, nil
+}
+
 // MarkDelivered sets delivery_status to delivered for a message ID.
 func (s *Store) MarkDelivered(messageID string) error {
 	if messageID == "" {
@@ -286,6 +344,45 @@ func (s *Store) PruneExpiredQueue(cutoffTimestamp int64) (int64, error) {
 		return 0, fmt.Errorf("read rows affected for prune expired queue: %w", err)
 	}
 
+	return rowsAffected, nil
+}
+
+// DeleteMessagesOlderThan removes message rows older than the provided cutoff.
+func (s *Store) DeleteMessagesOlderThan(cutoffTimestamp int64) (int64, error) {
+	if cutoffTimestamp <= 0 {
+		return 0, errors.New("cutoff timestamp must be > 0")
+	}
+
+	res, err := s.db.Exec(`DELETE FROM messages WHERE timestamp_sent < ?`, cutoffTimestamp)
+	if err != nil {
+		return 0, fmt.Errorf("delete messages older than cutoff: %w", err)
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read rows affected for delete old messages: %w", err)
+	}
+	return rowsAffected, nil
+}
+
+// DeleteMessagesForPeer removes all conversation messages with one peer.
+func (s *Store) DeleteMessagesForPeer(peerID string) (int64, error) {
+	if peerID == "" {
+		return 0, errors.New("peer_id is required")
+	}
+
+	res, err := s.db.Exec(
+		`DELETE FROM messages
+		WHERE from_device_id = ? OR to_device_id = ?`,
+		peerID,
+		peerID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("delete messages for peer %q: %w", peerID, err)
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read rows affected for delete peer messages %q: %w", peerID, err)
+	}
 	return rowsAffected, nil
 }
 

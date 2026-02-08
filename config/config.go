@@ -27,15 +27,18 @@ const (
 
 // DeviceConfig contains persistent local-device settings.
 type DeviceConfig struct {
-	DeviceID              string `json:"device_id"`
-	DeviceName            string `json:"device_name"`
-	PortMode              string `json:"port_mode"`
-	ListeningPort         int    `json:"listening_port"`
-	DownloadDirectory     string `json:"download_directory"`
-	MaxReceiveFileSize    int64  `json:"max_receive_file_size"`
-	Ed25519PrivateKeyPath string `json:"ed25519_private_key_path"`
-	Ed25519PublicKeyPath  string `json:"ed25519_public_key_path"`
-	KeyFingerprint        string `json:"key_fingerprint"`
+	DeviceID               string `json:"device_id"`
+	DeviceName             string `json:"device_name"`
+	PortMode               string `json:"port_mode"`
+	ListeningPort          int    `json:"listening_port"`
+	DownloadDirectory      string `json:"download_directory"`
+	MaxReceiveFileSize     int64  `json:"max_receive_file_size"`
+	NotificationsEnabled   bool   `json:"notifications_enabled"`
+	MessageRetentionDays   int    `json:"message_retention_days"`
+	CleanupDownloadedFiles bool   `json:"cleanup_downloaded_files"`
+	Ed25519PrivateKeyPath  string `json:"ed25519_private_key_path"`
+	Ed25519PublicKeyPath   string `json:"ed25519_public_key_path"`
+	KeyFingerprint         string `json:"key_fingerprint"`
 }
 
 // ResolveDataDir returns the OS-aware app data directory.
@@ -153,8 +156,12 @@ func LoadOrCreate() (*DeviceConfig, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	fieldPresence, err := configFieldPresence(cfgPath)
+	if err != nil {
+		return nil, "", err
+	}
 
-	if normalizeDefaults(cfg, dataDir) || legacyX25519FieldPresent {
+	if normalizeDefaults(cfg, dataDir, fieldPresence) || legacyX25519FieldPresent {
 		if err := Save(cfgPath, cfg); err != nil {
 			return nil, "", err
 		}
@@ -171,19 +178,22 @@ func defaultConfig(dataDir string) (*DeviceConfig, error) {
 
 	keysDir := filepath.Join(dataDir, "keys")
 	return &DeviceConfig{
-		DeviceID:              uuid.NewString(),
-		DeviceName:            deviceName,
-		PortMode:              PortModeAutomatic,
-		ListeningPort:         0,
-		DownloadDirectory:     filepath.Join(dataDir, "files"),
-		MaxReceiveFileSize:    0,
-		Ed25519PrivateKeyPath: filepath.Join(keysDir, "ed25519_private.pem"),
-		Ed25519PublicKeyPath:  filepath.Join(keysDir, "ed25519_public.pem"),
-		KeyFingerprint:        "",
+		DeviceID:               uuid.NewString(),
+		DeviceName:             deviceName,
+		PortMode:               PortModeAutomatic,
+		ListeningPort:          0,
+		DownloadDirectory:      filepath.Join(dataDir, "files"),
+		MaxReceiveFileSize:     0,
+		NotificationsEnabled:   true,
+		MessageRetentionDays:   0,
+		CleanupDownloadedFiles: false,
+		Ed25519PrivateKeyPath:  filepath.Join(keysDir, "ed25519_private.pem"),
+		Ed25519PublicKeyPath:   filepath.Join(keysDir, "ed25519_public.pem"),
+		KeyFingerprint:         "",
 	}, nil
 }
 
-func normalizeDefaults(cfg *DeviceConfig, dataDir string) bool {
+func normalizeDefaults(cfg *DeviceConfig, dataDir string, fieldPresence map[string]bool) bool {
 	updated := false
 	keysDir := filepath.Join(dataDir, "keys")
 
@@ -241,6 +251,15 @@ func normalizeDefaults(cfg *DeviceConfig, dataDir string) bool {
 		cfg.MaxReceiveFileSize = 0
 		updated = true
 	}
+	if fieldPresence == nil || !fieldPresence["notifications_enabled"] {
+		cfg.NotificationsEnabled = true
+		updated = true
+	}
+	retentionDays := normalizeMessageRetentionDays(cfg.MessageRetentionDays)
+	if cfg.MessageRetentionDays != retentionDays {
+		cfg.MessageRetentionDays = retentionDays
+		updated = true
+	}
 
 	return updated
 }
@@ -258,6 +277,33 @@ func hasLegacyX25519PathField(path string) (bool, error) {
 
 	_, found := fields["x25519_private_key_path"]
 	return found, nil
+}
+
+func configFieldPresence(path string) (map[string]bool, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read config for field presence: %w", err)
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, fmt.Errorf("parse config for field presence: %w", err)
+	}
+
+	out := make(map[string]bool, len(fields))
+	for key := range fields {
+		out[key] = true
+	}
+	return out, nil
+}
+
+func normalizeMessageRetentionDays(days int) int {
+	switch days {
+	case 0, 30, 90, 365:
+		return days
+	default:
+		return 0
+	}
 }
 
 func normalizePortMode(mode string) string {

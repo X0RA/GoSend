@@ -897,6 +897,9 @@ func (m *PeerManager) runOutboundFileTransfer(runCtx context.Context, transfer *
 	transfer.Running = false
 	transfer.mu.Unlock()
 	_ = m.options.Store.UpdateTransferStatus(transfer.FileID, "complete")
+	if err := m.options.Store.UpdateFileTimestampReceived(transfer.FileID, time.Now().UnixMilli()); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		m.reportError(err)
+	}
 	m.removeTransferCheckpoint(transfer.FileID, storage.TransferDirectionSend)
 
 	m.emitFileProgress(FileProgress{
@@ -1517,6 +1520,9 @@ func (m *PeerManager) handleFileComplete(conn *PeerConnection, complete FileComp
 				totalChunks := outbound.TotalChunks
 				outbound.mu.Unlock()
 				_ = m.options.Store.UpdateTransferStatus(fileID, "complete")
+				if err := m.options.Store.UpdateFileTimestampReceived(fileID, time.Now().UnixMilli()); err != nil && !errors.Is(err, storage.ErrNotFound) {
+					m.reportError(err)
+				}
 				m.removeTransferCheckpoint(fileID, storage.TransferDirectionSend)
 				m.emitFileProgress(FileProgress{
 					FileID:            fileID,
@@ -1603,6 +1609,9 @@ func (m *PeerManager) handleFileComplete(conn *PeerConnection, complete FileComp
 	}
 
 	_ = m.options.Store.UpdateTransferStatus(complete.FileID, "complete")
+	if err := m.options.Store.UpdateFileTimestampReceived(complete.FileID, time.Now().UnixMilli()); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		m.reportError(err)
+	}
 	m.removeInboundTransfer(complete.FileID)
 	m.removeTransferCheckpoint(complete.FileID, storage.TransferDirectionReceive)
 

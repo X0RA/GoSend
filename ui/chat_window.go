@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"image/color"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -101,7 +102,31 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 	c.chatHeader.SetColor(colorMuted)
 	c.peerSettingsBtn = newHintButtonWithIcon("", theme.SettingsIcon(), "Peer settings", c.showSelectedPeerSettingsDialog, c.handleHoverHint)
 	c.peerSettingsBtn.Hide()
-	header := container.NewPadded(container.NewBorder(nil, nil, nil, c.peerSettingsBtn, c.chatHeader))
+	c.searchBtn = newHintButtonWithIcon("", theme.SearchIcon(), "Search chat", c.toggleChatSearch, c.handleHoverHint)
+	c.searchBtn.Hide()
+	rightControls := container.NewHBox(c.searchBtn, c.peerSettingsBtn)
+	header := container.NewPadded(container.NewBorder(nil, nil, nil, rightControls, c.chatHeader))
+
+	c.chatSearchEntry = widget.NewEntry()
+	c.chatSearchEntry.SetPlaceHolder("Search messages and files")
+	c.chatSearchEntry.OnChanged = func(value string) {
+		c.chatMu.Lock()
+		c.chatSearchQuery = strings.TrimSpace(value)
+		c.chatMu.Unlock()
+		c.refreshChatView()
+	}
+	filesOnlyCheck := widget.NewCheck("Files only", func(checked bool) {
+		c.chatMu.Lock()
+		c.chatFilesOnly = checked
+		c.chatMu.Unlock()
+		c.refreshChatView()
+	})
+	clearSearchBtn := widget.NewButtonWithIcon("", theme.CancelIcon(), func() {
+		filesOnlyCheck.SetChecked(false)
+		c.chatSearchEntry.SetText("")
+	})
+	c.chatSearchBar = container.NewPadded(container.NewBorder(nil, nil, nil, clearSearchBtn, container.NewHBox(c.chatSearchEntry, filesOnlyCheck)))
+	c.chatSearchBar.Hide()
 
 	emptyLabel := widget.NewLabel("No messages yet")
 	emptyLabel.Alignment = fyne.TextAlignCenter
@@ -124,7 +149,7 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 	c.chatComposer.Hide()
 
 	base := container.NewBorder(
-		container.NewVBox(header, widget.NewSeparator()),
+		container.NewVBox(header, c.chatSearchBar, widget.NewSeparator()),
 		container.NewVBox(widget.NewSeparator(), c.chatComposer),
 		nil, nil, c.chatScroll,
 	)
@@ -182,6 +207,24 @@ func (c *controller) updateChatHeader() {
 			} else {
 				c.peerSettingsBtn.Hide()
 			}
+		}
+		if c.searchBtn != nil {
+			if hasPeer {
+				c.searchBtn.Show()
+			} else {
+				c.searchBtn.Hide()
+			}
+		}
+		if !hasPeer && c.chatSearchBar != nil {
+			c.chatMu.Lock()
+			c.chatSearchVisible = false
+			c.chatSearchQuery = ""
+			c.chatFilesOnly = false
+			c.chatMu.Unlock()
+			if c.chatSearchEntry != nil {
+				c.chatSearchEntry.SetText("")
+			}
+			c.chatSearchBar.Hide()
 		}
 	})
 }
@@ -417,6 +460,43 @@ func (c *controller) showSelectedPeerFingerprint() {
 	dialog.ShowInformation("Peer Fingerprint", message, c.window)
 }
 
+func (c *controller) toggleChatSearch() {
+	peerID := c.currentSelectedPeerID()
+	if peerID == "" {
+		return
+	}
+
+	c.chatMu.Lock()
+	c.chatSearchVisible = !c.chatSearchVisible
+	visible := c.chatSearchVisible
+	c.chatMu.Unlock()
+
+	fyne.Do(func() {
+		if c.chatSearchBar == nil {
+			return
+		}
+		if visible {
+			c.chatSearchBar.Show()
+			if c.chatSearchEntry != nil && c.window != nil && c.window.Canvas() != nil {
+				c.window.Canvas().Focus(c.chatSearchEntry)
+			}
+		} else {
+			c.chatSearchBar.Hide()
+			if c.chatSearchEntry != nil {
+				c.chatSearchEntry.SetText("")
+			}
+		}
+		c.chatSearchBar.Refresh()
+	})
+	if !visible {
+		c.chatMu.Lock()
+		c.chatSearchQuery = ""
+		c.chatFilesOnly = false
+		c.chatMu.Unlock()
+	}
+	c.refreshChatView()
+}
+
 func (c *controller) refreshChatForPeer(peerID string) {
 	if peerID == "" {
 		return
@@ -432,32 +512,60 @@ func (c *controller) refreshChatView() {
 	if peerID == "" {
 		c.chatMu.Lock()
 		c.chatMessages = nil
+		c.chatFiles = nil
 		c.chatMu.Unlock()
 		c.renderChatTranscript()
 		return
 	}
 
-	messages, err := c.store.GetMessages(peerID, 1000, 0)
+	c.chatMu.RLock()
+	query := strings.TrimSpace(c.chatSearchQuery)
+	filesOnly := c.chatFilesOnly
+	c.chatMu.RUnlock()
+
+	messages := make([]storage.Message, 0)
+	if !filesOnly {
+		var err error
+		if query != "" {
+			messages, err = c.store.SearchMessages(peerID, query, 2000, 0)
+		} else {
+			messages, err = c.store.GetMessages(peerID, 2000, 0)
+		}
+		if err != nil {
+			c.setStatus(fmt.Sprintf("Load messages failed: %v", err))
+			return
+		}
+	}
+
+	var (
+		files []storage.FileMetadata
+		err   error
+	)
+	if query != "" {
+		files, err = c.store.SearchFilesForPeer(peerID, query, 2000, 0)
+	} else {
+		files, err = c.store.ListFilesForPeer(peerID, 2000, 0)
+	}
 	if err != nil {
-		c.setStatus(fmt.Sprintf("Load messages failed: %v", err))
+		c.setStatus(fmt.Sprintf("Load files failed: %v", err))
 		return
 	}
+	mergedFiles := c.mergeChatFilesForPeer(peerID, files)
 
 	c.chatMu.Lock()
 	c.chatMessages = messages
+	c.chatFiles = mergedFiles
 	c.chatMu.Unlock()
 	c.renderChatTranscript()
 }
 
 func (c *controller) renderChatTranscript() {
-	peerID := c.currentSelectedPeerID()
-
 	c.chatMu.RLock()
 	messages := make([]storage.Message, len(c.chatMessages))
 	copy(messages, c.chatMessages)
+	files := make([]chatFileEntry, len(c.chatFiles))
+	copy(files, c.chatFiles)
 	c.chatMu.RUnlock()
-
-	files := c.fileTransfersForPeer(peerID)
 
 	fyne.Do(func() {
 		if c.chatMessagesBox == nil {
@@ -552,7 +660,7 @@ func buildConversationRows(messages []storage.Message, files []chatFileEntry, lo
 			continue
 		}
 		if row.file != nil {
-			out = append(out, renderFileRow(*row.file, parentWindow, registerProgressBar, onCancelTransfer, onRetryTransfer))
+			out = append(out, renderFileRow(*row.file, localDeviceID, parentWindow, registerProgressBar, onCancelTransfer, onRetryTransfer))
 		}
 	}
 	return out
@@ -610,11 +718,29 @@ func isOutgoingMessage(message storage.Message, localDeviceID string) bool {
 // onProgressBarCreated is called when a file row has a progress bar so the controller can update it by FileID.
 type onProgressBarCreated func(fileID string, bar *widget.ProgressBar)
 
-func renderFileRow(file chatFileEntry, parentWindow fyne.Window, registerProgressBar onProgressBarCreated, onCancelTransfer func(string), onRetryTransfer func(string)) fyne.CanvasObject {
+func renderFileRow(file chatFileEntry, localDeviceID string, parentWindow fyne.Window, registerProgressBar onProgressBarCreated, onCancelTransfer func(string), onRetryTransfer func(string)) fyne.CanvasObject {
+	_ = localDeviceID
 	name := valueOrDefault(file.Filename, file.FileID)
-	title := widget.NewLabel("📄 " + name)
-	title.TextStyle = fyne.TextStyle{Bold: true}
-	title.Truncation = fyne.TextTruncateEllipsis
+	storedPath := strings.TrimSpace(file.StoredPath)
+	outgoing := strings.EqualFold(file.Direction, "send")
+
+	titleText := "📄 " + name
+	var title fyne.CanvasObject
+	if file.TransferCompleted && !outgoing && storedPath != "" {
+		link := widget.NewHyperlink(titleText, nil)
+		link.OnTapped = func() {
+			if err := openContainingFolder(storedPath); err != nil && parentWindow != nil {
+				dialog.ShowError(err, parentWindow)
+			}
+		}
+		link.Truncation = fyne.TextTruncateEllipsis
+		title = link
+	} else {
+		label := widget.NewLabel(titleText)
+		label.TextStyle = fyne.TextStyle{Bold: true}
+		label.Truncation = fyne.TextTruncateEllipsis
+		title = label
+	}
 
 	items := []fyne.CanvasObject{title}
 	if rel := strings.TrimSpace(file.RelativePath); rel != "" {
@@ -625,7 +751,6 @@ func renderFileRow(file chatFileEntry, parentWindow fyne.Window, registerProgres
 	}
 
 	// Image preview for image files with an available path.
-	storedPath := strings.TrimSpace(file.StoredPath)
 	if storedPath != "" && isImageFile(file.Filename) {
 		if _, err := os.Stat(storedPath); err == nil {
 			img := canvas.NewImageFromFile(storedPath)
@@ -679,14 +804,13 @@ func renderFileRow(file chatFileEntry, parentWindow fyne.Window, registerProgres
 		items = append(items, retryBtn)
 	}
 
-	if file.TransferCompleted && storedPath != "" {
+	if file.TransferCompleted && storedPath != "" && outgoing {
 		showPathBtn := widget.NewButton("Show Path", func() {
 			dialog.ShowInformation("File Path", storedPath, parentWindow)
 		})
 		items = append(items, showPathBtn)
 	}
 
-	outgoing := strings.EqualFold(file.Direction, "send")
 	bgColor := colorIncomingMsg
 	if outgoing {
 		bgColor = colorOutgoingMsg
@@ -711,28 +835,34 @@ func isImageFile(filename string) bool {
 func fileTransferStatusText(file chatFileEntry) string {
 	switch strings.ToLower(file.Status) {
 	case "rejected":
-		return "✗ rejected"
+		return "Failed"
 	case "failed":
-		return "✗ failed"
+		return "Failed"
 	case "complete":
-		return "✓✓ complete"
+		return "Complete"
 	case "accepted":
 		if file.TransferCompleted {
-			return "✓✓ complete"
+			return "Complete"
 		}
-		return "✓ accepted"
+		if strings.EqualFold(file.Direction, "send") {
+			return "Sending"
+		}
+		return "Receiving"
 	}
 
 	if file.TransferCompleted {
-		return "✓✓ complete"
+		return "Complete"
 	}
 	if strings.EqualFold(file.Status, "pending") {
-		return "Waiting..."
+		return "Waiting"
 	}
 	if file.TotalBytes > 0 {
-		return fmt.Sprintf("%.0f%%", float64(file.BytesTransferred)*100.0/float64(file.TotalBytes))
+		if strings.EqualFold(file.Direction, "send") {
+			return fmt.Sprintf("Sending (%.0f%%)", float64(file.BytesTransferred)*100.0/float64(file.TotalBytes))
+		}
+		return fmt.Sprintf("Receiving (%.0f%%)", float64(file.BytesTransferred)*100.0/float64(file.TotalBytes))
 	}
-	return "Waiting..."
+	return "Waiting"
 }
 
 func deliveryStatusMark(status string) string {
@@ -753,6 +883,25 @@ func formatTimestamp(timestamp int64) string {
 		return time.Now().Format("3:04 PM")
 	}
 	return time.UnixMilli(timestamp).Format("3:04 PM")
+}
+
+func openContainingFolder(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("file path is required")
+	}
+
+	target := path
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		target = filepath.Dir(path)
+	}
+	u := &url.URL{Scheme: "file", Path: filepath.ToSlash(target)}
+
+	app := fyne.CurrentApp()
+	if app == nil {
+		return fmt.Errorf("application context is unavailable")
+	}
+	return app.OpenURL(u)
 }
 
 func (c *controller) upsertFileTransfer(entry chatFileEntry) {
@@ -824,6 +973,159 @@ func (c *controller) upsertFileTransfer(entry chatFileEntry) {
 	c.chatMu.Unlock()
 }
 
+func (c *controller) mergeChatFilesForPeer(peerID string, files []storage.FileMetadata) []chatFileEntry {
+	if strings.TrimSpace(peerID) == "" {
+		return nil
+	}
+
+	c.chatMu.RLock()
+	live := make(map[string]chatFileEntry, len(c.fileTransfers))
+	for fileID, entry := range c.fileTransfers {
+		live[fileID] = entry
+	}
+	c.chatMu.RUnlock()
+
+	merged := make(map[string]chatFileEntry, len(files))
+	for _, meta := range files {
+		entry := c.chatFileEntryFromMetadata(meta)
+		if entry.PeerDeviceID != peerID {
+			continue
+		}
+		if liveEntry, ok := live[entry.FileID]; ok {
+			entry = mergeChatFileEntry(entry, liveEntry)
+			delete(live, entry.FileID)
+		}
+		merged[entry.FileID] = entry
+	}
+
+	for fileID, liveEntry := range live {
+		if liveEntry.PeerDeviceID != peerID {
+			continue
+		}
+		if _, exists := merged[fileID]; exists {
+			continue
+		}
+		terminal := strings.EqualFold(liveEntry.Status, "complete") ||
+			strings.EqualFold(liveEntry.Status, "failed") ||
+			strings.EqualFold(liveEntry.Status, "rejected")
+		if terminal && liveEntry.TransferCompleted {
+			continue
+		}
+		merged[fileID] = liveEntry
+	}
+
+	out := make([]chatFileEntry, 0, len(merged))
+	for _, entry := range merged {
+		out = append(out, entry)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].AddedAt == out[j].AddedAt {
+			return out[i].FileID < out[j].FileID
+		}
+		return out[i].AddedAt < out[j].AddedAt
+	})
+	return out
+}
+
+func (c *controller) chatFileEntryFromMetadata(meta storage.FileMetadata) chatFileEntry {
+	peerID := meta.FromDeviceID
+	direction := "receive"
+	if meta.FromDeviceID == c.cfg.DeviceID {
+		peerID = meta.ToDeviceID
+		direction = "send"
+	}
+
+	addedAt := int64(0)
+	if meta.TimestampReceived != nil {
+		addedAt = *meta.TimestampReceived
+	}
+
+	terminal := strings.EqualFold(meta.TransferStatus, "complete") ||
+		strings.EqualFold(meta.TransferStatus, "failed") ||
+		strings.EqualFold(meta.TransferStatus, "rejected")
+	completed := strings.EqualFold(meta.TransferStatus, "complete")
+	completedAt := int64(0)
+	if terminal {
+		completedAt = addedAt
+	}
+
+	bytesTransferred := int64(0)
+	if completed {
+		bytesTransferred = meta.Filesize
+	}
+
+	return chatFileEntry{
+		FileID:            meta.FileID,
+		FolderID:          meta.FolderID,
+		RelativePath:      meta.RelativePath,
+		PeerDeviceID:      peerID,
+		Direction:         direction,
+		Filename:          meta.Filename,
+		Filesize:          meta.Filesize,
+		Filetype:          meta.Filetype,
+		StoredPath:        meta.StoredPath,
+		AddedAt:           addedAt,
+		BytesTransferred:  bytesTransferred,
+		TotalBytes:        meta.Filesize,
+		Status:            meta.TransferStatus,
+		TransferCompleted: completed,
+		CompletedAt:       completedAt,
+	}
+}
+
+func mergeChatFileEntry(base, live chatFileEntry) chatFileEntry {
+	merged := base
+	if merged.FolderID == "" {
+		merged.FolderID = live.FolderID
+	}
+	if merged.RelativePath == "" {
+		merged.RelativePath = live.RelativePath
+	}
+	if merged.PeerDeviceID == "" {
+		merged.PeerDeviceID = live.PeerDeviceID
+	}
+	if merged.Direction == "" {
+		merged.Direction = live.Direction
+	}
+	if merged.Filename == "" {
+		merged.Filename = live.Filename
+	}
+	if merged.Filesize == 0 {
+		merged.Filesize = live.Filesize
+	}
+	if merged.Filetype == "" {
+		merged.Filetype = live.Filetype
+	}
+	if merged.StoredPath == "" {
+		merged.StoredPath = live.StoredPath
+	}
+	if merged.TotalBytes == 0 {
+		merged.TotalBytes = live.TotalBytes
+	}
+	if live.BytesTransferred > merged.BytesTransferred {
+		merged.BytesTransferred = live.BytesTransferred
+	}
+	if live.SpeedBytesPerSec > 0 {
+		merged.SpeedBytesPerSec = live.SpeedBytesPerSec
+	}
+	if live.ETASeconds > 0 {
+		merged.ETASeconds = live.ETASeconds
+	}
+	if strings.TrimSpace(live.Status) != "" {
+		merged.Status = live.Status
+	}
+	if live.TransferCompleted {
+		merged.TransferCompleted = true
+	}
+	if merged.CompletedAt == 0 {
+		merged.CompletedAt = live.CompletedAt
+	}
+	if merged.AddedAt == 0 {
+		merged.AddedAt = live.AddedAt
+	}
+	return merged
+}
+
 func (c *controller) fileTransfersForPeer(peerID string) []chatFileEntry {
 	if peerID == "" {
 		return nil
@@ -877,7 +1179,9 @@ func (c *controller) handleFileProgress(progress network.FileProgress) {
 		entry.StoredPath = meta.StoredPath
 		entry.FolderID = meta.FolderID
 		entry.RelativePath = meta.RelativePath
-		entry.Status = meta.TransferStatus
+		if !(strings.EqualFold(meta.TransferStatus, "pending") && entry.BytesTransferred > 0) {
+			entry.Status = meta.TransferStatus
+		}
 		if meta.TransferStatus == "complete" {
 			entry.TransferCompleted = true
 		}
@@ -920,4 +1224,9 @@ func (c *controller) handleFileProgress(progress network.FileProgress) {
 			bar.Refresh()
 		})
 	}
+	fyne.Do(func() {
+		if c.peerList != nil {
+			c.peerList.Refresh()
+		}
+	})
 }

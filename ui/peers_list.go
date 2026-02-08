@@ -2,10 +2,12 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"net"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -15,6 +17,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"gosend/discovery"
+	"gosend/network"
 	"gosend/storage"
 )
 
@@ -33,7 +36,9 @@ func (c *controller) buildPeersListPane() fyne.CanvasObject {
 			name.Truncation = fyne.TextTruncateEllipsis
 			status := canvas.NewText("Offline", colorMuted)
 			status.TextSize = 11
-			info := container.NewVBox(name, status)
+			transferProgress := widget.NewProgressBar()
+			transferProgress.Hide()
+			info := container.NewVBox(name, status, transferProgress)
 			return container.NewBorder(nil, nil, container.NewCenter(dotBox), nil, info)
 		},
 		func(id widget.ListItemID, object fyne.CanvasObject) {
@@ -45,6 +50,7 @@ func (c *controller) buildPeersListPane() fyne.CanvasObject {
 			dot := dotBox.Objects[0].(*canvas.Circle)
 			name := info.Objects[0].(*widget.Label)
 			status := info.Objects[1].(*canvas.Text)
+			transferProgress := info.Objects[2].(*widget.ProgressBar)
 
 			peer := c.peerByIndex(int(id))
 			if peer == nil {
@@ -58,34 +64,45 @@ func (c *controller) buildPeersListPane() fyne.CanvasObject {
 			if strings.TrimSpace(displayName) == "" {
 				displayName = peer.DeviceID
 			}
+			settings := c.peerSettingsByID(peer.DeviceID)
 			if c.peerTrustLevel(peer.DeviceID) == storage.PeerTrustLevelTrusted {
 				displayName += " [Trusted]"
 			}
+			if settings != nil && settings.Verified {
+				displayName += " [Verified]"
+			}
 			name.SetText(displayName)
 
-			statusText := "Offline"
-			if strings.EqualFold(peer.Status, "online") {
-				statusText = "Online"
+			runtime := c.runtimeStateForPeer(peer.DeviceID)
+			stateText, dotColor := c.peerStatePresentation(peer, runtime)
+			activeTransfer, transferProgressValue := c.peerTransferProgress(peer.DeviceID)
+			if activeTransfer {
+				stateText = fmt.Sprintf("Transferring... %.0f%%", transferProgressValue*100)
 			}
-			settings := c.peerSettingsByID(peer.DeviceID)
 			if settings != nil && strings.TrimSpace(settings.CustomName) != "" {
 				secondary := strings.TrimSpace(peer.DeviceName)
 				if secondary == "" {
 					secondary = peer.DeviceID
 				}
-				statusText = fmt.Sprintf("%s • %s", secondary, statusText)
+				stateText = fmt.Sprintf("%s • %s", secondary, stateText)
 			}
-			if strings.EqualFold(peer.Status, "online") {
-				dot.FillColor = colorOnline
-				status.Text = statusText
+
+			dot.FillColor = dotColor
+			status.Text = stateText
+			if dotColor == colorOnline {
 				status.Color = colorOnline
 			} else {
-				dot.FillColor = colorOffline
-				status.Text = statusText
 				status.Color = colorMuted
+			}
+			if activeTransfer {
+				transferProgress.SetValue(transferProgressValue)
+				transferProgress.Show()
+			} else {
+				transferProgress.Hide()
 			}
 			dot.Refresh()
 			status.Refresh()
+			transferProgress.Refresh()
 		},
 	)
 	c.peerList.OnSelected = func(id widget.ListItemID) {
@@ -384,6 +401,77 @@ func (c *controller) isKnownPeer(deviceID string) bool {
 		}
 	}
 	return false
+}
+
+func (c *controller) peerStatePresentation(peer *storage.Peer, runtime network.PeerRuntimeState) (string, color.Color) {
+	if peer == nil {
+		return "Offline", colorOffline
+	}
+
+	if runtime.Reconnecting && runtime.NextReconnectAt > 0 {
+		remaining := time.Until(time.UnixMilli(runtime.NextReconnectAt))
+		if remaining < 0 {
+			remaining = 0
+		}
+		return fmt.Sprintf("Reconnecting in %s...", remaining.Round(time.Second)), color.NRGBA{R: 255, G: 193, B: 7, A: 255}
+	}
+
+	switch runtime.ConnectionState {
+	case network.StateConnecting:
+		return "Connecting...", color.NRGBA{R: 255, G: 193, B: 7, A: 255}
+	case network.StateDisconnecting:
+		return "Disconnecting...", color.NRGBA{R: 255, G: 152, B: 0, A: 255}
+	case network.StateReady, network.StateIdle:
+		return "Online", colorOnline
+	case network.StateDisconnected:
+		if strings.EqualFold(peer.Status, "online") {
+			return "Online", colorOnline
+		}
+		return "Offline", colorOffline
+	default:
+		if strings.EqualFold(peer.Status, "online") {
+			return "Online", colorOnline
+		}
+		return "Offline", colorOffline
+	}
+}
+
+func (c *controller) peerTransferProgress(peerDeviceID string) (bool, float64) {
+	if strings.TrimSpace(peerDeviceID) == "" {
+		return false, 0
+	}
+
+	c.chatMu.RLock()
+	defer c.chatMu.RUnlock()
+
+	activeCount := 0
+	progressTotal := 0.0
+	for _, transfer := range c.fileTransfers {
+		if transfer.PeerDeviceID != peerDeviceID {
+			continue
+		}
+		if transfer.TransferCompleted {
+			continue
+		}
+		if !strings.EqualFold(transfer.Status, "accepted") {
+			continue
+		}
+		activeCount++
+		if transfer.TotalBytes > 0 {
+			progressTotal += float64(transfer.BytesTransferred) / float64(transfer.TotalBytes)
+		}
+	}
+	if activeCount == 0 {
+		return false, 0
+	}
+	avg := progressTotal / float64(activeCount)
+	if avg < 0 {
+		avg = 0
+	}
+	if avg > 1 {
+		avg = 1
+	}
+	return true, avg
 }
 
 func discoveredPeerAddress(peer discovery.DiscoveredPeer) (string, error) {

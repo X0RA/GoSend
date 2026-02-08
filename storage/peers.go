@@ -291,6 +291,16 @@ func (s *Store) UpdatePeerIdentity(deviceID, ed25519PublicKey, keyFingerprint st
 		return ErrNotFound
 	}
 
+	// A key change invalidates any previous out-of-band fingerprint verification.
+	if _, err := s.db.Exec(
+		`UPDATE peer_settings
+		SET verified = 0
+		WHERE peer_device_id = ?`,
+		deviceID,
+	); err != nil {
+		return fmt.Errorf("reset peer verified flag %q: %w", deviceID, err)
+	}
+
 	return nil
 }
 
@@ -307,8 +317,10 @@ func (s *Store) EnsurePeerSettingsExist(peerDeviceID string) error {
 			max_file_size,
 			download_directory,
 			custom_name,
-			trust_level
-		) VALUES (?, 0, 0, '', '', ?)
+			trust_level,
+			notifications_muted,
+			verified
+		) VALUES (?, 0, 0, '', '', ?, 0, 0)
 		ON CONFLICT(peer_device_id) DO NOTHING`,
 		peerDeviceID,
 		PeerTrustLevelNormal,
@@ -333,7 +345,9 @@ func (s *Store) GetPeerSettings(peerDeviceID string) (*PeerSettings, error) {
 			max_file_size,
 			download_directory,
 			custom_name,
-			trust_level
+			trust_level,
+			notifications_muted,
+			verified
 		FROM peer_settings
 		WHERE peer_device_id = ?`,
 		peerDeviceID,
@@ -373,6 +387,14 @@ func (s *Store) UpdatePeerSettings(settings PeerSettings) error {
 	if settings.AutoAcceptFiles {
 		autoAccept = 1
 	}
+	notificationsMuted := 0
+	if settings.NotificationsMuted {
+		notificationsMuted = 1
+	}
+	verified := 0
+	if settings.Verified {
+		verified = 1
+	}
 
 	res, err := s.db.Exec(
 		`UPDATE peer_settings
@@ -380,13 +402,17 @@ func (s *Store) UpdatePeerSettings(settings PeerSettings) error {
 		    max_file_size = ?,
 		    download_directory = ?,
 		    custom_name = ?,
-		    trust_level = ?
+		    trust_level = ?,
+		    notifications_muted = ?,
+		    verified = ?
 		WHERE peer_device_id = ?`,
 		autoAccept,
 		settings.MaxFileSize,
 		settings.DownloadDirectory,
 		settings.CustomName,
 		settings.TrustLevel,
+		notificationsMuted,
+		verified,
 		settings.PeerDeviceID,
 	)
 	if err != nil {
@@ -401,6 +427,34 @@ func (s *Store) UpdatePeerSettings(settings PeerSettings) error {
 		return ErrNotFound
 	}
 
+	return nil
+}
+
+// ResetPeerVerified clears the verified flag for one peer.
+func (s *Store) ResetPeerVerified(peerDeviceID string) error {
+	if peerDeviceID == "" {
+		return errors.New("peer_device_id is required")
+	}
+	if err := s.EnsurePeerSettingsExist(peerDeviceID); err != nil {
+		return err
+	}
+
+	res, err := s.db.Exec(
+		`UPDATE peer_settings
+		SET verified = 0
+		WHERE peer_device_id = ?`,
+		peerDeviceID,
+	)
+	if err != nil {
+		return fmt.Errorf("reset peer verified for %q: %w", peerDeviceID, err)
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read rows affected for reset peer verified %q: %w", peerDeviceID, err)
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
 	return nil
 }
 
@@ -538,8 +592,10 @@ func scanKeyRotationEvent(row scanner) (*KeyRotationEvent, error) {
 
 func scanPeerSettings(row scanner) (*PeerSettings, error) {
 	var (
-		settings   PeerSettings
-		autoAccept int
+		settings           PeerSettings
+		autoAccept         int
+		notificationsMuted int
+		verified           int
 	)
 	if err := row.Scan(
 		&settings.PeerDeviceID,
@@ -548,10 +604,14 @@ func scanPeerSettings(row scanner) (*PeerSettings, error) {
 		&settings.DownloadDirectory,
 		&settings.CustomName,
 		&settings.TrustLevel,
+		&notificationsMuted,
+		&verified,
 	); err != nil {
 		return nil, err
 	}
 
 	settings.AutoAcceptFiles = autoAccept == 1
+	settings.NotificationsMuted = notificationsMuted == 1
+	settings.Verified = verified == 1
 	return &settings, nil
 }
