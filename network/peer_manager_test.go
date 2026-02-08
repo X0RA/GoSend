@@ -164,6 +164,100 @@ func TestReconnectAfterPeerRestart(t *testing.T) {
 	waitForPeerStatus(t, a.store, "peer-b", peerStatusOnline, 5*time.Second)
 }
 
+func TestTrustedKeyChangeUpdatesStoredKeyAndAvoidsReprompt(t *testing.T) {
+	bPort := freeTCPPort(t)
+
+	callbackCount := 0
+	var callbackMu sync.Mutex
+
+	a := newTestManager(t, testManagerConfig{
+		deviceID: "peer-a",
+		name:     "Peer A",
+		onKeyChange: func(peerDeviceID, existingPublicKeyBase64, receivedPublicKeyBase64 string) (bool, error) {
+			callbackMu.Lock()
+			callbackCount++
+			callbackMu.Unlock()
+			return true, nil
+		},
+	})
+	defer a.stop()
+
+	bIdentityOriginal := generateIdentity(t, "peer-b", "Peer B")
+	bStoreDir := t.TempDir()
+	bStore, _, err := storage.Open(bStoreDir)
+	if err != nil {
+		t.Fatalf("open B store: %v", err)
+	}
+	defer func() {
+		_ = bStore.Close()
+	}()
+
+	b := newTestManagerWithParts(t, bStore, bIdentityOriginal, "127.0.0.1:"+bPort)
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a"); err != nil {
+		t.Fatalf("initial add flow failed: %v", err)
+	}
+
+	originalFingerprint := appcrypto.KeyFingerprint(bIdentityOriginal.Ed25519PublicKey)
+	b.stop()
+
+	waitForPeerStatus(t, a.store, "peer-b", peerStatusOffline, 4*time.Second)
+
+	bIdentityRotated := generateIdentity(t, "peer-b", "Peer B")
+	bRotated := newTestManagerWithParts(t, bStore, bIdentityRotated, "127.0.0.1:"+bPort)
+	defer bRotated.stop()
+
+	waitForPeerStatus(t, a.store, "peer-b", peerStatusOnline, 6*time.Second)
+	waitForKeyChangeCallbackCount(t, &callbackMu, &callbackCount, 1, 5*time.Second)
+
+	peer, err := a.store.GetPeer("peer-b")
+	if err != nil {
+		t.Fatalf("GetPeer after key rotation failed: %v", err)
+	}
+	rotatedPublicKey := base64.StdEncoding.EncodeToString(bIdentityRotated.Ed25519PublicKey)
+	if peer.Ed25519PublicKey != rotatedPublicKey {
+		t.Fatalf("expected stored public key to rotate")
+	}
+	rotatedFingerprint := appcrypto.KeyFingerprint(bIdentityRotated.Ed25519PublicKey)
+	if peer.KeyFingerprint != rotatedFingerprint {
+		t.Fatalf("expected stored fingerprint %q, got %q", rotatedFingerprint, peer.KeyFingerprint)
+	}
+
+	events, err := a.store.GetRecentKeyRotationEvents("peer-b", 10)
+	if err != nil {
+		t.Fatalf("GetRecentKeyRotationEvents failed: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatalf("expected at least one key rotation event")
+	}
+	if events[0].Decision != storage.KeyRotationDecisionTrusted {
+		t.Fatalf("expected trusted key rotation decision, got %q", events[0].Decision)
+	}
+	if events[0].OldKeyFingerprint != originalFingerprint {
+		t.Fatalf("unexpected old key fingerprint: got %q want %q", events[0].OldKeyFingerprint, originalFingerprint)
+	}
+	if events[0].NewKeyFingerprint != rotatedFingerprint {
+		t.Fatalf("unexpected new key fingerprint: got %q want %q", events[0].NewKeyFingerprint, rotatedFingerprint)
+	}
+
+	bRotated.stop()
+	waitForPeerStatus(t, a.store, "peer-b", peerStatusOffline, 4*time.Second)
+
+	bRotatedAgain := newTestManagerWithParts(t, bStore, bIdentityRotated, "127.0.0.1:"+bPort)
+	defer bRotatedAgain.stop()
+	waitForPeerStatus(t, a.store, "peer-b", peerStatusOnline, 6*time.Second)
+
+	time.Sleep(300 * time.Millisecond)
+	callbackMu.Lock()
+	finalCount := callbackCount
+	callbackMu.Unlock()
+	if finalCount != 1 {
+		t.Fatalf("expected no second key-change prompt after trusting rotated key, got %d callbacks", finalCount)
+	}
+}
+
 func TestPeerRemoveCleansUpBothSides(t *testing.T) {
 	a := newTestManager(t, testManagerConfig{
 		deviceID: "peer-a",
@@ -299,6 +393,18 @@ func TestInvalidPeerAddRequestSignatureIgnored(t *testing.T) {
 	case req := <-b.manager.PendingAddRequests():
 		t.Fatalf("unexpected pending add request: %+v", req)
 	case <-time.After(400 * time.Millisecond):
+	}
+
+	events, err := b.store.GetSecurityEvents(storage.SecurityEventFilter{
+		EventType:    securityEventTypeSignatureVerificationFailed,
+		PeerDeviceID: "peer-a",
+		Limit:        10,
+	})
+	if err != nil {
+		t.Fatalf("GetSecurityEvents failed: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatalf("expected signature verification failure security event")
 	}
 }
 
@@ -494,6 +600,7 @@ type testManagerConfig struct {
 	deviceID        string
 	name            string
 	approve         func(notification AddRequestNotification) (bool, error)
+	onKeyChange     KeyChangeDecisionFunc
 	approveFile     func(notification FileRequestNotification) (bool, error)
 	onFileProgress  func(progress FileProgress)
 	filesDir        string
@@ -541,6 +648,7 @@ func newTestManagerWithConfig(t *testing.T, store *storage.Store, identity Local
 		Store:                store,
 		ListenAddress:        listenAddress,
 		ApproveAddRequest:    cfg.approve,
+		OnKeyChange:          cfg.onKeyChange,
 		OnFileRequest:        cfg.approveFile,
 		OnFileProgress:       cfg.onFileProgress,
 		FilesDir:             filesDir,
@@ -711,4 +819,23 @@ func waitForOutboundAddPending(t *testing.T, manager *PeerManager, peerID string
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for outbound add response channel for peer %q", peerID)
+}
+
+func waitForKeyChangeCallbackCount(t *testing.T, mu *sync.Mutex, count *int, expected int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		current := *count
+		mu.Unlock()
+		if current >= expected {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	mu.Lock()
+	current := *count
+	mu.Unlock()
+	t.Fatalf("timed out waiting for key-change callback count %d, final=%d", expected, current)
 }

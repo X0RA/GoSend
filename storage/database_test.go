@@ -41,7 +41,14 @@ func TestOpenCreatesDatabaseAndAppliesMigrations(t *testing.T) {
 		t.Fatalf("expected journal_mode wal, got %q", journalMode)
 	}
 
-	expectedTables := []string{"peers", "messages", "files", "seen_message_ids"}
+	expectedTables := []string{
+		"peers",
+		"messages",
+		"files",
+		"seen_message_ids",
+		"key_rotation_events",
+		"security_events",
+	}
 	for _, table := range expectedTables {
 		var count int
 		if err := store.db.QueryRow(

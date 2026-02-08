@@ -4,7 +4,7 @@ This README reflects the current repository state (module `gosend`) as of Februa
 
 GoSend is a local-network peer-to-peer desktop app built in Go. It uses mDNS for discovery, TCP for transport, a signed handshake with ephemeral X25519 key exchange, encrypted framed traffic, SQLite persistence, and a Fyne GUI. It is designed for same-LAN usage with authenticated peers, encrypted transport, and durable local history.
 
-**Runtime story:** Startup resolves data dir, loads/creates config, ensures keys, computes fingerprint, opens SQLite, then starts the GUI. The GUI starts the peer manager (TCP listener + protocol engine) and mDNS discovery (broadcast + scanner). The scanner discovers LAN peers and keeps a live cache. The user explicitly adds a discovered peer (TCP dial + signed handshake + add-request). After mutual acceptance, the peer is persisted and eligible for auto-reconnect. Messages and files are exchanged over encrypted sessions with signatures, replay checks, and persistence. If a peer goes offline, outbound messages/files are queued and resume on reconnect. On shutdown, the UI stops the manager and discovery, waits for loops, then closes the DB.
+**Runtime story:** Startup resolves data dir, loads/creates config, ensures Ed25519 identity keys, computes fingerprint, opens SQLite, then starts the GUI. The GUI starts the peer manager (TCP listener + protocol engine) and mDNS discovery (broadcast + scanner). The scanner discovers LAN peers and keeps a live cache. The user explicitly adds a discovered peer (TCP dial + signed handshake + add-request). After mutual acceptance, the peer is persisted and eligible for auto-reconnect. Messages and files are exchanged over encrypted sessions with signatures, replay checks, and persistence. If a peer goes offline, outbound messages/files are queued and resume on reconnect. On shutdown, the UI stops the manager and discovery, waits for loops, then closes the DB.
 
 ## What Is Implemented Today
 
@@ -19,6 +19,8 @@ GoSend is a local-network peer-to-peer desktop app built in Go. It uses mDNS for
 - Encrypted + signed text messages with delivery status tracking (`pending`, `sent`, `delivered`, `failed`).
 - Offline outbound queue with limits: 500 pending messages per peer, 7-day age cutoff, 50 MB pending content per peer.
 - Replay defenses for chat messages: per-connection sequence checks, persistent seen ID table, and timestamp skew checks.
+- Trusted key rotations persist immediately to the pinned peer key plus an auditable `key_rotation_events` trail.
+- Structured `security_events` logging captures handshake failures, signature failures, replay rejections, key-rotation decisions, and queue-limit triggers.
 - File transfer with request/accept/reject, signed chunk ack/nack + signed file completion, reconnect resume from chunk, and end checksum verification.
 - Cross-platform GUI (Fyne) with peer list, chat pane, discovery dialog, settings dialog, key-change prompt, file-transfer prompts/progress, and chat header color that reflects online status.
 
@@ -111,7 +113,6 @@ Expected layout:
   keys/
     ed25519_private.pem
     ed25519_public.pem
-    x25519_private.pem
   files/
 ```
 
@@ -134,7 +135,6 @@ Default first-run config values:
   "listening_port": 0,
   "ed25519_private_key_path": "string",
   "ed25519_public_key_path": "string",
-  "x25519_private_key_path": "string",
   "key_fingerprint": "hex"
 }
 ```
@@ -145,6 +145,7 @@ Normalization (for older configs):
 - Fixed mode with `listening_port=0` is normalized to `9999` (`DefaultListeningPort`).
 - Automatic mode never requires a fixed port.
 - Missing key path fields are backfilled to the default keys directory.
+- Legacy `x25519_private_key_path` fields are silently removed when old configs are rewritten.
 
 Runtime application:
 
@@ -178,8 +179,8 @@ Cryptography:
 - **Identity**: Ed25519 long-term signing key; private key PEM `0600`, public PEM `0644`. Fingerprint = first 16 bytes of SHA-256(Ed25519 public key), hex.
 - **Session key**: Ephemeral X25519 keypairs per connection; shared secret via ECDH; initial session key = HKDF-SHA256 over shared secret with salt `p2pchat-session-v1`, info = sorted device IDs (`minID|maxID`) + handshake challenge nonce. Rekeyed session keys use signed ephemeral exchange context (`rekey|<epoch>`), 32-byte output.
 - **Encryption**: After handshake, every payload is in `secure_frame` (epoch + base64 nonce + ciphertext). AES-256-GCM with random nonce per encryption; plaintext is the JSON protocol message. File chunk payloads (`file_data`) are encrypted with the session key and then wrapped in `secure_frame` again.
-- **Trust**: TOFU with pinned Ed25519 key in peer record. On key mismatch, handshake is blocked until user trust/reject; if user trusts, session can proceed. Persistent key pin update when user trusts a new key is not fully modeled yet.
-- **X25519**: A persisted X25519 private key file is ensured in config, but the handshake uses only ephemeral X25519 keypairs per session.
+- **Trust**: TOFU with pinned Ed25519 key in peer record. On key mismatch, handshake is blocked until user trust/reject; trusted decisions immediately update the pinned key/fingerprint and are written to `key_rotation_events`.
+- **X25519**: Handshake/rekey key exchange is ephemeral-only per session; no persistent X25519 private key file is stored.
 
 Message/control integrity:
 
@@ -259,7 +260,7 @@ Completion/failure:
 
 Persistence uses `github.com/mattn/go-sqlite3` with a single DB (`app.db`) under the app data directory. DSN enables foreign keys (`_foreign_keys=on`); busy timeout `5000ms`. The database is opened in WAL mode (`PRAGMA journal_mode=WAL`) with startup checkpointing (`PRAGMA wal_checkpoint(TRUNCATE)`) and a periodic 24-hour checkpoint loop. Schema migrations are versioned with `PRAGMA user_version`.
 
-Tables store: **peers** — identity, pinned Ed25519 public key, fingerprint, status, timestamps, last known endpoint. **messages** — content, content type, sent/received timestamps, read flag, delivery status, signature. **files** — file IDs, sender/receiver, filename/type/size/path/checksum, transfer status. **seen_message_ids** — replay defense. Status enums: peer `online`/`offline`/`pending`/`blocked`; delivery `pending`/`sent`/`delivered`/`failed`; file `pending`/`accepted`/`rejected`/`complete`/`failed`. Updates in practice: peer add accepted → peer row created/updated to `online`; disconnect → `offline`; message sent → `sent`, after ACK → `delivered`; offline messages stored as `pending` and drained on reconnect; file request/accept/reject/complete update `files.transfer_status`; received message IDs go into `seen_message_ids`. Pending queue prune: messages older than 7 days marked `failed`. Seen-ID table can be pruned by timestamp (API in storage).
+Tables store: **peers** — identity, pinned Ed25519 public key, fingerprint, status, timestamps, last known endpoint. **messages** — content, content type, sent/received timestamps, read flag, delivery status, signature. **files** — file IDs, sender/receiver, filename/type/size/path/checksum, transfer status. **seen_message_ids** — replay defense. **key_rotation_events** — trusted/rejected key-change decisions with old/new fingerprints. **security_events** — structured security logs with severity and JSON details. Status enums: peer `online`/`offline`/`pending`/`blocked`; delivery `pending`/`sent`/`delivered`/`failed`; file `pending`/`accepted`/`rejected`/`complete`/`failed`. Updates in practice: peer add accepted → peer row created/updated to `online`; disconnect → `offline`; message sent → `sent`, after ACK → `delivered`; offline messages stored as `pending` and drained on reconnect; file request/accept/reject/complete update `files.transfer_status`; received message IDs go into `seen_message_ids`; key-change trust/reject decisions write to `key_rotation_events` and (when trusted) update `peers.ed25519_public_key` + `peers.key_fingerprint`. Pending queue prune: messages older than 7 days marked `failed`. Security-event retention pruning defaults to 90 days.
 
 Schema:
 
@@ -307,12 +308,34 @@ CREATE TABLE seen_message_ids (
   message_id  TEXT PRIMARY KEY,
   received_at INTEGER NOT NULL
 );
+
+CREATE TABLE key_rotation_events (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  peer_device_id      TEXT NOT NULL REFERENCES peers(device_id) ON DELETE CASCADE,
+  old_key_fingerprint TEXT NOT NULL,
+  new_key_fingerprint TEXT NOT NULL,
+  decision            TEXT NOT NULL CHECK(decision IN ('trusted','rejected')),
+  timestamp           INTEGER NOT NULL
+);
+
+CREATE TABLE security_events (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_type     TEXT NOT NULL,
+  peer_device_id TEXT,
+  details        TEXT NOT NULL,
+  severity       TEXT NOT NULL CHECK(severity IN ('info','warning','critical')),
+  timestamp      INTEGER NOT NULL
+);
 ```
 
 Indexes:
 
 - `idx_messages_peer_time` on `(to_device_id, delivery_status, timestamp_sent)`
 - `idx_seen_message_received_at` on `(received_at)`
+- `idx_key_rotation_events_peer_time` on `(peer_device_id, timestamp DESC, id DESC)`
+- `idx_security_events_time` on `(timestamp DESC, id DESC)`
+- `idx_security_events_type` on `(event_type, timestamp DESC, id DESC)`
+- `idx_security_events_peer` on `(peer_device_id, timestamp DESC, id DESC)`
 
 ## UI Summary
 
@@ -341,7 +364,7 @@ Key flows: Add peer (discovery → select → dial → `peer_add_request`); inco
 
 Settings:
 
-- Device name, port mode (`automatic`/`fixed`), fixed port, fingerprint display, key reset (regenerates Ed25519 + X25519 key files and updates fingerprint). Name/port are persisted immediately; restart required to apply to active services.
+- Device name, port mode (`automatic`/`fixed`), fixed port, fingerprint display, key reset (regenerates Ed25519 key files and updates fingerprint). Name/port are persisted immediately; restart required to apply to active services.
 
 Theme:
 
@@ -425,7 +448,7 @@ Theme:
 
 ### Root Files
 
-- `main.go`: Startup entrypoint. Loads/normalizes config, ensures key material, persists fingerprint updates, opens SQLite store, constructs local identity, and starts UI runtime.
+- `main.go`: Startup entrypoint. Loads/normalizes config, ensures Ed25519 key material, persists fingerprint updates, opens SQLite store, constructs local identity, and starts UI runtime.
 - `Makefile`: Convenience commands for build and non-UI test flows, plus two client run targets with isolated data dirs.
 - `.github/workflows/release-build.yml`: On release publish, builds release artifacts and uploads them to the created release as assets (Linux binary + macOS ARM `.app.zip`).
 - `tools.go`: Build-tagged dependency anchors for `fyne`, `zeroconf`, and `go-sqlite3`.
@@ -438,14 +461,14 @@ Theme:
 
 ### `config/`
 
-- `config/config.go`: Data dir resolution, directory creation, config load/save, default config generation, and legacy config normalization (including `port_mode`).
-- `config/config_test.go`: Tests first-run creation, stable reload behavior, and legacy port mode normalization.
+- `config/config.go`: Data dir resolution, directory creation, config load/save, default config generation, and legacy config normalization/migration (including `port_mode` and legacy X25519 path removal).
+- `config/config_test.go`: Tests first-run creation, stable reload behavior, legacy port mode normalization, and legacy X25519 path migration cleanup.
 
 ### `crypto/`
 
 - `crypto/keypair.go`: Ed25519 keypair ensure/load/save, fingerprint generation, and fingerprint formatting.
-- `crypto/keypair_test.go`: Verifies Ed25519 and X25519 key persistence stability across repeated ensure calls.
-- `crypto/ecdh.go`: X25519 private key ensure/load/save, ephemeral keypair generation, shared secret computation, HKDF session key derivation.
+- `crypto/keypair_test.go`: Verifies Ed25519 key persistence stability across repeated ensure calls.
+- `crypto/ecdh.go`: Ephemeral X25519 keypair generation, shared secret computation, and HKDF session key derivation.
 - `crypto/ecdh_session_test.go`: Validates both sides derive identical shared secrets and session keys.
 - `crypto/encryption.go`: AES-256-GCM encrypt/decrypt helpers with nonce generation and validation.
 - `crypto/encryption_test.go`: Round-trip encryption/decryption tests.
@@ -472,12 +495,14 @@ Note: runtime logic currently uses `storage` structs directly; `models` package 
 - `storage/types.go`: Core storage data types, status/content constants, validators, null helpers, and shared errors.
 - `storage/database.go`: SQLite open/create helpers, migrations, schema versioning, and connection lifecycle.
 - `storage/database_test.go`: Verifies DB creation, migrations, schema version, and expected table presence.
-- `storage/peers.go`: Peer CRUD + endpoint/status update logic.
-- `storage/peers_test.go`: Peer CRUD and endpoint/status update tests.
+- `storage/peers.go`: Peer CRUD + endpoint/status updates, pinned-key updates, and key-rotation event history helpers.
+- `storage/peers_test.go`: Peer CRUD, endpoint/status update, pinned-key update, and key-rotation event tests.
 - `storage/messages.go`: Message insert/read/update APIs, pending queue reads, and expired queue pruning.
 - `storage/messages_test.go`: Message CRUD, ordering, status updates, pending retrieval, and prune behavior.
 - `storage/files.go`: File metadata insert/read and transfer-status updates.
 - `storage/files_test.go`: File metadata CRUD/status update tests.
+- `storage/security_events.go`: Structured security-event insert/query/retention-prune helpers.
+- `storage/security_events_test.go`: Security-event filter and retention behavior tests.
 - `storage/seen_ids.go`: Seen-message ID insert/check/prune helpers.
 - `storage/seen_ids_test.go`: Seen ID insert/existence/prune tests.
 - `storage/testutil_test.go`: Shared test setup helpers for temp stores and seeded peers.

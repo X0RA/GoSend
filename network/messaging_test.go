@@ -140,6 +140,18 @@ func TestReplayDuplicateMessageIDRejected(t *testing.T) {
 	if len(conversation) != 1 {
 		t.Fatalf("expected exactly 1 stored message after replay attempt, got %d", len(conversation))
 	}
+
+	events, err := b.store.GetSecurityEvents(storage.SecurityEventFilter{
+		EventType:    securityEventTypeReplayRejected,
+		PeerDeviceID: "peer-a",
+		Limit:        10,
+	})
+	if err != nil {
+		t.Fatalf("GetSecurityEvents failed: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatalf("expected replay_rejected security event")
+	}
 }
 
 func TestOutOfSequenceMessageRejected(t *testing.T) {

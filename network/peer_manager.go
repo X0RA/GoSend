@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,6 +51,14 @@ var defaultReconnectBackoff = []time.Duration{
 	15 * time.Second,
 	60 * time.Second,
 }
+
+const (
+	securityEventTypeHandshakeFailure             = "handshake_failure"
+	securityEventTypeSignatureVerificationFailed  = "signature_verification_failed"
+	securityEventTypeReplayRejected               = "replay_rejected"
+	securityEventTypeKeyRotationDecision          = "key_rotation_decision"
+	securityEventTypeConnectionRateLimitTriggered = "connection_rate_limit_triggered"
+)
 
 // AddRequestNotification is queued when manual approval is required.
 type AddRequestNotification struct {
@@ -483,6 +492,12 @@ func (m *PeerManager) serverLoop() {
 				return
 			}
 			m.reportError(err)
+			if isHandshakeFailureError(err) {
+				m.logSecurityEvent(securityEventTypeHandshakeFailure, "", storage.SecuritySeverityWarning, map[string]any{
+					"direction": "inbound",
+					"error":     err.Error(),
+				})
+			}
 		case <-m.ctx.Done():
 			return
 		}
@@ -673,6 +688,10 @@ func (m *PeerManager) handlePeerAddRequest(conn *PeerConnection, request PeerAdd
 	}
 	if err := m.verifyPeerAddRequest(conn, request); err != nil {
 		m.reportError(err)
+		m.logSecurityEvent(securityEventTypeSignatureVerificationFailed, peerID, storage.SecuritySeverityWarning, map[string]any{
+			"message_type": TypePeerAddRequest,
+			"error":        err.Error(),
+		})
 		_ = m.sendErrorMessage(conn, "invalid_signature", "peer add request signature verification failed", "")
 		return
 	}
@@ -766,6 +785,10 @@ func (m *PeerManager) handlePeerAddResponse(conn *PeerConnection, response PeerA
 	}
 	if err := m.verifyPeerAddResponse(conn, response); err != nil {
 		m.reportError(err)
+		m.logSecurityEvent(securityEventTypeSignatureVerificationFailed, peerID, storage.SecuritySeverityWarning, map[string]any{
+			"message_type": TypePeerAddResponse,
+			"error":        err.Error(),
+		})
 		return
 	}
 	if !stringsEqualFold(response.Status, "accepted") && !stringsEqualFold(response.Status, "rejected") {
@@ -801,6 +824,10 @@ func (m *PeerManager) handlePeerRemove(conn *PeerConnection, removeMsg PeerRemov
 	}
 	if err := m.verifyPeerRemove(conn, removeMsg); err != nil {
 		m.reportError(err)
+		m.logSecurityEvent(securityEventTypeSignatureVerificationFailed, peerID, storage.SecuritySeverityWarning, map[string]any{
+			"message_type": TypePeerRemove,
+			"error":        err.Error(),
+		})
 		_ = m.sendErrorMessage(conn, "invalid_signature", "peer remove signature verification failed", "")
 		return false
 	}
@@ -871,6 +898,13 @@ func (m *PeerManager) handleIncomingEncryptedMessage(conn *PeerConnection, messa
 	}
 	if err := conn.ValidateSequence(message.Sequence); err != nil {
 		m.reportError(fmt.Errorf("rejecting message %q from %q: %w", message.MessageID, message.FromDeviceID, err))
+		if errors.Is(err, ErrSequenceReplay) {
+			m.logSecurityEvent(securityEventTypeReplayRejected, message.FromDeviceID, storage.SecuritySeverityWarning, map[string]any{
+				"message_id": message.MessageID,
+				"reason":     err.Error(),
+				"sequence":   message.Sequence,
+			})
+		}
 		return
 	}
 
@@ -881,6 +915,10 @@ func (m *PeerManager) handleIncomingEncryptedMessage(conn *PeerConnection, messa
 	}
 	if seen {
 		m.reportError(fmt.Errorf("rejecting duplicate message_id %q from %q", message.MessageID, message.FromDeviceID))
+		m.logSecurityEvent(securityEventTypeReplayRejected, message.FromDeviceID, storage.SecuritySeverityWarning, map[string]any{
+			"message_id": message.MessageID,
+			"reason":     "duplicate_message_id",
+		})
 		return
 	}
 
@@ -896,6 +934,10 @@ func (m *PeerManager) handleIncomingEncryptedMessage(conn *PeerConnection, messa
 	}
 	if err := m.verifyEncryptedMessageSignature(conn, message); err != nil {
 		m.reportError(fmt.Errorf("rejecting message %q from %q: invalid signature", message.MessageID, message.FromDeviceID))
+		m.logSecurityEvent(securityEventTypeSignatureVerificationFailed, message.FromDeviceID, storage.SecuritySeverityWarning, map[string]any{
+			"message_type": TypeMessage,
+			"message_id":   message.MessageID,
+		})
 		_ = m.sendErrorMessage(conn, "invalid_signature", "message signature verification failed", message.MessageID)
 		return
 	}
@@ -966,6 +1008,10 @@ func (m *PeerManager) handleAck(conn *PeerConnection, ack AckMessage) {
 	}
 	if err := m.verifyAck(conn, ack); err != nil {
 		m.reportError(fmt.Errorf("rejecting ack %q from %q: %w", ack.MessageID, peerID, err))
+		m.logSecurityEvent(securityEventTypeSignatureVerificationFailed, peerID, storage.SecuritySeverityWarning, map[string]any{
+			"message_type": TypeAck,
+			"message_id":   ack.MessageID,
+		})
 		_ = m.sendErrorMessage(conn, "invalid_signature", "ack signature verification failed", ack.MessageID)
 		return
 	}
@@ -1125,6 +1171,10 @@ func (m *PeerManager) handleRekeyRequest(conn *PeerConnection, request RekeyRequ
 	}
 	if err := m.verifyRekeyRequest(conn, request); err != nil {
 		m.reportError(err)
+		m.logSecurityEvent(securityEventTypeSignatureVerificationFailed, peerID, storage.SecuritySeverityWarning, map[string]any{
+			"message_type": TypeRekeyRequest,
+			"error":        err.Error(),
+		})
 		_ = conn.Close()
 		return
 	}
@@ -1183,6 +1233,10 @@ func (m *PeerManager) handleRekeyResponse(conn *PeerConnection, response RekeyRe
 	}
 	if err := m.verifyRekeyResponse(conn, response); err != nil {
 		m.reportError(err)
+		m.logSecurityEvent(securityEventTypeSignatureVerificationFailed, peerID, storage.SecuritySeverityWarning, map[string]any{
+			"message_type": TypeRekeyResponse,
+			"error":        err.Error(),
+		})
 		_ = conn.Close()
 		return
 	}
@@ -1303,6 +1357,14 @@ func (m *PeerManager) enforceQueueLimits(peerID string) error {
 
 	if dropped > 0 && m.options.OnQueueOverflow != nil {
 		m.options.OnQueueOverflow(peerID, dropped)
+	}
+	if dropped > 0 {
+		m.logSecurityEvent(securityEventTypeConnectionRateLimitTriggered, peerID, storage.SecuritySeverityWarning, map[string]any{
+			"limit_type":          "pending_message_queue",
+			"dropped_messages":    dropped,
+			"max_queued_messages": maxQueuedMessages,
+			"max_queued_bytes":    maxQueuedBytesPerPeer,
+		})
 	}
 
 	return nil
@@ -1445,7 +1507,8 @@ func (m *PeerManager) dialAndRegister(address string) (*PeerConnection, error) {
 	conn, err := Dial(address, HandshakeOptions{
 		Identity:            m.options.Identity,
 		KnownPeerKeys:       m.knownKeysSnapshot(),
-		OnKeyChangeDecision: m.options.OnKeyChange,
+		KnownPeerKeyLookup:  m.lookupKnownKey,
+		OnKeyChangeDecision: m.handleKeyChangeDecision,
 		ConnectionTimeout:   m.options.ConnectionTimeout,
 		KeepAliveInterval:   m.options.KeepAliveInterval,
 		KeepAliveTimeout:    m.options.KeepAliveTimeout,
@@ -1455,6 +1518,13 @@ func (m *PeerManager) dialAndRegister(address string) (*PeerConnection, error) {
 		AutoRespondPing:     m.options.AutoRespondPing,
 	})
 	if err != nil {
+		if isHandshakeFailureError(err) {
+			m.logSecurityEvent(securityEventTypeHandshakeFailure, "", storage.SecuritySeverityWarning, map[string]any{
+				"direction": "outbound",
+				"address":   address,
+				"error":     err.Error(),
+			})
+		}
 		return nil, err
 	}
 
@@ -1466,7 +1536,8 @@ func (m *PeerManager) handshakeOptionsForServer() HandshakeOptions {
 	return HandshakeOptions{
 		Identity:            m.options.Identity,
 		KnownPeerKeys:       m.knownKeysSnapshot(),
-		OnKeyChangeDecision: m.options.OnKeyChange,
+		KnownPeerKeyLookup:  m.lookupKnownKey,
+		OnKeyChangeDecision: m.handleKeyChangeDecision,
 		ConnectionTimeout:   m.options.ConnectionTimeout,
 		KeepAliveInterval:   m.options.KeepAliveInterval,
 		KeepAliveTimeout:    m.options.KeepAliveTimeout,
@@ -1475,6 +1546,58 @@ func (m *PeerManager) handshakeOptionsForServer() HandshakeOptions {
 		RekeyAfterBytes:     m.options.RekeyAfterBytes,
 		AutoRespondPing:     m.options.AutoRespondPing,
 	}
+}
+
+func (m *PeerManager) handleKeyChangeDecision(peerDeviceID, existingPublicKeyBase64, receivedPublicKeyBase64 string) (bool, error) {
+	trust := false
+	if m.options.OnKeyChange != nil {
+		decision, err := m.options.OnKeyChange(peerDeviceID, existingPublicKeyBase64, receivedPublicKeyBase64)
+		if err != nil {
+			return false, err
+		}
+		trust = decision
+	}
+
+	oldFingerprint, err := fingerprintFromBase64(existingPublicKeyBase64)
+	if err != nil {
+		return false, err
+	}
+	newFingerprint, err := fingerprintFromBase64(receivedPublicKeyBase64)
+	if err != nil {
+		return false, err
+	}
+
+	decision := storage.KeyRotationDecisionRejected
+	severity := storage.SecuritySeverityWarning
+	if trust {
+		decision = storage.KeyRotationDecisionTrusted
+		severity = storage.SecuritySeverityInfo
+	}
+
+	if err := m.options.Store.RecordKeyRotationEvent(storage.KeyRotationEvent{
+		PeerDeviceID:      peerDeviceID,
+		OldKeyFingerprint: oldFingerprint,
+		NewKeyFingerprint: newFingerprint,
+		Decision:          decision,
+		Timestamp:         time.Now().UnixMilli(),
+	}); err != nil {
+		return false, err
+	}
+
+	m.logSecurityEvent(securityEventTypeKeyRotationDecision, peerDeviceID, severity, map[string]any{
+		"decision":            decision,
+		"old_key_fingerprint": oldFingerprint,
+		"new_key_fingerprint": newFingerprint,
+	})
+
+	if trust {
+		if err := m.options.Store.UpdatePeerIdentity(peerDeviceID, receivedPublicKeyBase64, newFingerprint); err != nil {
+			return false, err
+		}
+		m.setKnownKey(peerDeviceID, receivedPublicKeyBase64)
+	}
+
+	return trust, nil
 }
 
 func (m *PeerManager) persistPeerConnection(conn *PeerConnection, status string, createIfMissing bool) error {
@@ -1583,6 +1706,15 @@ func (m *PeerManager) knownKeysSnapshot() map[string]string {
 	return out
 }
 
+func (m *PeerManager) lookupKnownKey(peerDeviceID string) string {
+	if peerDeviceID == "" {
+		return ""
+	}
+	m.knownKeyMu.RLock()
+	defer m.knownKeyMu.RUnlock()
+	return m.knownKeys[peerDeviceID]
+}
+
 func (m *PeerManager) setKnownKey(peerDeviceID, key string) {
 	if peerDeviceID == "" || key == "" {
 		return
@@ -1640,6 +1772,38 @@ func (m *PeerManager) reportError(err error) {
 	select {
 	case m.errors <- err:
 	default:
+	}
+}
+
+func (m *PeerManager) logSecurityEvent(eventType, peerDeviceID, severity string, details map[string]any) {
+	if m.options.Store == nil || eventType == "" {
+		return
+	}
+
+	rawDetails := []byte("{}")
+	if len(details) > 0 {
+		encoded, err := json.Marshal(details)
+		if err != nil {
+			m.reportError(fmt.Errorf("marshal security event details for %q: %w", eventType, err))
+			return
+		}
+		rawDetails = encoded
+	}
+
+	var peerPtr *string
+	if peerDeviceID != "" {
+		peerID := peerDeviceID
+		peerPtr = &peerID
+	}
+
+	if err := m.options.Store.LogSecurityEvent(storage.SecurityEvent{
+		EventType:    eventType,
+		PeerDeviceID: peerPtr,
+		Details:      string(rawDetails),
+		Severity:     severity,
+		Timestamp:    time.Now().UnixMilli(),
+	}); err != nil {
+		m.reportError(fmt.Errorf("log security event %q: %w", eventType, err))
 	}
 }
 
@@ -1737,6 +1901,21 @@ func stringsEqualFold(a, b string) bool {
 		}
 	}
 	return true
+}
+
+func isHandshakeFailureError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrKeyChanged) {
+		return true
+	}
+
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "accept connection") {
+		return false
+	}
+	return strings.Contains(message, "handshake") || strings.Contains(message, "key_changed")
 }
 
 func (m *PeerManager) signPeerAddRequest(msg *PeerAddRequest) error {

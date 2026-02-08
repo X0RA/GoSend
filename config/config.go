@@ -33,7 +33,6 @@ type DeviceConfig struct {
 	ListeningPort         int    `json:"listening_port"`
 	Ed25519PrivateKeyPath string `json:"ed25519_private_key_path"`
 	Ed25519PublicKeyPath  string `json:"ed25519_public_key_path"`
-	X25519PrivateKeyPath  string `json:"x25519_private_key_path"`
 	KeyFingerprint        string `json:"key_fingerprint"`
 }
 
@@ -148,7 +147,12 @@ func LoadOrCreate() (*DeviceConfig, string, error) {
 		return cfg, cfgPath, nil
 	}
 
-	if normalizeDefaults(cfg, dataDir) {
+	legacyX25519FieldPresent, err := hasLegacyX25519PathField(cfgPath)
+	if err != nil {
+		return nil, "", err
+	}
+
+	if normalizeDefaults(cfg, dataDir) || legacyX25519FieldPresent {
 		if err := Save(cfgPath, cfg); err != nil {
 			return nil, "", err
 		}
@@ -171,7 +175,6 @@ func defaultConfig(dataDir string) (*DeviceConfig, error) {
 		ListeningPort:         0,
 		Ed25519PrivateKeyPath: filepath.Join(keysDir, "ed25519_private.pem"),
 		Ed25519PublicKeyPath:  filepath.Join(keysDir, "ed25519_public.pem"),
-		X25519PrivateKeyPath:  filepath.Join(keysDir, "x25519_private.pem"),
 		KeyFingerprint:        "",
 	}, nil
 }
@@ -226,12 +229,22 @@ func normalizeDefaults(cfg *DeviceConfig, dataDir string) bool {
 		updated = true
 	}
 
-	if cfg.X25519PrivateKeyPath == "" {
-		cfg.X25519PrivateKeyPath = filepath.Join(keysDir, "x25519_private.pem")
-		updated = true
+	return updated
+}
+
+func hasLegacyX25519PathField(path string) (bool, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("read config for migration: %w", err)
 	}
 
-	return updated
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return false, fmt.Errorf("parse config for migration: %w", err)
+	}
+
+	_, found := fields["x25519_private_key_path"]
+	return found, nil
 }
 
 func normalizePortMode(mode string) string {

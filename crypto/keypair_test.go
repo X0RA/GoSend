@@ -28,22 +28,3 @@ func TestEnsureEd25519KeyPairIsStable(t *testing.T) {
 		t.Fatalf("expected stable public key across runs")
 	}
 }
-
-func TestEnsureX25519PrivateKeyIsStable(t *testing.T) {
-	tempDir := t.TempDir()
-	privatePath := filepath.Join(tempDir, "x25519_private.pem")
-
-	firstPrivate, err := EnsureX25519PrivateKey(privatePath)
-	if err != nil {
-		t.Fatalf("first EnsureX25519PrivateKey failed: %v", err)
-	}
-
-	secondPrivate, err := EnsureX25519PrivateKey(privatePath)
-	if err != nil {
-		t.Fatalf("second EnsureX25519PrivateKey failed: %v", err)
-	}
-
-	if !bytes.Equal(firstPrivate.Bytes(), secondPrivate.Bytes()) {
-		t.Fatalf("expected stable X25519 private key across runs")
-	}
-}

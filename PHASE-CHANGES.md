@@ -65,32 +65,32 @@ This phase addresses how the app handles peer identity over time. The changes pr
 
 When a user accepts a changed peer key during handshake, the pinned key in the `peers` table is not reliably updated. This causes the same trust warning to reappear on the next connection, which trains users to click "trust" reflexively — exactly the opposite of good security behavior.
 
-- [ ] Update the key-change acceptance path in `peer_manager.go` (both the incoming handshake handler and the outbound dial path) so that when the user trusts a new key, the `ed25519_public_key` and `key_fingerprint` columns in the `peers` table are updated immediately via `storage/peers.go`
-- [ ] Create a `key_rotation_events` table in `storage/database.go` with schema migration, containing `peer_device_id`, `old_key_fingerprint`, `new_key_fingerprint`, `decision` (trusted/rejected), and `timestamp`
-- [ ] Write a rotation event to this table on every key-change decision (both trust and reject) for audit purposes
-- [ ] Add a helper in `storage/peers.go` to query recent key rotation events for a given peer, for potential future UI surfacing
-- [ ] Add tests that simulate a key change, verify the DB is updated, and verify no re-prompt occurs on the next connection
+- [x] Update the key-change acceptance path in `peer_manager.go` (both the incoming handshake handler and the outbound dial path) so that when the user trusts a new key, the `ed25519_public_key` and `key_fingerprint` columns in the `peers` table are updated immediately via `storage/peers.go`
+- [x] Create a `key_rotation_events` table in `storage/database.go` with schema migration, containing `peer_device_id`, `old_key_fingerprint`, `new_key_fingerprint`, `decision` (trusted/rejected), and `timestamp`
+- [x] Write a rotation event to this table on every key-change decision (both trust and reject) for audit purposes
+- [x] Add a helper in `storage/peers.go` to query recent key rotation events for a given peer, for potential future UI surfacing
+- [x] Add tests that simulate a key change, verify the DB is updated, and verify no re-prompt occurs on the next connection
 
 ### 2.2 — Remove the Unused Persisted X25519 Private Key
 
 The app generates and stores a persistent X25519 private key file, but the handshake exclusively uses freshly generated ephemeral X25519 keys. This dead key file serves no purpose and could cause confusion during security review. Since the ephemeral-only approach is actually stronger for forward secrecy, the persistent key should be removed rather than incorporated.
 
-- [ ] Remove the `X25519PrivateKeyPath` field from `DeviceConfig` in `config/config.go`
-- [ ] Remove the X25519 key generation and file persistence from first-run setup in `main.go` and `crypto/keypair.go`
-- [ ] Remove the normalization logic for the X25519 path in `config.go`'s `normalizeDefaults`
-- [ ] Update key reset in `ui/settings.go` to no longer regenerate the X25519 persistent key
-- [ ] Add a config migration step that silently ignores the `x25519_private_key_path` field if present in an older `config.json` (backward compatibility for existing users)
-- [ ] Verify handshake still functions correctly since it already uses ephemeral keys generated in `crypto/ecdh.go`
+- [x] Remove the `X25519PrivateKeyPath` field from `DeviceConfig` in `config/config.go`
+- [x] Remove the X25519 key generation and file persistence from first-run setup in `main.go` and `crypto/keypair.go`
+- [x] Remove the normalization logic for the X25519 path in `config.go`'s `normalizeDefaults`
+- [x] Update key reset in `ui/settings.go` to no longer regenerate the X25519 persistent key
+- [x] Add a config migration step that silently ignores the `x25519_private_key_path` field if present in an older `config.json` (backward compatibility for existing users)
+- [x] Verify handshake still functions correctly since it already uses ephemeral keys generated in `crypto/ecdh.go`
 
 ### 2.3 — Structured Security Event Logging
 
 Security-relevant events (key changes, rejected signatures, replay rejections, handshake failures, rate limit triggers) are currently logged to stdout with no structured format or queryable history. For a security-focused app, these events should be durable and reviewable.
 
-- [ ] Create a `security_events` table in `storage/database.go` with columns: `id`, `event_type`, `peer_device_id` (nullable), `details` (JSON text), `severity` (info/warning/critical), `timestamp`
-- [ ] Define a `LogSecurityEvent` method on the store that writes to this table
-- [ ] Instrument key points in `peer_manager.go`: handshake failures, signature verification failures, replay rejections, key rotation decisions, and connection rate limit triggers
-- [ ] Add a `GetSecurityEvents` query method with optional filters (by type, peer, severity, time range) for future UI or export use
-- [ ] Add a retention policy that prunes security events older than a configurable horizon (default 90 days)
+- [x] Create a `security_events` table in `storage/database.go` with columns: `id`, `event_type`, `peer_device_id` (nullable), `details` (JSON text), `severity` (info/warning/critical), `timestamp`
+- [x] Define a `LogSecurityEvent` method on the store that writes to this table
+- [x] Instrument key points in `peer_manager.go`: handshake failures, signature verification failures, replay rejections, key rotation decisions, and connection rate limit triggers
+- [x] Add a `GetSecurityEvents` query method with optional filters (by type, peer, severity, time range) for future UI or export use
+- [x] Add a retention policy that prunes security events older than a configurable horizon (default 90 days)
 
 ---
 

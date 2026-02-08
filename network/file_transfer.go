@@ -410,10 +410,22 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 	}
 	if err := conn.ValidateSequence(request.Sequence); err != nil {
 		m.reportError(fmt.Errorf("rejecting file_request %q: %w", request.FileID, err))
+		if errors.Is(err, ErrSequenceReplay) {
+			m.logSecurityEvent(securityEventTypeReplayRejected, request.FromDeviceID, storage.SecuritySeverityWarning, map[string]any{
+				"message_type": TypeFileRequest,
+				"file_id":      request.FileID,
+				"reason":       err.Error(),
+				"sequence":     request.Sequence,
+			})
+		}
 		return
 	}
 	if err := m.verifyFileRequest(conn, request); err != nil {
 		m.reportError(err)
+		m.logSecurityEvent(securityEventTypeSignatureVerificationFailed, request.FromDeviceID, storage.SecuritySeverityWarning, map[string]any{
+			"message_type": TypeFileRequest,
+			"file_id":      request.FileID,
+		})
 		_ = m.sendErrorMessage(conn, "invalid_signature", "file request signature verification failed", request.FileID)
 		return
 	}
@@ -555,6 +567,10 @@ func (m *PeerManager) handleFileResponse(conn *PeerConnection, response FileResp
 	}
 	if err := m.verifyFileResponse(conn, response); err != nil {
 		m.reportError(err)
+		m.logSecurityEvent(securityEventTypeSignatureVerificationFailed, response.FromDeviceID, storage.SecuritySeverityWarning, map[string]any{
+			"message_type": TypeFileResponse,
+			"file_id":      response.FileID,
+		})
 		_ = m.sendErrorMessage(conn, "invalid_signature", "file response signature verification failed", response.FileID)
 		return
 	}
@@ -669,6 +685,10 @@ func (m *PeerManager) handleFileComplete(conn *PeerConnection, complete FileComp
 	}
 	if err := m.verifyFileComplete(conn, complete); err != nil {
 		m.reportError(err)
+		m.logSecurityEvent(securityEventTypeSignatureVerificationFailed, conn.PeerDeviceID(), storage.SecuritySeverityWarning, map[string]any{
+			"message_type": TypeFileComplete,
+			"file_id":      complete.FileID,
+		})
 		_ = m.sendErrorMessage(conn, "invalid_signature", "file complete signature verification failed", complete.FileID)
 		return
 	}

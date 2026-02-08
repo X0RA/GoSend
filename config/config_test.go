@@ -1,7 +1,9 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -62,7 +64,6 @@ func TestLoadOrCreateNormalizesLegacyPortModeFromExistingPort(t *testing.T) {
 		ListeningPort:         9999,
 		Ed25519PrivateKeyPath: filepath.Join(tempDir, "keys", "ed25519_private.pem"),
 		Ed25519PublicKeyPath:  filepath.Join(tempDir, "keys", "ed25519_public.pem"),
-		X25519PrivateKeyPath:  filepath.Join(tempDir, "keys", "x25519_private.pem"),
 	}
 	if err := Save(cfgPath, legacy); err != nil {
 		t.Fatalf("Save legacy config failed: %v", err)
@@ -77,5 +78,41 @@ func TestLoadOrCreateNormalizesLegacyPortModeFromExistingPort(t *testing.T) {
 	}
 	if cfg.ListeningPort != 9999 {
 		t.Fatalf("expected legacy fixed listening port to be retained, got %d", cfg.ListeningPort)
+	}
+}
+
+func TestLoadOrCreateMigratesLegacyX25519PathField(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("P2P_CHAT_DATA_DIR", tempDir)
+
+	cfgPath := filepath.Join(tempDir, "config.json")
+	if err := EnsureDataDirectories(tempDir); err != nil {
+		t.Fatalf("EnsureDataDirectories failed: %v", err)
+	}
+
+	legacyConfig := `{
+  "device_id": "legacy-device",
+  "device_name": "Legacy Device",
+  "port_mode": "automatic",
+  "listening_port": 0,
+  "ed25519_private_key_path": "` + filepath.Join(tempDir, "keys", "ed25519_private.pem") + `",
+  "ed25519_public_key_path": "` + filepath.Join(tempDir, "keys", "ed25519_public.pem") + `",
+  "x25519_private_key_path": "` + filepath.Join(tempDir, "keys", "x25519_private.pem") + `",
+  "key_fingerprint": ""
+}`
+	if err := os.WriteFile(cfgPath, []byte(legacyConfig), 0o600); err != nil {
+		t.Fatalf("write legacy config failed: %v", err)
+	}
+
+	if _, _, err := LoadOrCreate(); err != nil {
+		t.Fatalf("LoadOrCreate failed: %v", err)
+	}
+
+	updatedRaw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read migrated config failed: %v", err)
+	}
+	if strings.Contains(string(updatedRaw), "x25519_private_key_path") {
+		t.Fatalf("expected x25519_private_key_path to be removed during migration")
 	}
 }

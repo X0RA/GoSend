@@ -22,10 +22,6 @@ func main() {
 		log.Fatalf("startup failed while preparing Ed25519 keypair: %v", err)
 	}
 
-	if _, err := crypto.EnsureX25519PrivateKey(cfg.X25519PrivateKeyPath); err != nil {
-		log.Fatalf("startup failed while preparing X25519 keypair: %v", err)
-	}
-
 	fingerprint := crypto.KeyFingerprint(ed25519PublicKey)
 	if cfg.KeyFingerprint != fingerprint {
 		cfg.KeyFingerprint = fingerprint

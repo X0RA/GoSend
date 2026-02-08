@@ -186,7 +186,13 @@ func (s *Server) handleInboundConn(conn net.Conn) {
 		return
 	}
 
-	if err := evaluatePeerKey(handshake.DeviceID, handshake.Ed25519PublicKey, s.options.KnownPeerKeys, s.options.OnKeyChangeDecision); err != nil {
+	if err := evaluatePeerKey(
+		handshake.DeviceID,
+		handshake.Ed25519PublicKey,
+		s.options.KnownPeerKeys,
+		s.options.KnownPeerKeyLookup,
+		s.options.OnKeyChangeDecision,
+	); err != nil {
 		_ = s.sendError(conn, ErrorMessage{
 			Type:      TypeError,
 			Code:      "key_changed",

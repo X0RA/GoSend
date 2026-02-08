@@ -359,4 +359,3 @@ func peerStatusIndicator(status string) string {
 	}
 	return "○"
 }
-

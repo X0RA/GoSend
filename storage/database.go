@@ -17,6 +17,8 @@ const (
 	DefaultDBFileName = "app.db"
 	// DefaultWALCheckpointInterval controls periodic WAL truncation.
 	DefaultWALCheckpointInterval = 24 * time.Hour
+	// DefaultSecurityEventRetention controls automatic security event pruning.
+	DefaultSecurityEventRetention = 90 * 24 * time.Hour
 )
 
 var migrations = []string{
@@ -76,16 +78,53 @@ ON messages (to_device_id, delivery_status, timestamp_sent);
 CREATE INDEX IF NOT EXISTS idx_seen_message_received_at
 ON seen_message_ids (received_at);
 `,
+	`
+CREATE TABLE IF NOT EXISTS key_rotation_events (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  peer_device_id      TEXT NOT NULL REFERENCES peers(device_id) ON DELETE CASCADE,
+  old_key_fingerprint TEXT NOT NULL,
+  new_key_fingerprint TEXT NOT NULL,
+  decision            TEXT NOT NULL CHECK(decision IN ('trusted','rejected')),
+  timestamp           INTEGER NOT NULL
+);
+`,
+	`
+CREATE INDEX IF NOT EXISTS idx_key_rotation_events_peer_time
+ON key_rotation_events (peer_device_id, timestamp DESC, id DESC);
+`,
+	`
+CREATE TABLE IF NOT EXISTS security_events (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_type     TEXT NOT NULL,
+  peer_device_id TEXT,
+  details        TEXT NOT NULL,
+  severity       TEXT NOT NULL CHECK(severity IN ('info','warning','critical')),
+  timestamp      INTEGER NOT NULL
+);
+`,
+	`
+CREATE INDEX IF NOT EXISTS idx_security_events_time
+ON security_events (timestamp DESC, id DESC);
+`,
+	`
+CREATE INDEX IF NOT EXISTS idx_security_events_type
+ON security_events (event_type, timestamp DESC, id DESC);
+`,
+	`
+CREATE INDEX IF NOT EXISTS idx_security_events_peer
+ON security_events (peer_device_id, timestamp DESC, id DESC);
+`,
 }
 
 // Store is a thin wrapper around a SQLite connection.
 type Store struct {
 	db *sql.DB
 
-	walCheckpointInterval time.Duration
-	walCheckpointStop     chan struct{}
-	walCheckpointWG       sync.WaitGroup
-	closeOnce             sync.Once
+	walCheckpointInterval  time.Duration
+	walCheckpointStop      chan struct{}
+	walCheckpointWG        sync.WaitGroup
+	securityEventRetention time.Duration
+	closeOnce              sync.Once
 }
 
 // Open opens (or creates) app.db under the given data directory and runs migrations.
@@ -117,9 +156,10 @@ func OpenPath(dbPath string) (*Store, error) {
 	}
 
 	store := &Store{
-		db:                    db,
-		walCheckpointInterval: DefaultWALCheckpointInterval,
-		walCheckpointStop:     make(chan struct{}),
+		db:                     db,
+		walCheckpointInterval:  DefaultWALCheckpointInterval,
+		walCheckpointStop:      make(chan struct{}),
+		securityEventRetention: DefaultSecurityEventRetention,
 	}
 	if err := store.enableWALMode(); err != nil {
 		_ = db.Close()

@@ -23,6 +23,7 @@ type KeyChangeDecisionFunc func(peerDeviceID, existingPublicKeyBase64, receivedP
 type HandshakeOptions struct {
 	Identity            LocalIdentity
 	KnownPeerKeys       map[string]string
+	KnownPeerKeyLookup  func(peerDeviceID string) string
 	OnKeyChangeDecision KeyChangeDecisionFunc
 
 	ConnectionTimeout time.Duration
@@ -125,12 +126,14 @@ func deriveRekeySessionKey(localEphemeralPrivateKey *ecdh.PrivateKey, peerX25519
 	return crypto.DeriveSessionKeyWithContext(sharedSecret, localDeviceID, peerDeviceID, rekeyContext)
 }
 
-func evaluatePeerKey(deviceID, receivedBase64 string, known map[string]string, decision KeyChangeDecisionFunc) error {
-	if known == nil {
-		return nil
+func evaluatePeerKey(deviceID, receivedBase64 string, known map[string]string, lookup func(peerDeviceID string) string, decision KeyChangeDecisionFunc) error {
+	existing := ""
+	if lookup != nil {
+		existing = lookup(deviceID)
 	}
-
-	existing := known[deviceID]
+	if existing == "" && known != nil {
+		existing = known[deviceID]
+	}
 	if existing == "" || existing == receivedBase64 {
 		return nil
 	}

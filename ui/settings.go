@@ -147,16 +147,6 @@ func (c *controller) resetKeys(fingerprintLabel *widget.Label) {
 		return
 	}
 
-	x25519PrivateKey, err := appcrypto.GenerateX25519PrivateKey()
-	if err != nil {
-		c.setStatus(fmt.Sprintf("Generate X25519 key failed: %v", err))
-		return
-	}
-	if err := appcrypto.SaveX25519PrivateKey(c.cfg.X25519PrivateKeyPath, x25519PrivateKey); err != nil {
-		c.setStatus(fmt.Sprintf("Save X25519 key failed: %v", err))
-		return
-	}
-
 	c.cfg.KeyFingerprint = appcrypto.KeyFingerprint(publicKey)
 	if err := config.Save(c.cfgPath, c.cfg); err != nil {
 		c.setStatus(fmt.Sprintf("Save config failed: %v", err))

@@ -227,6 +227,126 @@ func (s *Store) UpdatePeerEndpoint(deviceID, ip string, port int, lastSeenTimest
 	return nil
 }
 
+// UpdatePeerIdentity updates the pinned Ed25519 public key and fingerprint for a peer.
+func (s *Store) UpdatePeerIdentity(deviceID, ed25519PublicKey, keyFingerprint string) error {
+	if deviceID == "" {
+		return errors.New("device_id is required")
+	}
+	if ed25519PublicKey == "" {
+		return errors.New("ed25519_public_key is required")
+	}
+	if keyFingerprint == "" {
+		return errors.New("key_fingerprint is required")
+	}
+
+	res, err := s.db.Exec(
+		`UPDATE peers
+		SET ed25519_public_key = ?,
+		    key_fingerprint = ?
+		WHERE device_id = ?`,
+		ed25519PublicKey,
+		keyFingerprint,
+		deviceID,
+	)
+	if err != nil {
+		return fmt.Errorf("update peer identity %q: %w", deviceID, err)
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read rows affected for update peer identity %q: %w", deviceID, err)
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+
+	return nil
+}
+
+// RecordKeyRotationEvent persists one trusted/rejected key-change decision.
+func (s *Store) RecordKeyRotationEvent(event KeyRotationEvent) error {
+	if event.PeerDeviceID == "" {
+		return errors.New("peer_device_id is required")
+	}
+	if event.OldKeyFingerprint == "" {
+		return errors.New("old_key_fingerprint is required")
+	}
+	if event.NewKeyFingerprint == "" {
+		return errors.New("new_key_fingerprint is required")
+	}
+	if err := validateKeyRotationDecision(event.Decision); err != nil {
+		return err
+	}
+	if event.Timestamp == 0 {
+		event.Timestamp = nowUnixMilli()
+	}
+
+	_, err := s.db.Exec(
+		`INSERT INTO key_rotation_events (
+			peer_device_id,
+			old_key_fingerprint,
+			new_key_fingerprint,
+			decision,
+			timestamp
+		) VALUES (?, ?, ?, ?, ?)`,
+		event.PeerDeviceID,
+		event.OldKeyFingerprint,
+		event.NewKeyFingerprint,
+		event.Decision,
+		event.Timestamp,
+	)
+	if err != nil {
+		return fmt.Errorf("insert key rotation event for peer %q: %w", event.PeerDeviceID, err)
+	}
+
+	return nil
+}
+
+// GetRecentKeyRotationEvents returns key-rotation history for one peer, newest first.
+func (s *Store) GetRecentKeyRotationEvents(peerDeviceID string, limit int) ([]KeyRotationEvent, error) {
+	if peerDeviceID == "" {
+		return nil, errors.New("peer_device_id is required")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+
+	rows, err := s.db.Query(
+		`SELECT
+			id,
+			peer_device_id,
+			old_key_fingerprint,
+			new_key_fingerprint,
+			decision,
+			timestamp
+		FROM key_rotation_events
+		WHERE peer_device_id = ?
+		ORDER BY timestamp DESC, id DESC
+		LIMIT ?`,
+		peerDeviceID,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get key rotation events for peer %q: %w", peerDeviceID, err)
+	}
+	defer rows.Close()
+
+	events := make([]KeyRotationEvent, 0)
+	for rows.Next() {
+		event, err := scanKeyRotationEvent(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan key rotation event row: %w", err)
+		}
+		events = append(events, *event)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate key rotation event rows: %w", err)
+	}
+
+	return events, nil
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }
@@ -258,4 +378,19 @@ func scanPeer(row scanner) (*Peer, error) {
 	peer.LastKnownPort = intPtrFromNullInt64(lastKnownPort)
 
 	return &peer, nil
+}
+
+func scanKeyRotationEvent(row scanner) (*KeyRotationEvent, error) {
+	var event KeyRotationEvent
+	if err := row.Scan(
+		&event.ID,
+		&event.PeerDeviceID,
+		&event.OldKeyFingerprint,
+		&event.NewKeyFingerprint,
+		&event.Decision,
+		&event.Timestamp,
+	); err != nil {
+		return nil, err
+	}
+	return &event, nil
 }

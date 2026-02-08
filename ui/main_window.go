@@ -92,12 +92,12 @@ type controller struct {
 	statusMu       sync.RWMutex
 	statusMessage  string
 	hoverHint      string
-	tooltipMu       sync.Mutex
-	tooltipTimer    *time.Timer
-	tooltipOverlay  fyne.CanvasObject
-	tooltipCanvas   fyne.Canvas
-	tooltipTarget   fyne.CanvasObject
-	tooltipText     string
+	tooltipMu      sync.Mutex
+	tooltipTimer   *time.Timer
+	tooltipOverlay fyne.CanvasObject
+	tooltipCanvas  fyne.Canvas
+	tooltipTarget  fyne.CanvasObject
+	tooltipText    string
 
 	activeListenPort int
 }

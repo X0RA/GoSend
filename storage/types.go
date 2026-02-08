@@ -40,6 +40,22 @@ const (
 	transferStatusFailed   = "failed"
 )
 
+const (
+	// KeyRotationDecisionTrusted means a presented replacement key was accepted.
+	KeyRotationDecisionTrusted = "trusted"
+	// KeyRotationDecisionRejected means a presented replacement key was rejected.
+	KeyRotationDecisionRejected = "rejected"
+)
+
+const (
+	// SecuritySeverityInfo indicates informational security event context.
+	SecuritySeverityInfo = "info"
+	// SecuritySeverityWarning indicates potentially suspicious behavior.
+	SecuritySeverityWarning = "warning"
+	// SecuritySeverityCritical indicates serious security failures.
+	SecuritySeverityCritical = "critical"
+)
+
 // Peer is the SQLite representation of a known remote device.
 type Peer struct {
 	DeviceID          string
@@ -82,6 +98,37 @@ type FileMetadata struct {
 	TransferStatus    string
 }
 
+// KeyRotationEvent tracks one trust/reject decision for a peer key change.
+type KeyRotationEvent struct {
+	ID                int64
+	PeerDeviceID      string
+	OldKeyFingerprint string
+	NewKeyFingerprint string
+	Decision          string
+	Timestamp         int64
+}
+
+// SecurityEvent stores structured security-relevant runtime events.
+type SecurityEvent struct {
+	ID           int64
+	EventType    string
+	PeerDeviceID *string
+	Details      string
+	Severity     string
+	Timestamp    int64
+}
+
+// SecurityEventFilter narrows GetSecurityEvents query results.
+type SecurityEventFilter struct {
+	EventType     string
+	PeerDeviceID  string
+	Severity      string
+	FromTimestamp *int64
+	ToTimestamp   *int64
+	Limit         int
+	Offset        int
+}
+
 func validatePeerStatus(status string) error {
 	switch status {
 	case peerStatusOnline, peerStatusOffline, peerStatusPending, peerStatusBlocked:
@@ -115,6 +162,24 @@ func validateTransferStatus(status string) error {
 		return nil
 	default:
 		return fmt.Errorf("invalid transfer status %q", status)
+	}
+}
+
+func validateKeyRotationDecision(decision string) error {
+	switch decision {
+	case KeyRotationDecisionTrusted, KeyRotationDecisionRejected:
+		return nil
+	default:
+		return fmt.Errorf("invalid key rotation decision %q", decision)
+	}
+}
+
+func validateSecuritySeverity(severity string) error {
+	switch severity {
+	case SecuritySeverityInfo, SecuritySeverityWarning, SecuritySeverityCritical:
+		return nil
+	default:
+		return fmt.Errorf("invalid security event severity %q", severity)
 	}
 }
 

@@ -97,3 +97,67 @@ func TestPeerCRUD(t *testing.T) {
 		t.Fatalf("expected ErrNotFound after RemovePeer, got %v", err)
 	}
 }
+
+func TestUpdatePeerIdentityAndKeyRotationEvents(t *testing.T) {
+	store := newTestStore(t)
+
+	now := nowUnixMilli()
+	if err := store.AddPeer(Peer{
+		DeviceID:         "peer-identity",
+		DeviceName:       "Identity Peer",
+		Ed25519PublicKey: "old-key",
+		KeyFingerprint:   "old-fingerprint",
+		Status:           peerStatusOnline,
+		AddedTimestamp:   now,
+	}); err != nil {
+		t.Fatalf("AddPeer failed: %v", err)
+	}
+
+	if err := store.UpdatePeerIdentity("peer-identity", "new-key", "new-fingerprint"); err != nil {
+		t.Fatalf("UpdatePeerIdentity failed: %v", err)
+	}
+
+	updated, err := store.GetPeer("peer-identity")
+	if err != nil {
+		t.Fatalf("GetPeer failed: %v", err)
+	}
+	if updated.Ed25519PublicKey != "new-key" {
+		t.Fatalf("unexpected updated public key: got %q", updated.Ed25519PublicKey)
+	}
+	if updated.KeyFingerprint != "new-fingerprint" {
+		t.Fatalf("unexpected updated fingerprint: got %q", updated.KeyFingerprint)
+	}
+
+	if err := store.RecordKeyRotationEvent(KeyRotationEvent{
+		PeerDeviceID:      "peer-identity",
+		OldKeyFingerprint: "old-fingerprint",
+		NewKeyFingerprint: "new-fingerprint",
+		Decision:          KeyRotationDecisionTrusted,
+		Timestamp:         now + 1,
+	}); err != nil {
+		t.Fatalf("RecordKeyRotationEvent trusted failed: %v", err)
+	}
+	if err := store.RecordKeyRotationEvent(KeyRotationEvent{
+		PeerDeviceID:      "peer-identity",
+		OldKeyFingerprint: "new-fingerprint",
+		NewKeyFingerprint: "bad-fingerprint",
+		Decision:          KeyRotationDecisionRejected,
+		Timestamp:         now + 2,
+	}); err != nil {
+		t.Fatalf("RecordKeyRotationEvent rejected failed: %v", err)
+	}
+
+	events, err := store.GetRecentKeyRotationEvents("peer-identity", 10)
+	if err != nil {
+		t.Fatalf("GetRecentKeyRotationEvents failed: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 key rotation events, got %d", len(events))
+	}
+	if events[0].Decision != KeyRotationDecisionRejected {
+		t.Fatalf("expected newest event decision %q, got %q", KeyRotationDecisionRejected, events[0].Decision)
+	}
+	if events[1].Decision != KeyRotationDecisionTrusted {
+		t.Fatalf("expected older event decision %q, got %q", KeyRotationDecisionTrusted, events[1].Decision)
+	}
+}

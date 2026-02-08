@@ -127,7 +127,13 @@ func Dial(address string, options HandshakeOptions) (*PeerConnection, error) {
 		return nil, fmt.Errorf("verify handshake response: %w", err)
 	}
 
-	if err := evaluatePeerKey(response.DeviceID, response.Ed25519PublicKey, opts.KnownPeerKeys, opts.OnKeyChangeDecision); err != nil {
+	if err := evaluatePeerKey(
+		response.DeviceID,
+		response.Ed25519PublicKey,
+		opts.KnownPeerKeys,
+		opts.KnownPeerKeyLookup,
+		opts.OnKeyChangeDecision,
+	); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
