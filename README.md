@@ -12,6 +12,8 @@ GoSend is a local-network peer-to-peer desktop app built in Go. It uses mDNS for
 - Challenge-response handshake (`handshake_challenge`, `handshake`, `handshake_response`) with Ed25519 identities and ephemeral X25519 keys.
 - Session key derivation via HKDF-SHA256 using salt `p2pchat-session-v1`, sorted device IDs, and the per-connection handshake challenge nonce.
 - Transport-level encryption for all post-handshake frames using AES-256-GCM (`secure_frame`).
+- Automatic signed rekey exchange (`rekey_request`, `rekey_response`) after 1 hour or 1 GiB sent, with secure-frame epoch tagging and previous-epoch decrypt window during transition.
+- Separate frame limits: `64 KB` for control frames and `10 MB` for data frames.
 - Peer lifecycle flows: add request/response, remove, disconnect, reconnect workers, and discovery-driven reconnect.
 - Peers are only persisted after an accepted `peer_add_request`; a raw connection/handshake alone does not auto-add a peer.
 - Encrypted + signed text messages with delivery status tracking (`pending`, `sent`, `delivered`, `failed`).
@@ -155,12 +157,13 @@ Transport:
 
 - TCP listener binds `0.0.0.0:<port>`; port from config (automatic or fixed).
 - Length-prefixed frames: `[4-byte big-endian length][JSON payload]`.
-- Max frame payload: `10 MB`; frame read timeout default `30s`.
+- Control frame payload limit: `64 KB`; data frame payload limit: `10 MB`; frame read timeout default `30s`.
 
 Connection states and keepalive:
 
 - States: `CONNECTING`, `READY`, `IDLE`, `DISCONNECTING`, `DISCONNECTED`.
 - Idle keepalive ping every `60s`; pong timeout `15s`. Auto-respond-to-ping is configurable in handshake options.
+- Automatic session rekey trigger: every `1h` or `1 GiB` sent on a connection (whichever occurs first).
 
 Handshake flow:
 
@@ -173,14 +176,14 @@ Handshake flow:
 Cryptography:
 
 - **Identity**: Ed25519 long-term signing key; private key PEM `0600`, public PEM `0644`. Fingerprint = first 16 bytes of SHA-256(Ed25519 public key), hex.
-- **Session key**: Ephemeral X25519 keypairs per connection; shared secret via ECDH; session key = HKDF-SHA256 over shared secret with salt `p2pchat-session-v1`, info = sorted device IDs (`minID|maxID`) + handshake challenge nonce, 32-byte output.
-- **Encryption**: After handshake, every payload is in `secure_frame` (base64 nonce + ciphertext). AES-256-GCM with random nonce per encryption; plaintext is the JSON protocol message. File chunk payloads (`file_data`) are encrypted with the session key and then wrapped in `secure_frame` again.
+- **Session key**: Ephemeral X25519 keypairs per connection; shared secret via ECDH; initial session key = HKDF-SHA256 over shared secret with salt `p2pchat-session-v1`, info = sorted device IDs (`minID|maxID`) + handshake challenge nonce. Rekeyed session keys use signed ephemeral exchange context (`rekey|<epoch>`), 32-byte output.
+- **Encryption**: After handshake, every payload is in `secure_frame` (epoch + base64 nonce + ciphertext). AES-256-GCM with random nonce per encryption; plaintext is the JSON protocol message. File chunk payloads (`file_data`) are encrypted with the session key and then wrapped in `secure_frame` again.
 - **Trust**: TOFU with pinned Ed25519 key in peer record. On key mismatch, handshake is blocked until user trust/reject; if user trusts, session can proceed. Persistent key pin update when user trusts a new key is not fully modeled yet.
 - **X25519**: A persisted X25519 private key file is ensured in config, but the handshake uses only ephemeral X25519 keypairs per session.
 
 Message/control integrity:
 
-- Signed (Ed25519) and verified: handshake messages, `peer_add_request`, `peer_add_response`, `peer_remove`, `message`, `ack`, `file_request`, `file_response`, `file_complete`.
+- Signed (Ed25519) and verified: handshake messages, `peer_add_request`, `peer_add_response`, `peer_remove`, `message`, `ack`, `rekey_request`, `rekey_response`, `file_request`, `file_response`, `file_complete`.
 - `file_response` validation requires signature + `from_device_id` sender binding for chunk ack/nack and request responses.
 - Replay/tamper defenses: per-connection sequence numbers, timestamp skew ±5 minutes, persistent `seen_message_ids` dedupe.
 
@@ -254,7 +257,7 @@ Completion/failure:
 
 ## SQLite Schema and Persistence
 
-Persistence uses `github.com/mattn/go-sqlite3` with a single DB (`app.db`) under the app data directory. DSN enables foreign keys (`_foreign_keys=on`); busy timeout `5000ms`. Schema migrations are versioned with `PRAGMA user_version`.
+Persistence uses `github.com/mattn/go-sqlite3` with a single DB (`app.db`) under the app data directory. DSN enables foreign keys (`_foreign_keys=on`); busy timeout `5000ms`. The database is opened in WAL mode (`PRAGMA journal_mode=WAL`) with startup checkpointing (`PRAGMA wal_checkpoint(TRUNCATE)`) and a periodic 24-hour checkpoint loop. Schema migrations are versioned with `PRAGMA user_version`.
 
 Tables store: **peers** — identity, pinned Ed25519 public key, fingerprint, status, timestamps, last known endpoint. **messages** — content, content type, sent/received timestamps, read flag, delivery status, signature. **files** — file IDs, sender/receiver, filename/type/size/path/checksum, transfer status. **seen_message_ids** — replay defense. Status enums: peer `online`/`offline`/`pending`/`blocked`; delivery `pending`/`sent`/`delivered`/`failed`; file `pending`/`accepted`/`rejected`/`complete`/`failed`. Updates in practice: peer add accepted → peer row created/updated to `online`; disconnect → `offline`; message sent → `sent`, after ACK → `delivered`; offline messages stored as `pending` and drained on reconnect; file request/accept/reject/complete update `files.transfer_status`; received message IDs go into `seen_message_ids`. Pending queue prune: messages older than 7 days marked `failed`. Seen-ID table can be pruned by timestamp (API in storage).
 
@@ -481,15 +484,17 @@ Note: runtime logic currently uses `storage` structs directly; `models` package 
 
 ### `network/`
 
-- `network/protocol.go`: Protocol constants/types, JSON helpers, frame read/write helpers, handshake build/sign/verify utilities.
+- `network/protocol.go`: Protocol constants/types, JSON helpers, frame read/write helpers (control/data limits), handshake/rekey message helpers.
 - `network/protocol_test.go`: Frame round-trip and oversized frame rejection tests.
-- `network/connection.go`: Encrypted framed peer connection, connection states, keepalive ping/pong, sequence tracking, read/send loops.
+- `network/connection.go`: Encrypted framed peer connection, connection states, keepalive ping/pong, control-frame gating, sequence tracking, rekey triggers, and epoch-based key rotation.
 - `network/handshake.go`: Handshake options/defaults, key-change decision flow, and session-key derivation helpers.
 - `network/client.go`: Outbound dial + handshake + session setup.
 - `network/server.go`: Listener accept loop and inbound handshake/session setup.
 - `network/peer_manager.go`: High-level peer lifecycle manager: add/approve/remove/disconnect, message send/receive, queue drain/limits, reconnect workers, discovery-triggered reconnect.
 - `network/file_transfer.go`: File transfer protocol implementation: request/response, chunk send/ack/nack, resume, checksum verification, status persistence, progress callbacks.
-- `network/integration_test.go`: Handshake/session/keepalive/ping-timeout/key-change decision integration tests.
+- `network/integration_test.go`: Handshake/session/keepalive/ping-timeout/key-change decision, replay, and control-frame-limit integration tests.
+- `network/connection_test.go`: Epoch transition decrypt-window tests for rekey key rotation.
+- `network/rekey_test.go`: Rekey trigger/rekey-under-load/concurrent-transfer/failure-handling tests.
 - `network/peer_manager_test.go`: Add/remove/restart/simultaneous-add/spoof-protection/pending-cleanup behavior tests.
 - `network/messaging_test.go`: Delivery updates, offline queue drain, replay rejection, sequence rejection, signature tamper rejection, spoofed ack rejection tests.
 - `network/file_transfer_test.go`: Accepted/rejected transfer flows, reconnect resume, and checksum mismatch failure tests.

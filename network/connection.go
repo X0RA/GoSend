@@ -24,6 +24,11 @@ var (
 	ErrInvalidSecureFrame = errors.New("network: invalid secure frame")
 )
 
+const (
+	defaultRekeyInterval   = time.Hour
+	defaultRekeyAfterBytes = uint64(1 << 30) // 1 GiB
+)
+
 // ConnectionState represents the lifecycle state of one peer connection.
 type ConnectionState string
 
@@ -39,6 +44,7 @@ const secureFrameType = "secure_frame"
 
 type secureFrame struct {
 	Type       string `json:"type"`
+	Epoch      uint64 `json:"epoch,omitempty"`
 	Nonce      string `json:"nonce"`
 	Ciphertext string `json:"ciphertext"`
 }
@@ -53,13 +59,21 @@ type ConnectionOptions struct {
 	KeepAliveTimeout  time.Duration
 	FrameReadTimeout  time.Duration
 	AutoRespondPing   bool
+	RekeyInterval     time.Duration
+	RekeyAfterBytes   uint64
+	OnRekeyNeeded     func(*PeerConnection)
 }
 
 // PeerConnection manages a stateful framed TCP session.
 type PeerConnection struct {
 	conn net.Conn
 
-	sessionKey []byte
+	sessionMu            sync.RWMutex
+	sessionKey           []byte
+	sessionEpoch         uint64
+	previousSessionKey   []byte
+	previousSessionEpoch uint64
+	hasPreviousSession   bool
 
 	localDeviceID  string
 	peerDeviceID   string
@@ -79,12 +93,16 @@ type PeerConnection struct {
 	waitingPong  bool
 	pongDeadline time.Time
 
-	lastActivity atomic.Int64
+	lastActivity    atomic.Int64
+	lastRekeyAt     atomic.Int64
+	bytesSinceRekey atomic.Uint64
 
 	keepAliveInterval time.Duration
 	keepAliveTimeout  time.Duration
 	frameReadTimeout  time.Duration
 	autoRespondPing   bool
+	rekeyInterval     time.Duration
+	rekeyAfterBytes   uint64
 
 	inbound chan []byte
 
@@ -93,6 +111,10 @@ type PeerConnection struct {
 
 	errMu    sync.RWMutex
 	closeErr error
+
+	rekeyStateMu    sync.Mutex
+	rekeyInProgress bool
+	onRekeyNeeded   func(*PeerConnection)
 }
 
 func newPeerConnection(conn net.Conn, sessionKey []byte, options ConnectionOptions) *PeerConnection {
@@ -110,10 +132,19 @@ func newPeerConnection(conn net.Conn, sessionKey []byte, options ConnectionOptio
 	if readTimeout <= 0 {
 		readTimeout = DefaultFrameReadTimeout
 	}
+	rekeyInterval := options.RekeyInterval
+	if rekeyInterval <= 0 {
+		rekeyInterval = defaultRekeyInterval
+	}
+	rekeyAfterBytes := options.RekeyAfterBytes
+	if rekeyAfterBytes == 0 {
+		rekeyAfterBytes = defaultRekeyAfterBytes
+	}
 
 	pc := &PeerConnection{
 		conn:              conn,
 		sessionKey:        append([]byte(nil), sessionKey...),
+		sessionEpoch:      0,
 		localDeviceID:     options.LocalDeviceID,
 		peerDeviceID:      options.PeerDeviceID,
 		peerDeviceName:    options.PeerDeviceName,
@@ -122,12 +153,16 @@ func newPeerConnection(conn net.Conn, sessionKey []byte, options ConnectionOptio
 		keepAliveTimeout:  timeout,
 		frameReadTimeout:  readTimeout,
 		autoRespondPing:   options.AutoRespondPing,
+		rekeyInterval:     rekeyInterval,
+		rekeyAfterBytes:   rekeyAfterBytes,
 		inbound:           make(chan []byte, 64),
 		closed:            make(chan struct{}),
 		state:             StateConnecting,
+		onRekeyNeeded:     options.OnRekeyNeeded,
 	}
 
 	pc.touchActivity()
+	pc.lastRekeyAt.Store(time.Now().UnixNano())
 	pc.setState(StateReady)
 	go pc.readLoop()
 	go pc.keepAliveLoop()
@@ -156,7 +191,16 @@ func (pc *PeerConnection) LastError() error {
 
 // SessionKey returns a copy of the negotiated session key.
 func (pc *PeerConnection) SessionKey() []byte {
+	pc.sessionMu.RLock()
+	defer pc.sessionMu.RUnlock()
 	return append([]byte(nil), pc.sessionKey...)
+}
+
+// SessionEpoch returns the current secure-frame epoch.
+func (pc *PeerConnection) SessionEpoch() uint64 {
+	pc.sessionMu.RLock()
+	defer pc.sessionMu.RUnlock()
+	return pc.sessionEpoch
 }
 
 // PeerDeviceID returns the remote device ID associated with this connection.
@@ -230,9 +274,49 @@ func (pc *PeerConnection) SendRaw(payload []byte) error {
 	}
 
 	pc.touchActivity()
+	pc.bytesSinceRekey.Add(uint64(len(payload)))
+	pc.triggerRekeyIfNeeded()
 	if msgType, err := DecodeMessageType(payload); err == nil && msgType != TypePing && msgType != TypePong {
 		pc.setState(StateReady)
 	}
+	return nil
+}
+
+// SetRekeyNeededCallback sets the callback invoked when this connection reaches a rekey threshold.
+func (pc *PeerConnection) SetRekeyNeededCallback(callback func(*PeerConnection)) {
+	pc.rekeyStateMu.Lock()
+	pc.onRekeyNeeded = callback
+	pc.rekeyStateMu.Unlock()
+}
+
+// RotateSessionKey atomically switches the connection to a newly derived session key.
+func (pc *PeerConnection) RotateSessionKey(newKey []byte, epoch uint64) error {
+	if len(newKey) == 0 {
+		return errors.New("rekey: new session key is required")
+	}
+
+	pc.sessionMu.Lock()
+	currentEpoch := pc.sessionEpoch
+	if epoch <= currentEpoch {
+		pc.sessionMu.Unlock()
+		return fmt.Errorf("rekey: stale epoch %d (current %d)", epoch, currentEpoch)
+	}
+	if epoch != currentEpoch+1 {
+		pc.sessionMu.Unlock()
+		return fmt.Errorf("rekey: unexpected epoch %d (expected %d)", epoch, currentEpoch+1)
+	}
+
+	pc.previousSessionKey = append([]byte(nil), pc.sessionKey...)
+	pc.previousSessionEpoch = currentEpoch
+	pc.hasPreviousSession = len(pc.previousSessionKey) > 0
+
+	pc.sessionKey = append([]byte(nil), newKey...)
+	pc.sessionEpoch = epoch
+	pc.sessionMu.Unlock()
+
+	pc.bytesSinceRekey.Store(0)
+	pc.lastRekeyAt.Store(time.Now().UnixNano())
+	pc.setRekeyInProgress(false)
 	return nil
 }
 
@@ -309,11 +393,19 @@ func (pc *PeerConnection) readLoop() {
 
 		msgType, err := DecodeMessageType(payload)
 		if err != nil {
+			if len(payload) > MaxControlFrameSize {
+				pc.closeWithError(ErrFrameTooLarge)
+				return
+			}
 			select {
 			case pc.inbound <- payload:
 			case <-pc.closed:
 			}
 			continue
+		}
+		if msgType != TypeFileData && len(payload) > MaxControlFrameSize {
+			pc.closeWithError(ErrFrameTooLarge)
+			return
 		}
 
 		switch msgType {
@@ -358,6 +450,7 @@ func (pc *PeerConnection) keepAliveLoop() {
 			if pc.State() == StateDisconnected {
 				return
 			}
+			pc.triggerRekeyIfNeeded()
 
 			if pc.waitingPongExpired() {
 				pc.closeWithError(ErrPongTimeout)
@@ -429,6 +522,7 @@ func (pc *PeerConnection) closeWithError(err error) {
 		pc.errMu.Lock()
 		pc.closeErr = err
 		pc.errMu.Unlock()
+		pc.setRekeyInProgress(false)
 
 		pc.setState(StateDisconnected)
 		_ = pc.conn.Close()
@@ -453,12 +547,18 @@ func decodeHandshakeResponse(payload []byte) (HandshakeResponse, error) {
 }
 
 func (pc *PeerConnection) encryptPayload(payload []byte) ([]byte, error) {
-	ciphertext, nonce, err := appcrypto.Encrypt(pc.sessionKey, payload)
+	pc.sessionMu.RLock()
+	key := append([]byte(nil), pc.sessionKey...)
+	epoch := pc.sessionEpoch
+	pc.sessionMu.RUnlock()
+
+	ciphertext, nonce, err := appcrypto.Encrypt(key, payload)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt payload: %w", err)
 	}
 	frame := secureFrame{
 		Type:       secureFrameType,
+		Epoch:      epoch,
 		Nonce:      base64.StdEncoding.EncodeToString(nonce),
 		Ciphertext: base64.StdEncoding.EncodeToString(ciphertext),
 	}
@@ -482,9 +582,54 @@ func (pc *PeerConnection) decryptPayload(framePayload []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: decode ciphertext: %v", ErrInvalidSecureFrame, err)
 	}
-	plaintext, err := appcrypto.Decrypt(pc.sessionKey, nonce, ciphertext)
+
+	pc.sessionMu.RLock()
+	currentKey := append([]byte(nil), pc.sessionKey...)
+	currentEpoch := pc.sessionEpoch
+	previousKey := append([]byte(nil), pc.previousSessionKey...)
+	previousEpoch := pc.previousSessionEpoch
+	hasPrevious := pc.hasPreviousSession
+	pc.sessionMu.RUnlock()
+
+	key := currentKey
+	switch {
+	case frame.Epoch == currentEpoch:
+	case hasPrevious && frame.Epoch == previousEpoch:
+		key = previousKey
+	case frame.Epoch == 0 && currentEpoch == 0:
+	default:
+		return nil, fmt.Errorf("%w: unsupported epoch %d", ErrInvalidSecureFrame, frame.Epoch)
+	}
+
+	plaintext, err := appcrypto.Decrypt(key, nonce, ciphertext)
 	if err != nil {
 		return nil, err
 	}
 	return plaintext, nil
+}
+
+func (pc *PeerConnection) triggerRekeyIfNeeded() {
+	lastRekeyAt := pc.lastRekeyAt.Load()
+	rekeyDueByTime := time.Since(time.Unix(0, lastRekeyAt)) >= pc.rekeyInterval
+	rekeyDueByBytes := pc.bytesSinceRekey.Load() >= pc.rekeyAfterBytes
+	if !rekeyDueByTime && !rekeyDueByBytes {
+		return
+	}
+
+	pc.rekeyStateMu.Lock()
+	if pc.rekeyInProgress || pc.onRekeyNeeded == nil {
+		pc.rekeyStateMu.Unlock()
+		return
+	}
+	pc.rekeyInProgress = true
+	callback := pc.onRekeyNeeded
+	pc.rekeyStateMu.Unlock()
+
+	go callback(pc)
+}
+
+func (pc *PeerConnection) setRekeyInProgress(inProgress bool) {
+	pc.rekeyStateMu.Lock()
+	pc.rekeyInProgress = inProgress
+	pc.rekeyStateMu.Unlock()
 }

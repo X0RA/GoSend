@@ -140,7 +140,7 @@ func (s *Server) handleInboundConn(conn net.Conn) {
 		return
 	}
 
-	handshakePayload, err := ReadFrameWithTimeout(conn, s.options.ConnectionTimeout)
+	handshakePayload, err := ReadControlFrameWithTimeout(conn, s.options.ConnectionTimeout)
 	if err != nil {
 		s.reportError(fmt.Errorf("read handshake: %w", err))
 		return
@@ -236,6 +236,8 @@ func (s *Server) handleInboundConn(conn net.Conn) {
 		KeepAliveInterval: s.options.KeepAliveInterval,
 		KeepAliveTimeout:  s.options.KeepAliveTimeout,
 		FrameReadTimeout:  s.options.FrameReadTimeout,
+		RekeyInterval:     s.options.RekeyInterval,
+		RekeyAfterBytes:   s.options.RekeyAfterBytes,
 		AutoRespondPing:   s.options.autoRespondPingEnabled(),
 	})
 

@@ -37,10 +37,11 @@ const (
 	maxQueuedMessages     = 500
 	maxQueuedBytesPerPeer = 50 * 1024 * 1024
 
-	defaultFileChunkSize       = 256 * 1024
-	defaultFileResponseTimout  = 10 * time.Second
-	defaultFileCompleteTimeout = 5 * time.Minute // receiver may need time to checksum/rename large files
-	defaultFileChunkRetries    = 3
+	defaultFileChunkSize        = 256 * 1024
+	defaultFileResponseTimout   = 10 * time.Second
+	defaultFileCompleteTimeout  = 5 * time.Minute // receiver may need time to checksum/rename large files
+	defaultFileChunkRetries     = 3
+	defaultRekeyResponseTimeout = 15 * time.Second
 )
 
 var defaultReconnectBackoff = []time.Duration{
@@ -91,11 +92,14 @@ type PeerManagerOptions struct {
 	ReconnectBackoff   []time.Duration
 	AddResponseTimeout time.Duration
 
-	ConnectionTimeout time.Duration
-	KeepAliveInterval time.Duration
-	KeepAliveTimeout  time.Duration
-	FrameReadTimeout  time.Duration
-	AutoRespondPing   *bool
+	ConnectionTimeout    time.Duration
+	KeepAliveInterval    time.Duration
+	KeepAliveTimeout     time.Duration
+	FrameReadTimeout     time.Duration
+	RekeyInterval        time.Duration
+	RekeyAfterBytes      uint64
+	RekeyResponseTimeout time.Duration
+	AutoRespondPing      *bool
 
 	OnMessageReceived func(storage.Message)
 	OnQueueOverflow   func(peerDeviceID string, droppedCount int)
@@ -149,7 +153,15 @@ type PeerManager struct {
 	inboundFileTransfers   map[string]*inboundFileTransfer
 	outboundFileEventChans map[string]chan fileTransferEvent
 
+	rekeyMu             sync.Mutex
+	pendingRekeyWaiters map[string]chan rekeyWaitResult
+
 	errors chan error
+}
+
+type rekeyWaitResult struct {
+	Response RekeyResponse
+	Err      error
 }
 
 // NewPeerManager creates a peer manager with validated configuration.
@@ -187,6 +199,9 @@ func NewPeerManager(options PeerManagerOptions) (*PeerManager, error) {
 	if options.MaxChunkRetries <= 0 {
 		options.MaxChunkRetries = defaultFileChunkRetries
 	}
+	if options.RekeyResponseTimeout <= 0 {
+		options.RekeyResponseTimeout = defaultRekeyResponseTimeout
+	}
 	if options.FilesDir == "" {
 		options.FilesDir = "./files"
 	}
@@ -205,6 +220,7 @@ func NewPeerManager(options PeerManagerOptions) (*PeerManager, error) {
 		outboundFileTransfers:  make(map[string]*outboundFileTransfer),
 		inboundFileTransfers:   make(map[string]*inboundFileTransfer),
 		outboundFileEventChans: make(map[string]chan fileTransferEvent),
+		pendingRekeyWaiters:    make(map[string]chan rekeyWaitResult),
 		errors:                 make(chan error, 64),
 	}
 
@@ -479,6 +495,7 @@ func (m *PeerManager) registerConnection(conn *PeerConnection) {
 		_ = conn.Close()
 		return
 	}
+	conn.SetRekeyNeededCallback(m.onConnectionRekeyNeeded)
 
 	m.connMu.Lock()
 	if existing, exists := m.connections[peerID]; exists && existing != conn {
@@ -546,6 +563,20 @@ loop:
 				continue
 			}
 			m.handleIncomingEncryptedMessage(conn, message)
+		case TypeRekeyRequest:
+			var request RekeyRequest
+			if err := json.Unmarshal(payload, &request); err != nil {
+				m.reportError(err)
+				continue
+			}
+			m.handleRekeyRequest(conn, request)
+		case TypeRekeyResponse:
+			var response RekeyResponse
+			if err := json.Unmarshal(payload, &response); err != nil {
+				m.reportError(err)
+				continue
+			}
+			m.handleRekeyResponse(conn, response)
 		case TypeAck:
 			var ack AckMessage
 			if err := json.Unmarshal(payload, &ack); err != nil {
@@ -592,6 +623,16 @@ loop:
 	}
 
 	_ = conn.Close()
+
+	m.rekeyMu.Lock()
+	if waiter := m.pendingRekeyWaiters[peerID]; waiter != nil {
+		delete(m.pendingRekeyWaiters, peerID)
+		select {
+		case waiter <- rekeyWaitResult{Err: errors.New("connection closed during rekey")}:
+		default:
+		}
+	}
+	m.rekeyMu.Unlock()
 
 	m.connMu.Lock()
 	current := m.connections[peerID]
@@ -966,6 +1007,199 @@ func (m *PeerManager) handleProtocolError(protocolError ErrorMessage) {
 	m.reportError(fmt.Errorf("peer protocol error [%s]: %s", protocolError.Code, protocolError.Message))
 }
 
+func (m *PeerManager) onConnectionRekeyNeeded(conn *PeerConnection) {
+	if conn == nil || conn.State() == StateDisconnected {
+		return
+	}
+	peerID := conn.PeerDeviceID()
+	if peerID == "" {
+		conn.setRekeyInProgress(false)
+		return
+	}
+	// Deterministic initiator rule avoids simultaneous cross-initiated rekeys
+	// that could otherwise derive different epoch keys.
+	if m.options.Identity.DeviceID > peerID {
+		conn.setRekeyInProgress(false)
+		return
+	}
+	if err := m.initiateRekey(conn); err != nil {
+		m.reportError(fmt.Errorf("rekey with %q failed: %w", conn.PeerDeviceID(), err))
+		_ = conn.Close()
+	}
+}
+
+func (m *PeerManager) initiateRekey(conn *PeerConnection) error {
+	peerID := conn.PeerDeviceID()
+	if peerID == "" {
+		return errors.New("rekey: peer device ID is required")
+	}
+
+	waitCh := make(chan rekeyWaitResult, 1)
+	m.rekeyMu.Lock()
+	if _, exists := m.pendingRekeyWaiters[peerID]; exists {
+		m.rekeyMu.Unlock()
+		return nil
+	}
+	m.pendingRekeyWaiters[peerID] = waitCh
+	m.rekeyMu.Unlock()
+	defer func() {
+		m.rekeyMu.Lock()
+		current := m.pendingRekeyWaiters[peerID]
+		if current == waitCh {
+			delete(m.pendingRekeyWaiters, peerID)
+		}
+		m.rekeyMu.Unlock()
+	}()
+
+	privateKey, publicKey, err := appcrypto.GenerateEphemeralX25519KeyPair()
+	if err != nil {
+		return err
+	}
+
+	targetEpoch := conn.SessionEpoch() + 1
+	request := RekeyRequest{
+		Type:            TypeRekeyRequest,
+		FromDeviceID:    m.options.Identity.DeviceID,
+		Epoch:           targetEpoch,
+		X25519PublicKey: base64.StdEncoding.EncodeToString(publicKey.Bytes()),
+		Timestamp:       time.Now().UnixMilli(),
+	}
+	if err := m.signRekeyRequest(&request); err != nil {
+		return err
+	}
+	if err := conn.SendMessage(request); err != nil {
+		return err
+	}
+
+	timeout := m.options.RekeyResponseTimeout
+	if timeout <= 0 {
+		timeout = defaultRekeyResponseTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-m.ctx.Done():
+		return m.ctx.Err()
+	case <-conn.Done():
+		if err := conn.LastError(); err != nil {
+			return err
+		}
+		return errors.New("connection closed while waiting for rekey response")
+	case <-timer.C:
+		return context.DeadlineExceeded
+	case result := <-waitCh:
+		if result.Err != nil {
+			return result.Err
+		}
+		response := result.Response
+		if response.Epoch != targetEpoch {
+			return fmt.Errorf("rekey: unexpected response epoch %d (expected %d)", response.Epoch, targetEpoch)
+		}
+		newKey, err := deriveRekeySessionKey(privateKey, response.X25519PublicKey, m.options.Identity.DeviceID, peerID, targetEpoch)
+		if err != nil {
+			return err
+		}
+		if err := conn.RotateSessionKey(newKey, targetEpoch); err != nil {
+			return err
+		}
+		return nil
+	}
+}
+
+func (m *PeerManager) handleRekeyRequest(conn *PeerConnection, request RekeyRequest) {
+	peerID := conn.PeerDeviceID()
+	if peerID == "" || request.FromDeviceID == "" || request.X25519PublicKey == "" || request.Signature == "" || request.Epoch == 0 {
+		_ = conn.Close()
+		return
+	}
+	if request.FromDeviceID != peerID {
+		m.reportError(fmt.Errorf("rejecting rekey_request: sender mismatch %q != %q", request.FromDeviceID, peerID))
+		_ = conn.Close()
+		return
+	}
+	if !withinTimestampSkew(request.Timestamp) {
+		m.reportError(fmt.Errorf("rejecting rekey_request from %q: timestamp outside skew", peerID))
+		_ = conn.Close()
+		return
+	}
+	if err := m.verifyRekeyRequest(conn, request); err != nil {
+		m.reportError(err)
+		_ = conn.Close()
+		return
+	}
+
+	privateKey, publicKey, err := appcrypto.GenerateEphemeralX25519KeyPair()
+	if err != nil {
+		m.reportError(err)
+		_ = conn.Close()
+		return
+	}
+	newKey, err := deriveRekeySessionKey(privateKey, request.X25519PublicKey, m.options.Identity.DeviceID, peerID, request.Epoch)
+	if err != nil {
+		m.reportError(err)
+		_ = conn.Close()
+		return
+	}
+
+	response := RekeyResponse{
+		Type:            TypeRekeyResponse,
+		FromDeviceID:    m.options.Identity.DeviceID,
+		Epoch:           request.Epoch,
+		X25519PublicKey: base64.StdEncoding.EncodeToString(publicKey.Bytes()),
+		Timestamp:       time.Now().UnixMilli(),
+	}
+	if err := m.signRekeyResponse(&response); err != nil {
+		m.reportError(err)
+		_ = conn.Close()
+		return
+	}
+	if err := conn.SendMessage(response); err != nil {
+		m.reportError(err)
+		_ = conn.Close()
+		return
+	}
+	if err := conn.RotateSessionKey(newKey, request.Epoch); err != nil {
+		m.reportError(err)
+		_ = conn.Close()
+	}
+}
+
+func (m *PeerManager) handleRekeyResponse(conn *PeerConnection, response RekeyResponse) {
+	peerID := conn.PeerDeviceID()
+	if peerID == "" || response.FromDeviceID == "" || response.X25519PublicKey == "" || response.Signature == "" || response.Epoch == 0 {
+		_ = conn.Close()
+		return
+	}
+	if response.FromDeviceID != peerID {
+		m.reportError(fmt.Errorf("rejecting rekey_response: sender mismatch %q != %q", response.FromDeviceID, peerID))
+		_ = conn.Close()
+		return
+	}
+	if !withinTimestampSkew(response.Timestamp) {
+		m.reportError(fmt.Errorf("rejecting rekey_response from %q: timestamp outside skew", peerID))
+		_ = conn.Close()
+		return
+	}
+	if err := m.verifyRekeyResponse(conn, response); err != nil {
+		m.reportError(err)
+		_ = conn.Close()
+		return
+	}
+
+	m.rekeyMu.Lock()
+	waiter := m.pendingRekeyWaiters[peerID]
+	m.rekeyMu.Unlock()
+	if waiter == nil {
+		return
+	}
+
+	select {
+	case waiter <- rekeyWaitResult{Response: response}:
+	default:
+	}
+}
+
 func (m *PeerManager) startQueueDrain(peerID string, conn *PeerConnection) {
 	if peerID == "" || conn == nil {
 		return
@@ -1216,6 +1450,8 @@ func (m *PeerManager) dialAndRegister(address string) (*PeerConnection, error) {
 		KeepAliveInterval:   m.options.KeepAliveInterval,
 		KeepAliveTimeout:    m.options.KeepAliveTimeout,
 		FrameReadTimeout:    m.options.FrameReadTimeout,
+		RekeyInterval:       m.options.RekeyInterval,
+		RekeyAfterBytes:     m.options.RekeyAfterBytes,
 		AutoRespondPing:     m.options.AutoRespondPing,
 	})
 	if err != nil {
@@ -1235,6 +1471,8 @@ func (m *PeerManager) handshakeOptionsForServer() HandshakeOptions {
 		KeepAliveInterval:   m.options.KeepAliveInterval,
 		KeepAliveTimeout:    m.options.KeepAliveTimeout,
 		FrameReadTimeout:    m.options.FrameReadTimeout,
+		RekeyInterval:       m.options.RekeyInterval,
+		RekeyAfterBytes:     m.options.RekeyAfterBytes,
 		AutoRespondPing:     m.options.AutoRespondPing,
 	}
 }
@@ -1621,6 +1859,78 @@ func (m *PeerManager) signEncryptedMessage(msg *EncryptedMessage) error {
 		return err
 	}
 	msg.Signature = base64.StdEncoding.EncodeToString(signature)
+	return nil
+}
+
+func (m *PeerManager) signRekeyRequest(msg *RekeyRequest) error {
+	signable := *msg
+	signable.Signature = ""
+	raw, err := json.Marshal(signable)
+	if err != nil {
+		return err
+	}
+	signature, err := appcrypto.Sign(m.options.Identity.Ed25519PrivateKey, raw)
+	if err != nil {
+		return err
+	}
+	msg.Signature = base64.StdEncoding.EncodeToString(signature)
+	return nil
+}
+
+func (m *PeerManager) verifyRekeyRequest(conn *PeerConnection, msg RekeyRequest) error {
+	publicKey, err := decodePeerPublicKey(conn.PeerPublicKey())
+	if err != nil {
+		return err
+	}
+	signature, err := base64.StdEncoding.DecodeString(msg.Signature)
+	if err != nil {
+		return fmt.Errorf("decode rekey request signature: %w", err)
+	}
+	signable := msg
+	signable.Signature = ""
+	raw, err := json.Marshal(signable)
+	if err != nil {
+		return err
+	}
+	if !appcrypto.Verify(publicKey, raw, signature) {
+		return errors.New("invalid rekey request signature")
+	}
+	return nil
+}
+
+func (m *PeerManager) signRekeyResponse(msg *RekeyResponse) error {
+	signable := *msg
+	signable.Signature = ""
+	raw, err := json.Marshal(signable)
+	if err != nil {
+		return err
+	}
+	signature, err := appcrypto.Sign(m.options.Identity.Ed25519PrivateKey, raw)
+	if err != nil {
+		return err
+	}
+	msg.Signature = base64.StdEncoding.EncodeToString(signature)
+	return nil
+}
+
+func (m *PeerManager) verifyRekeyResponse(conn *PeerConnection, msg RekeyResponse) error {
+	publicKey, err := decodePeerPublicKey(conn.PeerPublicKey())
+	if err != nil {
+		return err
+	}
+	signature, err := base64.StdEncoding.DecodeString(msg.Signature)
+	if err != nil {
+		return fmt.Errorf("decode rekey response signature: %w", err)
+	}
+	signable := msg
+	signable.Signature = ""
+	raw, err := json.Marshal(signable)
+	if err != nil {
+		return err
+	}
+	if !appcrypto.Verify(publicKey, raw, signature) {
+		return errors.New("invalid rekey response signature")
+	}
 	return nil
 }
 

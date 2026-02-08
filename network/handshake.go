@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"gosend/crypto"
@@ -28,6 +29,8 @@ type HandshakeOptions struct {
 	KeepAliveInterval time.Duration
 	KeepAliveTimeout  time.Duration
 	FrameReadTimeout  time.Duration
+	RekeyInterval     time.Duration
+	RekeyAfterBytes   uint64
 	AutoRespondPing   *bool
 }
 
@@ -44,6 +47,12 @@ func (o HandshakeOptions) withDefaults() HandshakeOptions {
 	}
 	if out.FrameReadTimeout <= 0 {
 		out.FrameReadTimeout = DefaultFrameReadTimeout
+	}
+	if out.RekeyInterval <= 0 {
+		out.RekeyInterval = defaultRekeyInterval
+	}
+	if out.RekeyAfterBytes == 0 {
+		out.RekeyAfterBytes = defaultRekeyAfterBytes
 	}
 	return out
 }
@@ -95,6 +104,25 @@ func deriveSessionKey(localEphemeralPrivateKey *ecdh.PrivateKey, peerX25519Publi
 	}
 
 	return crypto.DeriveSessionKeyWithContext(sharedSecret, localDeviceID, peerDeviceID, challengeNonce)
+}
+
+func deriveRekeySessionKey(localEphemeralPrivateKey *ecdh.PrivateKey, peerX25519PublicKeyBase64, localDeviceID, peerDeviceID string, epoch uint64) ([]byte, error) {
+	peerPublicRaw, err := base64.StdEncoding.DecodeString(peerX25519PublicKeyBase64)
+	if err != nil {
+		return nil, fmt.Errorf("decode peer rekey public key: %w", err)
+	}
+	peerPublicKey, err := crypto.ParseX25519PublicKey(peerPublicRaw)
+	if err != nil {
+		return nil, err
+	}
+
+	sharedSecret, err := crypto.ComputeX25519SharedSecret(localEphemeralPrivateKey, peerPublicKey)
+	if err != nil {
+		return nil, err
+	}
+
+	rekeyContext := []byte("rekey|" + strconv.FormatUint(epoch, 10))
+	return crypto.DeriveSessionKeyWithContext(sharedSecret, localDeviceID, peerDeviceID, rekeyContext)
 }
 
 func evaluatePeerKey(deviceID, receivedBase64 string, known map[string]string, decision KeyChangeDecisionFunc) error {

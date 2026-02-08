@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -12,6 +15,8 @@ import (
 const (
 	// DefaultDBFileName is the SQLite filename under app data dir.
 	DefaultDBFileName = "app.db"
+	// DefaultWALCheckpointInterval controls periodic WAL truncation.
+	DefaultWALCheckpointInterval = 24 * time.Hour
 )
 
 var migrations = []string{
@@ -76,6 +81,11 @@ ON seen_message_ids (received_at);
 // Store is a thin wrapper around a SQLite connection.
 type Store struct {
 	db *sql.DB
+
+	walCheckpointInterval time.Duration
+	walCheckpointStop     chan struct{}
+	walCheckpointWG       sync.WaitGroup
+	closeOnce             sync.Once
 }
 
 // Open opens (or creates) app.db under the given data directory and runs migrations.
@@ -106,11 +116,24 @@ func OpenPath(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("ping sqlite database: %w", err)
 	}
 
-	store := &Store{db: db}
+	store := &Store{
+		db:                    db,
+		walCheckpointInterval: DefaultWALCheckpointInterval,
+		walCheckpointStop:     make(chan struct{}),
+	}
+	if err := store.enableWALMode(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := store.applyMigrations(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := store.checkpointWAL(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	store.startWALCheckpointLoop()
 
 	return store, nil
 }
@@ -120,7 +143,16 @@ func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
-	return s.db.Close()
+	var closeErr error
+	s.closeOnce.Do(func() {
+		if s.walCheckpointStop != nil {
+			close(s.walCheckpointStop)
+			s.walCheckpointWG.Wait()
+		}
+		closeErr = s.db.Close()
+		s.db = nil
+	})
+	return closeErr
 }
 
 func (s *Store) applyMigrations() error {
@@ -155,4 +187,45 @@ func (s *Store) applyMigrations() error {
 	}
 
 	return nil
+}
+
+func (s *Store) enableWALMode() error {
+	var journalMode string
+	if err := s.db.QueryRow("PRAGMA journal_mode=WAL;").Scan(&journalMode); err != nil {
+		return fmt.Errorf("enable WAL mode: %w", err)
+	}
+	if !strings.EqualFold(journalMode, "wal") {
+		return fmt.Errorf("enable WAL mode: unexpected journal mode %q", journalMode)
+	}
+	return nil
+}
+
+func (s *Store) checkpointWAL() error {
+	if _, err := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE);"); err != nil {
+		return fmt.Errorf("wal checkpoint truncate: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) startWALCheckpointLoop() {
+	interval := s.walCheckpointInterval
+	if interval <= 0 || s.walCheckpointStop == nil {
+		return
+	}
+
+	s.walCheckpointWG.Add(1)
+	go func() {
+		defer s.walCheckpointWG.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				_ = s.checkpointWAL()
+			case <-s.walCheckpointStop:
+				return
+			}
+		}
+	}()
 }

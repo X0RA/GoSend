@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -319,6 +320,97 @@ func TestHandshakeReplayRejectedByChallengeNonceMismatch(t *testing.T) {
 
 	if challenge.Nonce == "" {
 		t.Fatalf("expected non-empty challenge nonce on replay attempt")
+	}
+}
+
+func TestOversizedControlFrameDuringHandshakeRejected(t *testing.T) {
+	serverIdentity := testIdentity(t, "server-control-limit", "Server Control Limit")
+
+	server, err := Listen("127.0.0.1:0", HandshakeOptions{
+		Identity: serverIdentity,
+	})
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	defer func() {
+		_ = server.Close()
+	}()
+
+	rawConn, err := net.DialTimeout("tcp", server.Addr().String(), 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer func() {
+		_ = rawConn.Close()
+	}()
+
+	if _, err := ReadControlFrameWithTimeout(rawConn, 2*time.Second); err != nil {
+		t.Fatalf("read handshake challenge failed: %v", err)
+	}
+
+	oversized := make([]byte, MaxControlFrameSize+1)
+	if err := WriteFrame(rawConn, oversized); err != nil {
+		t.Fatalf("send oversized control frame failed: %v", err)
+	}
+
+	if _, err := ReadFrameWithTimeout(rawConn, 600*time.Millisecond); err == nil {
+		t.Fatalf("expected connection close after oversized control frame")
+	}
+
+	select {
+	case conn := <-server.Incoming():
+		_ = conn.Close()
+		t.Fatalf("expected handshake to be rejected before incoming connection")
+	case <-time.After(250 * time.Millisecond):
+	}
+}
+
+func TestOversizedControlPayloadDisconnectsConnection(t *testing.T) {
+	serverIdentity := testIdentity(t, "server-control-loop", "Server Control Loop")
+	clientIdentity := testIdentity(t, "client-control-loop", "Client Control Loop")
+
+	server, err := Listen("127.0.0.1:0", HandshakeOptions{
+		Identity: serverIdentity,
+	})
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	defer func() {
+		_ = server.Close()
+	}()
+
+	clientConn, err := Dial(server.Addr().String(), HandshakeOptions{
+		Identity: clientIdentity,
+	})
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	defer func() {
+		_ = clientConn.Close()
+	}()
+
+	serverConn := waitForServerConn(t, server)
+	defer func() {
+		_ = serverConn.Close()
+	}()
+
+	oversizedControlPayload := []byte(`{"type":"ping","from_device_id":"client-control-loop","timestamp":1,"padding":"` + strings.Repeat("x", MaxControlFrameSize) + `"}`)
+	if len(oversizedControlPayload) <= MaxControlFrameSize {
+		t.Fatalf("expected oversized control payload, got %d bytes", len(oversizedControlPayload))
+	}
+
+	if err := clientConn.SendRaw(oversizedControlPayload); err != nil {
+		t.Fatalf("send oversized control payload failed: %v", err)
+	}
+
+	select {
+	case <-serverConn.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatalf("expected server connection to close after oversized control payload")
+	}
+
+	if !errors.Is(serverConn.LastError(), ErrFrameTooLarge) {
+		t.Fatalf("expected ErrFrameTooLarge, got %v", serverConn.LastError())
 	}
 }
 

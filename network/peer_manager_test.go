@@ -491,13 +491,15 @@ func (m *testManager) stop() {
 }
 
 type testManagerConfig struct {
-	deviceID       string
-	name           string
-	approve        func(notification AddRequestNotification) (bool, error)
-	approveFile    func(notification FileRequestNotification) (bool, error)
-	onFileProgress func(progress FileProgress)
-	filesDir       string
-	fileChunkSize  int
+	deviceID        string
+	name            string
+	approve         func(notification AddRequestNotification) (bool, error)
+	approveFile     func(notification FileRequestNotification) (bool, error)
+	onFileProgress  func(progress FileProgress)
+	filesDir        string
+	fileChunkSize   int
+	rekeyInterval   time.Duration
+	rekeyAfterBytes uint64
 }
 
 func newTestManager(t *testing.T, cfg testManagerConfig) *testManager {
@@ -535,22 +537,25 @@ func newTestManagerWithConfig(t *testing.T, store *storage.Store, identity Local
 	}
 
 	manager, err := NewPeerManager(PeerManagerOptions{
-		Identity:            identity,
-		Store:               store,
-		ListenAddress:       listenAddress,
-		ApproveAddRequest:   cfg.approve,
-		OnFileRequest:       cfg.approveFile,
-		OnFileProgress:      cfg.onFileProgress,
-		FilesDir:            filesDir,
-		FileChunkSize:       chunkSize,
-		FileResponseTimeout: 2 * time.Second,
-		MaxChunkRetries:     3,
-		ReconnectBackoff:    []time.Duration{0, 50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond},
-		AddResponseTimeout:  3 * time.Second,
-		ConnectionTimeout:   2 * time.Second,
-		KeepAliveInterval:   80 * time.Millisecond,
-		KeepAliveTimeout:    80 * time.Millisecond,
-		FrameReadTimeout:    30 * time.Millisecond,
+		Identity:             identity,
+		Store:                store,
+		ListenAddress:        listenAddress,
+		ApproveAddRequest:    cfg.approve,
+		OnFileRequest:        cfg.approveFile,
+		OnFileProgress:       cfg.onFileProgress,
+		FilesDir:             filesDir,
+		FileChunkSize:        chunkSize,
+		FileResponseTimeout:  2 * time.Second,
+		MaxChunkRetries:      3,
+		ReconnectBackoff:     []time.Duration{0, 50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond},
+		AddResponseTimeout:   3 * time.Second,
+		ConnectionTimeout:    2 * time.Second,
+		KeepAliveInterval:    80 * time.Millisecond,
+		KeepAliveTimeout:     80 * time.Millisecond,
+		FrameReadTimeout:     30 * time.Millisecond,
+		RekeyInterval:        cfg.rekeyInterval,
+		RekeyAfterBytes:      cfg.rekeyAfterBytes,
+		RekeyResponseTimeout: 2 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("NewPeerManager failed: %v", err)

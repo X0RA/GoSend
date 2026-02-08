@@ -28,7 +28,7 @@ func Dial(address string, options HandshakeOptions) (*PeerConnection, error) {
 		return nil, fmt.Errorf("set handshake deadline: %w", err)
 	}
 
-	challengePayload, err := ReadFrameWithTimeout(conn, opts.ConnectionTimeout)
+	challengePayload, err := ReadControlFrameWithTimeout(conn, opts.ConnectionTimeout)
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("read handshake challenge: %w", err)
@@ -89,7 +89,7 @@ func Dial(address string, options HandshakeOptions) (*PeerConnection, error) {
 		return nil, fmt.Errorf("send handshake: %w", err)
 	}
 
-	responsePayload, err := ReadFrameWithTimeout(conn, opts.ConnectionTimeout)
+	responsePayload, err := ReadControlFrameWithTimeout(conn, opts.ConnectionTimeout)
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("read handshake response: %w", err)
@@ -151,6 +151,8 @@ func Dial(address string, options HandshakeOptions) (*PeerConnection, error) {
 		KeepAliveInterval: opts.KeepAliveInterval,
 		KeepAliveTimeout:  opts.KeepAliveTimeout,
 		FrameReadTimeout:  opts.FrameReadTimeout,
+		RekeyInterval:     opts.RekeyInterval,
+		RekeyAfterBytes:   opts.RekeyAfterBytes,
 		AutoRespondPing:   opts.autoRespondPingEnabled(),
 	})
 

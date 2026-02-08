@@ -17,6 +17,8 @@ import (
 const (
 	// ProtocolVersion is the current wire protocol version.
 	ProtocolVersion = 1
+	// MaxControlFrameSize is the maximum accepted control-frame payload size (64 KB).
+	MaxControlFrameSize = 64 * 1024
 	// MaxFrameSize is the maximum accepted frame payload size (10 MB).
 	MaxFrameSize = 10 * 1024 * 1024
 	// DefaultConnectionTimeout bounds TCP dial/handshake duration.
@@ -40,6 +42,8 @@ const (
 	TypePing               = "ping"
 	TypePong               = "pong"
 	TypeMessage            = "message"
+	TypeRekeyRequest       = "rekey_request"
+	TypeRekeyResponse      = "rekey_response"
 	TypeFileRequest        = "file_request"
 	TypeFileResponse       = "file_response"
 	TypeFileData           = "file_data"
@@ -165,6 +169,26 @@ type EncryptedMessage struct {
 	Signature        string `json:"signature"`
 }
 
+// RekeyRequest requests switching to a newly derived session key.
+type RekeyRequest struct {
+	Type            string `json:"type"`
+	FromDeviceID    string `json:"from_device_id"`
+	Epoch           uint64 `json:"epoch"`
+	X25519PublicKey string `json:"x25519_public_key"`
+	Timestamp       int64  `json:"timestamp"`
+	Signature       string `json:"signature"`
+}
+
+// RekeyResponse acknowledges and completes a rekey exchange.
+type RekeyResponse struct {
+	Type            string `json:"type"`
+	FromDeviceID    string `json:"from_device_id"`
+	Epoch           uint64 `json:"epoch"`
+	X25519PublicKey string `json:"x25519_public_key"`
+	Timestamp       int64  `json:"timestamp"`
+	Signature       string `json:"signature"`
+}
+
 // FileRequest starts a file transfer.
 type FileRequest struct {
 	Type         string `json:"type"`
@@ -280,13 +304,22 @@ func WriteFrame(w io.Writer, payload []byte) error {
 
 // ReadFrame reads one length-prefixed frame.
 func ReadFrame(r io.Reader) ([]byte, error) {
+	return readFrameWithLimit(r, MaxFrameSize)
+}
+
+// ReadControlFrame reads one length-prefixed control frame with MaxControlFrameSize.
+func ReadControlFrame(r io.Reader) ([]byte, error) {
+	return readFrameWithLimit(r, MaxControlFrameSize)
+}
+
+func readFrameWithLimit(r io.Reader, maxSize uint32) ([]byte, error) {
 	header := make([]byte, 4)
 	if _, err := io.ReadFull(r, header); err != nil {
 		return nil, fmt.Errorf("read frame length: %w", err)
 	}
 
 	length := binary.BigEndian.Uint32(header)
-	if length > MaxFrameSize {
+	if length > maxSize {
 		return nil, ErrFrameTooLarge
 	}
 	if length == 0 {
@@ -303,6 +336,16 @@ func ReadFrame(r io.Reader) ([]byte, error) {
 
 // ReadFrameWithTimeout reads a frame with an optional read deadline.
 func ReadFrameWithTimeout(conn net.Conn, timeout time.Duration) ([]byte, error) {
+	return ReadFrameWithTimeoutLimit(conn, timeout, MaxFrameSize)
+}
+
+// ReadControlFrameWithTimeout reads a control frame with an optional read deadline.
+func ReadControlFrameWithTimeout(conn net.Conn, timeout time.Duration) ([]byte, error) {
+	return ReadFrameWithTimeoutLimit(conn, timeout, MaxControlFrameSize)
+}
+
+// ReadFrameWithTimeoutLimit reads a frame with a custom maximum payload size and optional deadline.
+func ReadFrameWithTimeoutLimit(conn net.Conn, timeout time.Duration, maxSize uint32) ([]byte, error) {
 	if timeout > 0 {
 		if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 			return nil, fmt.Errorf("set read deadline: %w", err)
@@ -311,7 +354,7 @@ func ReadFrameWithTimeout(conn net.Conn, timeout time.Duration) ([]byte, error) 
 			_ = conn.SetReadDeadline(time.Time{})
 		}()
 	}
-	return ReadFrame(conn)
+	return readFrameWithLimit(conn, maxSize)
 }
 
 func buildHandshakeMessage(identity LocalIdentity, ephemeralPublicKey []byte, challengeNonce, msgType string) (HandshakeMessage, error) {

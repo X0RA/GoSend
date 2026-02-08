@@ -33,6 +33,14 @@ func TestOpenCreatesDatabaseAndAppliesMigrations(t *testing.T) {
 		t.Fatalf("expected schema version %d, got %d", len(migrations), version)
 	}
 
+	var journalMode string
+	if err := store.db.QueryRow("PRAGMA journal_mode;").Scan(&journalMode); err != nil {
+		t.Fatalf("read journal_mode: %v", err)
+	}
+	if journalMode != "wal" {
+		t.Fatalf("expected journal_mode wal, got %q", journalMode)
+	}
+
 	expectedTables := []string{"peers", "messages", "files", "seen_message_ids"}
 	for _, table := range expectedTables {
 		var count int

@@ -29,3 +29,15 @@ func TestWriteFrameRejectsOversizedPayload(t *testing.T) {
 		t.Fatalf("expected ErrFrameTooLarge, got %v", err)
 	}
 }
+
+func TestReadControlFrameRejectsOversizedPayload(t *testing.T) {
+	payload := make([]byte, MaxControlFrameSize+1)
+	var buffer bytes.Buffer
+	if err := WriteFrame(&buffer, payload); err != nil {
+		t.Fatalf("WriteFrame failed: %v", err)
+	}
+
+	if _, err := ReadControlFrame(&buffer); err != ErrFrameTooLarge {
+		t.Fatalf("expected ErrFrameTooLarge, got %v", err)
+	}
+}

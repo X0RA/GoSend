@@ -31,29 +31,29 @@ The handshake currently relies on timestamps and transport timing for freshness.
 
 Session keys are established once per connection and reused for the entire lifetime. For connections that stay alive for hours, a single key protects potentially gigabytes of data. Periodic rekeying limits the blast radius of any single key compromise and is standard practice for long-running encrypted channels.
 
-- [ ] Define `rekey_request` and `rekey_response` message types in `protocol.go`, each carrying a fresh ephemeral X25519 public key and an Ed25519 signature
-- [ ] Implement a rekey trigger in `connection.go` that fires after either 1 hour of elapsed time or 1 GB of data transmitted on the connection, whichever comes first
-- [ ] Implement the rekey exchange flow: initiator sends `rekey_request`, responder replies `rekey_response`, both sides derive a new session key and atomically switch the encryption context
-- [ ] Ensure in-flight messages that were encrypted under the old key are still decryptable during the brief transition window (sequence number or epoch tagging)
-- [ ] Add tests for rekey under load, rekey with concurrent file transfers, and rekey failure handling (connection should be dropped if rekey fails)
+- [x] Define `rekey_request` and `rekey_response` message types in `protocol.go`, each carrying a fresh ephemeral X25519 public key and an Ed25519 signature
+- [x] Implement a rekey trigger in `connection.go` that fires after either 1 hour of elapsed time or 1 GB of data transmitted on the connection, whichever comes first
+- [x] Implement the rekey exchange flow: initiator sends `rekey_request`, responder replies `rekey_response`, both sides derive a new session key and atomically switch the encryption context
+- [x] Ensure in-flight messages that were encrypted under the old key are still decryptable during the brief transition window (sequence number or epoch tagging)
+- [x] Add tests for rekey under load, rekey with concurrent file transfers, and rekey failure handling (connection should be dropped if rekey fails)
 
 ### 1.4 — Separate Frame Size Limits for Control vs Data
 
 The current global `MaxFrameSize` of 10 MB applies to all message types. Control messages should never approach that size, and allowing them to do so means an unauthenticated peer could send a 10 MB "handshake" to exhaust memory before the connection is even verified.
 
-- [ ] Define `MaxControlFrameSize` (64 KB) alongside the existing `MaxFrameSize` (10 MB) in `protocol.go`
-- [ ] Update `ReadFrame` / `ReadFrameWithTimeout` to accept a size limit parameter, or add a `ReadControlFrame` variant that enforces the smaller limit
-- [ ] Apply the control frame limit to all reads that occur before and during handshake in `client.go` and `server.go`
-- [ ] Apply the control frame limit to all non-`file_data` message reads in the main connection read loop in `connection.go`
-- [ ] Add tests that send an oversized control frame and verify the connection is terminated cleanly
+- [x] Define `MaxControlFrameSize` (64 KB) alongside the existing `MaxFrameSize` (10 MB) in `protocol.go`
+- [x] Update `ReadFrame` / `ReadFrameWithTimeout` to accept a size limit parameter, or add a `ReadControlFrame` variant that enforces the smaller limit
+- [x] Apply the control frame limit to all reads that occur before and during handshake in `client.go` and `server.go`
+- [x] Apply the control frame limit to all non-`file_data` message reads in the main connection read loop in `connection.go`
+- [x] Add tests that send an oversized control frame and verify the connection is terminated cleanly
 
 ### 1.5 — Enable SQLite WAL Mode
 
 This is a single-line change with significant stability impact. WAL mode reduces lock contention between the UI's 2-second poll loop and the network manager's write operations, and provides better crash resilience characteristics.
 
-- [ ] Add `PRAGMA journal_mode=WAL` execution at database open time in `storage/database.go`
-- [ ] Add an optional periodic `PRAGMA wal_checkpoint(TRUNCATE)` call (e.g., on startup and every 24 hours) to keep the WAL file bounded
-- [ ] Verify that existing tests pass under WAL mode and that concurrent read/write patterns behave correctly
+- [x] Add `PRAGMA journal_mode=WAL` execution at database open time in `storage/database.go`
+- [x] Add an optional periodic `PRAGMA wal_checkpoint(TRUNCATE)` call (e.g., on startup and every 24 hours) to keep the WAL file bounded
+- [x] Verify that existing tests pass under WAL mode and that concurrent read/write patterns behave correctly
 
 ---
 
