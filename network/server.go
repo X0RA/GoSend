@@ -1,6 +1,8 @@
 package network
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -120,6 +122,24 @@ func (s *Server) handleInboundConn(conn net.Conn) {
 		return
 	}
 
+	nonce, err := generateHandshakeChallengeNonce()
+	if err != nil {
+		s.reportError(fmt.Errorf("generate handshake challenge nonce: %w", err))
+		return
+	}
+	challengePayload, err := EncodeJSON(HandshakeChallenge{
+		Type:  TypeHandshakeChallenge,
+		Nonce: nonce,
+	})
+	if err != nil {
+		s.reportError(err)
+		return
+	}
+	if err := WriteFrame(conn, challengePayload); err != nil {
+		s.reportError(fmt.Errorf("write handshake challenge: %w", err))
+		return
+	}
+
 	handshakePayload, err := ReadFrameWithTimeout(conn, s.options.ConnectionTimeout)
 	if err != nil {
 		s.reportError(fmt.Errorf("read handshake: %w", err))
@@ -151,6 +171,15 @@ func (s *Server) handleInboundConn(conn net.Conn) {
 		_ = s.sendError(conn, makeVersionMismatchError(int64(handshake.ProtocolVersion)))
 		return
 	}
+	if handshake.ChallengeNonce != nonce {
+		_ = s.sendError(conn, ErrorMessage{
+			Type:      TypeError,
+			Code:      "invalid_handshake_challenge",
+			Message:   "Handshake challenge nonce mismatch.",
+			Timestamp: time.Now().UnixMilli(),
+		})
+		return
+	}
 
 	if _, err := VerifyHandshakeMessage(handshake); err != nil {
 		s.reportError(fmt.Errorf("verify handshake: %w", err))
@@ -173,7 +202,7 @@ func (s *Server) handleInboundConn(conn net.Conn) {
 		return
 	}
 
-	sessionKey, err := deriveSessionKey(localEphemeralPrivateKey, handshake.X25519PublicKey, s.options.Identity.DeviceID, handshake.DeviceID)
+	sessionKey, err := deriveSessionKey(localEphemeralPrivateKey, handshake.X25519PublicKey, s.options.Identity.DeviceID, handshake.DeviceID, handshake.ChallengeNonce)
 	if err != nil {
 		s.reportError(err)
 		return
@@ -240,4 +269,12 @@ func (s *Server) reportError(err error) {
 	case s.errs <- err:
 	default:
 	}
+}
+
+func generateHandshakeChallengeNonce() (string, error) {
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(nonce), nil
 }

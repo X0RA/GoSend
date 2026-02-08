@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
+	"net"
 	"testing"
 	"time"
+
+	appcrypto "gosend/crypto"
 )
 
 func TestHandshakeDerivesMatchingSessionKeys(t *testing.T) {
@@ -187,6 +191,134 @@ func TestKeyChangeDecisionBlocksHandshakeUntilDecision(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed < 75*time.Millisecond {
 		t.Fatalf("expected handshake to block on key change decision, completed in %s", elapsed)
+	}
+}
+
+func TestHandshakeReplayRejectedByChallengeNonceMismatch(t *testing.T) {
+	serverIdentity := testIdentity(t, "server-replay", "Server Replay")
+	clientIdentity := testIdentity(t, "client-replay", "Client Replay")
+
+	server, err := Listen("127.0.0.1:0", HandshakeOptions{
+		Identity: serverIdentity,
+	})
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	defer func() {
+		_ = server.Close()
+	}()
+
+	recordedHandshakePayload, err := func() ([]byte, error) {
+		rawConn, err := net.DialTimeout("tcp", server.Addr().String(), 2*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			_ = rawConn.Close()
+		}()
+		if err := rawConn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			return nil, err
+		}
+
+		challengePayload, err := ReadFrameWithTimeout(rawConn, 2*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		var challenge HandshakeChallenge
+		if err := json.Unmarshal(challengePayload, &challenge); err != nil {
+			return nil, err
+		}
+
+		_, localEphemeralPublicKey, err := appcrypto.GenerateEphemeralX25519KeyPair()
+		if err != nil {
+			return nil, err
+		}
+		handshake, err := BuildHandshakeMessage(clientIdentity, localEphemeralPublicKey.Bytes(), challenge.Nonce)
+		if err != nil {
+			return nil, err
+		}
+		payload, err := EncodeJSON(handshake)
+		if err != nil {
+			return nil, err
+		}
+		if err := WriteFrame(rawConn, payload); err != nil {
+			return nil, err
+		}
+
+		responsePayload, err := ReadFrameWithTimeout(rawConn, 2*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		msgType, err := DecodeMessageType(responsePayload)
+		if err != nil {
+			return nil, err
+		}
+		if msgType != TypeHandshakeResponse {
+			return nil, errors.New("expected handshake_response while recording handshake")
+		}
+
+		serverConn := waitForServerConn(t, server)
+		_ = serverConn.Close()
+
+		return payload, nil
+	}()
+	if err != nil {
+		t.Fatalf("record handshake failed: %v", err)
+	}
+
+	rawConn, err := net.DialTimeout("tcp", server.Addr().String(), 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial replay attempt failed: %v", err)
+	}
+	defer func() {
+		_ = rawConn.Close()
+	}()
+	if err := rawConn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set replay deadline failed: %v", err)
+	}
+
+	challengePayload, err := ReadFrameWithTimeout(rawConn, 2*time.Second)
+	if err != nil {
+		t.Fatalf("read replay challenge failed: %v", err)
+	}
+	var challenge HandshakeChallenge
+	if err := json.Unmarshal(challengePayload, &challenge); err != nil {
+		t.Fatalf("decode replay challenge failed: %v", err)
+	}
+
+	if err := WriteFrame(rawConn, recordedHandshakePayload); err != nil {
+		t.Fatalf("send replayed handshake failed: %v", err)
+	}
+
+	responsePayload, err := ReadFrameWithTimeout(rawConn, 2*time.Second)
+	if err != nil {
+		t.Fatalf("read replay response failed: %v", err)
+	}
+
+	msgType, err := DecodeMessageType(responsePayload)
+	if err != nil {
+		t.Fatalf("decode replay response type failed: %v", err)
+	}
+	if msgType != TypeError {
+		t.Fatalf("expected error response for replay, got %q", msgType)
+	}
+	var protocolErr ErrorMessage
+	if err := json.Unmarshal(responsePayload, &protocolErr); err != nil {
+		t.Fatalf("decode replay protocol error failed: %v", err)
+	}
+	if protocolErr.Code != "invalid_handshake_challenge" {
+		t.Fatalf("expected invalid_handshake_challenge, got %q", protocolErr.Code)
+	}
+
+	select {
+	case unexpected := <-server.Incoming():
+		_ = unexpected.Close()
+		t.Fatalf("expected replay handshake to be rejected before incoming connection")
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	if challenge.Nonce == "" {
+		t.Fatalf("expected non-empty challenge nonce on replay attempt")
 	}
 }
 

@@ -89,6 +89,11 @@ func ComputeX25519SharedSecret(privateKey *ecdh.PrivateKey, peerPublicKey *ecdh.
 
 // DeriveSessionKey derives a 32-byte AES session key from an X25519 shared secret.
 func DeriveSessionKey(sharedSecret []byte, deviceIDa, deviceIDb string) ([]byte, error) {
+	return DeriveSessionKeyWithContext(sharedSecret, deviceIDa, deviceIDb, nil)
+}
+
+// DeriveSessionKeyWithContext derives a 32-byte AES session key with additional HKDF info context.
+func DeriveSessionKeyWithContext(sharedSecret []byte, deviceIDa, deviceIDb string, context []byte) ([]byte, error) {
 	if len(sharedSecret) == 0 {
 		return nil, errors.New("shared secret is required")
 	}
@@ -96,7 +101,7 @@ func DeriveSessionKey(sharedSecret []byte, deviceIDa, deviceIDb string) ([]byte,
 		return nil, errors.New("both device IDs are required")
 	}
 
-	info := sessionInfo(deviceIDa, deviceIDb)
+	info := sessionInfo(deviceIDa, deviceIDb, context)
 	reader := hkdf.New(sha256.New, sharedSecret, []byte(sessionHKDFSalt), info)
 
 	key := make([]byte, sessionKeyBytes)
@@ -107,10 +112,18 @@ func DeriveSessionKey(sharedSecret []byte, deviceIDa, deviceIDb string) ([]byte,
 	return key, nil
 }
 
-func sessionInfo(deviceIDa, deviceIDb string) []byte {
+func sessionInfo(deviceIDa, deviceIDb string, context []byte) []byte {
 	ids := []string{deviceIDa, deviceIDb}
 	sort.Strings(ids)
-	return []byte(ids[0] + "|" + ids[1])
+	info := ids[0] + "|" + ids[1]
+	if len(context) == 0 {
+		return []byte(info)
+	}
+	combined := make([]byte, 0, len(info)+1+len(context))
+	combined = append(combined, []byte(info)...)
+	combined = append(combined, '|')
+	combined = append(combined, context...)
+	return combined
 }
 
 // LoadX25519PrivateKey reads an X25519 private key from PEM.

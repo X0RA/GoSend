@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"gosend/storage"
 )
 
@@ -203,6 +205,122 @@ func TestFileTransferChecksumMismatchFails(t *testing.T) {
 	waitForFileStatus(t, b.store, fileID, "failed", 12*time.Second)
 }
 
+func TestChunkResponseMissingOrForgedSignatureRejected(t *testing.T) {
+	a := newTestManager(t, testManagerConfig{
+		deviceID: "peer-a",
+		name:     "Peer A",
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID: "peer-b",
+		name:     "Peer B",
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a"); err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+
+	fileID := uuid.NewString()
+	eventCh := a.manager.registerOutboundFileEventChannel(fileID)
+	defer a.manager.unregisterOutboundFileEventChannel(fileID, eventCh)
+
+	conn := b.manager.getConnection("peer-a")
+	if conn == nil {
+		t.Fatalf("expected connection from B to A")
+	}
+
+	unsigned := FileResponse{
+		Type:         TypeFileResponse,
+		FileID:       fileID,
+		Status:       fileResponseStatusChunkAck,
+		FromDeviceID: "peer-b",
+		ChunkIndex:   0,
+		Timestamp:    time.Now().UnixMilli(),
+	}
+	if err := conn.SendMessage(unsigned); err != nil {
+		t.Fatalf("send unsigned chunk response failed: %v", err)
+	}
+	expectNoFileTransferEvent(t, eventCh, 250*time.Millisecond)
+
+	forged := FileResponse{
+		Type:         TypeFileResponse,
+		FileID:       fileID,
+		Status:       fileResponseStatusChunkAck,
+		FromDeviceID: "peer-b",
+		ChunkIndex:   0,
+		Timestamp:    time.Now().UnixMilli(),
+	}
+	if err := b.manager.signFileResponse(&forged); err != nil {
+		t.Fatalf("sign chunk response failed: %v", err)
+	}
+	forged.ChunkIndex = 1
+	if err := conn.SendMessage(forged); err != nil {
+		t.Fatalf("send forged chunk response failed: %v", err)
+	}
+	expectNoFileTransferEvent(t, eventCh, 250*time.Millisecond)
+}
+
+func TestFileCompleteMissingOrForgedSignatureRejected(t *testing.T) {
+	a := newTestManager(t, testManagerConfig{
+		deviceID: "peer-a",
+		name:     "Peer A",
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID: "peer-b",
+		name:     "Peer B",
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a"); err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+
+	fileID := uuid.NewString()
+	eventCh := a.manager.registerOutboundFileEventChannel(fileID)
+	defer a.manager.unregisterOutboundFileEventChannel(fileID, eventCh)
+
+	conn := b.manager.getConnection("peer-a")
+	if conn == nil {
+		t.Fatalf("expected connection from B to A")
+	}
+
+	unsigned := FileComplete{
+		Type:      TypeFileComplete,
+		FileID:    fileID,
+		Status:    fileCompleteStatusComplete,
+		Timestamp: time.Now().UnixMilli(),
+	}
+	if err := conn.SendMessage(unsigned); err != nil {
+		t.Fatalf("send unsigned file complete failed: %v", err)
+	}
+	expectNoFileTransferEvent(t, eventCh, 250*time.Millisecond)
+
+	forged := FileComplete{
+		Type:      TypeFileComplete,
+		FileID:    fileID,
+		Status:    fileCompleteStatusComplete,
+		Timestamp: time.Now().UnixMilli(),
+	}
+	if err := b.manager.signFileComplete(&forged); err != nil {
+		t.Fatalf("sign file complete failed: %v", err)
+	}
+	forged.Status = fileCompleteStatusFailed
+	if err := conn.SendMessage(forged); err != nil {
+		t.Fatalf("send forged file complete failed: %v", err)
+	}
+	expectNoFileTransferEvent(t, eventCh, 250*time.Millisecond)
+}
+
 func waitForFileStatus(t *testing.T, store *storage.Store, fileID, expected string, timeout time.Duration) *storage.FileMetadata {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -220,6 +338,21 @@ func waitForFileStatus(t *testing.T, store *storage.Store, fileID, expected stri
 	}
 	t.Fatalf("timed out waiting for file %q status=%q, final=%q", fileID, expected, meta.TransferStatus)
 	return nil
+}
+
+func expectNoFileTransferEvent(t *testing.T, events <-chan fileTransferEvent, timeout time.Duration) {
+	t.Helper()
+	select {
+	case event := <-events:
+		if event.Response != nil {
+			t.Fatalf("unexpected file response event: %+v", *event.Response)
+		}
+		if event.Complete != nil {
+			t.Fatalf("unexpected file complete event: %+v", *event.Complete)
+		}
+		t.Fatalf("unexpected file transfer event")
+	case <-time.After(timeout):
+	}
 }
 
 func createFixtureFile(t *testing.T, dir, name string, size int) string {

@@ -71,7 +71,7 @@ func (o HandshakeOptions) autoRespondPingEnabled() bool {
 	return *o.AutoRespondPing
 }
 
-func deriveSessionKey(localEphemeralPrivateKey *ecdh.PrivateKey, peerX25519PublicKeyBase64, localDeviceID, peerDeviceID string) ([]byte, error) {
+func deriveSessionKey(localEphemeralPrivateKey *ecdh.PrivateKey, peerX25519PublicKeyBase64, localDeviceID, peerDeviceID, challengeNonceBase64 string) ([]byte, error) {
 	peerPublicRaw, err := base64.StdEncoding.DecodeString(peerX25519PublicKeyBase64)
 	if err != nil {
 		return nil, fmt.Errorf("decode peer ephemeral public key: %w", err)
@@ -85,7 +85,16 @@ func deriveSessionKey(localEphemeralPrivateKey *ecdh.PrivateKey, peerX25519Publi
 	if err != nil {
 		return nil, err
 	}
-	return crypto.DeriveSessionKey(sharedSecret, localDeviceID, peerDeviceID)
+
+	challengeNonce, err := base64.StdEncoding.DecodeString(challengeNonceBase64)
+	if err != nil {
+		return nil, fmt.Errorf("decode challenge nonce: %w", err)
+	}
+	if len(challengeNonce) != 32 {
+		return nil, fmt.Errorf("invalid challenge nonce length: got %d want %d", len(challengeNonce), 32)
+	}
+
+	return crypto.DeriveSessionKeyWithContext(sharedSecret, localDeviceID, peerDeviceID, challengeNonce)
 }
 
 func evaluatePeerKey(deviceID, receivedBase64 string, known map[string]string, decision KeyChangeDecisionFunc) error {

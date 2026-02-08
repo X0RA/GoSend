@@ -353,12 +353,13 @@ func (m *PeerManager) runOutboundFileTransfer(transfer *outboundFileTransfer, co
 		})
 	}
 
-	if err := conn.SendMessage(FileComplete{
+	completeMessage := FileComplete{
 		Type:      TypeFileComplete,
 		FileID:    transfer.FileID,
 		Status:    fileCompleteStatusComplete,
 		Timestamp: time.Now().UnixMilli(),
-	}); err != nil {
+	}
+	if err := m.sendSignedFileComplete(conn, completeMessage); err != nil {
 		return err
 	}
 
@@ -544,11 +545,17 @@ func (m *PeerManager) handleFileResponse(conn *PeerConnection, response FileResp
 	if response.FileID == "" {
 		return
 	}
-	if response.FromDeviceID != "" && response.FromDeviceID != conn.PeerDeviceID() {
+	if response.FromDeviceID == "" {
+		m.reportError(fmt.Errorf("rejecting file_response %q: missing from_device_id", response.FileID))
+		return
+	}
+	if response.FromDeviceID != conn.PeerDeviceID() {
+		m.reportError(fmt.Errorf("rejecting file_response %q: sender mismatch %q != %q", response.FileID, response.FromDeviceID, conn.PeerDeviceID()))
 		return
 	}
 	if err := m.verifyFileResponse(conn, response); err != nil {
 		m.reportError(err)
+		_ = m.sendErrorMessage(conn, "invalid_signature", "file response signature verification failed", response.FileID)
 		return
 	}
 
@@ -660,6 +667,11 @@ func (m *PeerManager) handleFileComplete(conn *PeerConnection, complete FileComp
 	if complete.FileID == "" {
 		return
 	}
+	if err := m.verifyFileComplete(conn, complete); err != nil {
+		m.reportError(err)
+		_ = m.sendErrorMessage(conn, "invalid_signature", "file complete signature verification failed", complete.FileID)
+		return
+	}
 
 	inbound := m.getInboundTransfer(complete.FileID)
 	if inbound == nil {
@@ -707,13 +719,15 @@ func (m *PeerManager) handleFileComplete(conn *PeerConnection, complete FileComp
 	if complete.Status != fileCompleteStatusComplete {
 		_ = m.options.Store.UpdateTransferStatus(complete.FileID, "failed")
 		m.removeInboundTransfer(complete.FileID)
-		_ = conn.SendMessage(FileComplete{
+		if err := m.sendSignedFileComplete(conn, FileComplete{
 			Type:      TypeFileComplete,
 			FileID:    complete.FileID,
 			Status:    fileCompleteStatusFailed,
 			Message:   "sender marked transfer failed",
 			Timestamp: time.Now().UnixMilli(),
-		})
+		}); err != nil {
+			m.reportError(err)
+		}
 		return
 	}
 
@@ -721,49 +735,57 @@ func (m *PeerManager) handleFileComplete(conn *PeerConnection, complete FileComp
 	if err != nil {
 		m.reportError(err)
 		_ = m.options.Store.UpdateTransferStatus(complete.FileID, "failed")
-		_ = conn.SendMessage(FileComplete{
+		if sendErr := m.sendSignedFileComplete(conn, FileComplete{
 			Type:      TypeFileComplete,
 			FileID:    complete.FileID,
 			Status:    fileCompleteStatusFailed,
 			Message:   "checksum verification failed",
 			Timestamp: time.Now().UnixMilli(),
-		})
+		}); sendErr != nil {
+			m.reportError(sendErr)
+		}
 		return
 	}
 	if !strings.EqualFold(checksum, inbound.Checksum) {
 		_ = m.options.Store.UpdateTransferStatus(complete.FileID, "failed")
-		_ = conn.SendMessage(FileComplete{
+		if err := m.sendSignedFileComplete(conn, FileComplete{
 			Type:      TypeFileComplete,
 			FileID:    complete.FileID,
 			Status:    fileCompleteStatusFailed,
 			Message:   "checksum mismatch",
 			Timestamp: time.Now().UnixMilli(),
-		})
+		}); err != nil {
+			m.reportError(err)
+		}
 		return
 	}
 
 	if err := os.Rename(inbound.TempPath, inbound.FinalPath); err != nil {
 		m.reportError(err)
 		_ = m.options.Store.UpdateTransferStatus(complete.FileID, "failed")
-		_ = conn.SendMessage(FileComplete{
+		if sendErr := m.sendSignedFileComplete(conn, FileComplete{
 			Type:      TypeFileComplete,
 			FileID:    complete.FileID,
 			Status:    fileCompleteStatusFailed,
 			Message:   "finalize file failed",
 			Timestamp: time.Now().UnixMilli(),
-		})
+		}); sendErr != nil {
+			m.reportError(sendErr)
+		}
 		return
 	}
 
 	_ = m.options.Store.UpdateTransferStatus(complete.FileID, "complete")
 	m.removeInboundTransfer(complete.FileID)
 
-	_ = conn.SendMessage(FileComplete{
+	if err := m.sendSignedFileComplete(conn, FileComplete{
 		Type:      TypeFileComplete,
 		FileID:    complete.FileID,
 		Status:    fileCompleteStatusComplete,
 		Timestamp: time.Now().UnixMilli(),
-	})
+	}); err != nil {
+		m.reportError(err)
+	}
 
 	m.emitFileProgress(FileProgress{
 		FileID:            complete.FileID,
@@ -794,6 +816,13 @@ func (m *PeerManager) sendChunkNack(conn *PeerConnection, fileID string, chunkIn
 	if err := conn.SendMessage(response); err != nil {
 		m.reportError(err)
 	}
+}
+
+func (m *PeerManager) sendSignedFileComplete(conn *PeerConnection, complete FileComplete) error {
+	if err := m.signFileComplete(&complete); err != nil {
+		return err
+	}
+	return conn.SendMessage(complete)
 }
 
 func (m *PeerManager) registerOutboundFileEventChannel(fileID string) chan fileTransferEvent {
@@ -920,9 +949,24 @@ func (m *PeerManager) signFileResponse(response *FileResponse) error {
 	return nil
 }
 
+func (m *PeerManager) signFileComplete(complete *FileComplete) error {
+	signable := *complete
+	signable.Signature = ""
+	raw, err := json.Marshal(signable)
+	if err != nil {
+		return err
+	}
+	signature, err := appcrypto.Sign(m.options.Identity.Ed25519PrivateKey, raw)
+	if err != nil {
+		return err
+	}
+	complete.Signature = base64.StdEncoding.EncodeToString(signature)
+	return nil
+}
+
 func (m *PeerManager) verifyFileResponse(conn *PeerConnection, response FileResponse) error {
 	if response.Signature == "" {
-		return nil
+		return errors.New("file response signature is required")
 	}
 	publicKey, err := decodePeerPublicKey(conn.PeerPublicKey())
 	if err != nil {
@@ -940,6 +984,30 @@ func (m *PeerManager) verifyFileResponse(conn *PeerConnection, response FileResp
 	}
 	if !ed25519.Verify(publicKey, raw, signature) {
 		return errors.New("invalid file response signature")
+	}
+	return nil
+}
+
+func (m *PeerManager) verifyFileComplete(conn *PeerConnection, complete FileComplete) error {
+	if complete.Signature == "" {
+		return errors.New("file complete signature is required")
+	}
+	publicKey, err := decodePeerPublicKey(conn.PeerPublicKey())
+	if err != nil {
+		return err
+	}
+	signature, err := base64.StdEncoding.DecodeString(complete.Signature)
+	if err != nil {
+		return fmt.Errorf("decode file complete signature: %w", err)
+	}
+	signable := complete
+	signable.Signature = ""
+	raw, err := json.Marshal(signable)
+	if err != nil {
+		return err
+	}
+	if !ed25519.Verify(publicKey, raw, signature) {
+		return errors.New("invalid file complete signature")
 	}
 	return nil
 }

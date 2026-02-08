@@ -304,6 +304,67 @@ func TestAckFromWrongConnectionPeerDoesNotMarkDelivered(t *testing.T) {
 	if conn == nil {
 		t.Fatalf("expected connection from C to A")
 	}
+	spoofed := AckMessage{
+		Type:         TypeAck,
+		MessageID:    messageID,
+		FromDeviceID: "peer-b",
+		Status:       deliveryStatusDelivered,
+		Timestamp:    time.Now().UnixMilli(),
+	}
+	if err := c.manager.signAck(&spoofed); err != nil {
+		t.Fatalf("sign spoofed ack failed: %v", err)
+	}
+	if err := conn.SendMessage(spoofed); err != nil {
+		t.Fatalf("send spoofed ack failed: %v", err)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+	msg, err := a.store.GetMessageByID(messageID)
+	if err != nil {
+		t.Fatalf("GetMessageByID failed: %v", err)
+	}
+	if msg.DeliveryStatus != deliveryStatusSent {
+		t.Fatalf("expected delivery status to remain %q, got %q", deliveryStatusSent, msg.DeliveryStatus)
+	}
+}
+
+func TestAckMissingSignatureRejected(t *testing.T) {
+	a := newTestManager(t, testManagerConfig{
+		deviceID: "peer-a",
+		name:     "Peer A",
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID: "peer-b",
+		name:     "Peer B",
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a"); err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+
+	messageID := uuid.NewString()
+	if err := a.store.SaveMessage(storage.Message{
+		MessageID:      messageID,
+		FromDeviceID:   "peer-a",
+		ToDeviceID:     "peer-b",
+		Content:        "signature required",
+		ContentType:    messageContentTypeText,
+		TimestampSent:  time.Now().UnixMilli(),
+		DeliveryStatus: deliveryStatusSent,
+	}); err != nil {
+		t.Fatalf("SaveMessage failed: %v", err)
+	}
+
+	conn := b.manager.getConnection("peer-a")
+	if conn == nil {
+		t.Fatalf("expected connection from B to A")
+	}
 	if err := conn.SendMessage(AckMessage{
 		Type:         TypeAck,
 		MessageID:    messageID,
@@ -311,10 +372,76 @@ func TestAckFromWrongConnectionPeerDoesNotMarkDelivered(t *testing.T) {
 		Status:       deliveryStatusDelivered,
 		Timestamp:    time.Now().UnixMilli(),
 	}); err != nil {
-		t.Fatalf("send spoofed ack failed: %v", err)
+		t.Fatalf("send unsigned ack failed: %v", err)
 	}
 
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
+
+	msg, err := a.store.GetMessageByID(messageID)
+	if err != nil {
+		t.Fatalf("GetMessageByID failed: %v", err)
+	}
+	if msg.DeliveryStatus != deliveryStatusSent {
+		t.Fatalf("expected delivery status to remain %q, got %q", deliveryStatusSent, msg.DeliveryStatus)
+	}
+}
+
+func TestAckForgedSignatureRejected(t *testing.T) {
+	a := newTestManager(t, testManagerConfig{
+		deviceID: "peer-a",
+		name:     "Peer A",
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID: "peer-b",
+		name:     "Peer B",
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a"); err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+
+	messageID := uuid.NewString()
+	if err := a.store.SaveMessage(storage.Message{
+		MessageID:      messageID,
+		FromDeviceID:   "peer-a",
+		ToDeviceID:     "peer-b",
+		Content:        "signature required",
+		ContentType:    messageContentTypeText,
+		TimestampSent:  time.Now().UnixMilli(),
+		DeliveryStatus: deliveryStatusSent,
+	}); err != nil {
+		t.Fatalf("SaveMessage failed: %v", err)
+	}
+
+	conn := b.manager.getConnection("peer-a")
+	if conn == nil {
+		t.Fatalf("expected connection from B to A")
+	}
+
+	forged := AckMessage{
+		Type:         TypeAck,
+		MessageID:    messageID,
+		FromDeviceID: "peer-b",
+		Status:       deliveryStatusDelivered,
+		Timestamp:    time.Now().UnixMilli(),
+	}
+	if err := b.manager.signAck(&forged); err != nil {
+		t.Fatalf("sign ack failed: %v", err)
+	}
+	forged.Status = deliveryStatusFailed
+
+	if err := conn.SendMessage(forged); err != nil {
+		t.Fatalf("send forged ack failed: %v", err)
+	}
+
+	time.Sleep(250 * time.Millisecond)
+
 	msg, err := a.store.GetMessageByID(messageID)
 	if err != nil {
 		t.Fatalf("GetMessageByID failed: %v", err)

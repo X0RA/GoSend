@@ -9,15 +9,15 @@ GoSend is a local-network peer-to-peer desktop app built in Go. It uses mDNS for
 ## What Is Implemented Today
 
 - Local LAN peer discovery via mDNS service `_p2pchat._tcp.local.` with TXT keys: `device_id`, `version`, `key_fingerprint`.
-- Signed handshake (`handshake`, `handshake_response`) with Ed25519 identities and ephemeral X25519 keys.
-- Session key derivation via HKDF-SHA256 using salt `p2pchat-session-v1` and sorted device IDs.
+- Challenge-response handshake (`handshake_challenge`, `handshake`, `handshake_response`) with Ed25519 identities and ephemeral X25519 keys.
+- Session key derivation via HKDF-SHA256 using salt `p2pchat-session-v1`, sorted device IDs, and the per-connection handshake challenge nonce.
 - Transport-level encryption for all post-handshake frames using AES-256-GCM (`secure_frame`).
 - Peer lifecycle flows: add request/response, remove, disconnect, reconnect workers, and discovery-driven reconnect.
 - Peers are only persisted after an accepted `peer_add_request`; a raw connection/handshake alone does not auto-add a peer.
 - Encrypted + signed text messages with delivery status tracking (`pending`, `sent`, `delivered`, `failed`).
 - Offline outbound queue with limits: 500 pending messages per peer, 7-day age cutoff, 50 MB pending content per peer.
 - Replay defenses for chat messages: per-connection sequence checks, persistent seen ID table, and timestamp skew checks.
-- File transfer with request/accept/reject, chunk ack/nack retries, reconnect resume from chunk, and end checksum verification.
+- File transfer with request/accept/reject, signed chunk ack/nack + signed file completion, reconnect resume from chunk, and end checksum verification.
 - Cross-platform GUI (Fyne) with peer list, chat pane, discovery dialog, settings dialog, key-change prompt, file-transfer prompts/progress, and chat header color that reflects online status.
 
 ## Quick Start
@@ -164,23 +164,24 @@ Connection states and keepalive:
 
 Handshake flow:
 
-1. Dialer opens TCP and sends `handshake` (identity + ephemeral X25519 public key + signature).
-2. Listener verifies version/signature/key-pin policy and replies `handshake_response`.
-3. Both derive the same session key and switch to encrypted `secure_frame` transport.
+1. Listener accepts TCP and sends `handshake_challenge` with a random 32-byte nonce.
+2. Dialer reads the challenge and sends `handshake` (identity + ephemeral X25519 public key + echoed challenge nonce + signature).
+3. Listener verifies nonce/version/signature/key-pin policy and replies `handshake_response`.
+4. Both derive the same session key and switch to encrypted `secure_frame` transport.
 - Protocol version must equal `1`; version mismatch yields typed `error` with supported versions.
 
 Cryptography:
 
 - **Identity**: Ed25519 long-term signing key; private key PEM `0600`, public PEM `0644`. Fingerprint = first 16 bytes of SHA-256(Ed25519 public key), hex.
-- **Session key**: Ephemeral X25519 keypairs per connection; shared secret via ECDH; session key = HKDF-SHA256 over shared secret with salt `p2pchat-session-v1`, info = sorted device IDs (`minID|maxID`), 32-byte output.
+- **Session key**: Ephemeral X25519 keypairs per connection; shared secret via ECDH; session key = HKDF-SHA256 over shared secret with salt `p2pchat-session-v1`, info = sorted device IDs (`minID|maxID`) + handshake challenge nonce, 32-byte output.
 - **Encryption**: After handshake, every payload is in `secure_frame` (base64 nonce + ciphertext). AES-256-GCM with random nonce per encryption; plaintext is the JSON protocol message. File chunk payloads (`file_data`) are encrypted with the session key and then wrapped in `secure_frame` again.
 - **Trust**: TOFU with pinned Ed25519 key in peer record. On key mismatch, handshake is blocked until user trust/reject; if user trusts, session can proceed. Persistent key pin update when user trusts a new key is not fully modeled yet.
 - **X25519**: A persisted X25519 private key file is ensured in config, but the handshake uses only ephemeral X25519 keypairs per session.
 
 Message/control integrity:
 
-- Signed (Ed25519) and verified: handshake messages, `peer_add_request`, `peer_add_response`, `peer_remove`, `message`, `file_request`, `file_response`.
-- `ack` and `file_complete` are not signed; `ack` accepted only when sender/route matches stored message ownership.
+- Signed (Ed25519) and verified: handshake messages, `peer_add_request`, `peer_add_response`, `peer_remove`, `message`, `ack`, `file_request`, `file_response`, `file_complete`.
+- `file_response` validation requires signature + `from_device_id` sender binding for chunk ack/nack and request responses.
 - Replay/tamper defenses: per-connection sequence numbers, timestamp skew ±5 minutes, persistent `seen_message_ids` dedupe.
 
 ## Discovery (mDNS)
@@ -236,7 +237,7 @@ Outbound:
 - Chunks are read from source file and encrypted as `file_data` with per-chunk nonce.
 - Receiver responds with `chunk_ack` / `chunk_nack`.
 - Each chunk retries up to `MaxChunkRetries` (default 3).
-- After all chunks are sent, sender sends `file_complete` and waits for the receiver’s `file_complete` (after checksum and rename). Wait uses `FileCompleteTimeout` (default 5 minutes); chunk acks use `FileResponseTimeout` (default 10s). Default chunk size 256 KiB. If the receiver’s completion arrives after the sender timed out, the sender still applies completion so the UI updates.
+- After all chunks are sent, sender sends signed `file_complete` and waits for the receiver’s signed `file_complete` (after checksum and rename). Wait uses `FileCompleteTimeout` (default 5 minutes); chunk acks use `FileResponseTimeout` (default 10s). Default chunk size 256 KiB. If the receiver’s completion arrives after the sender timed out, the sender still applies completion so the UI updates.
 
 Inbound:
 
@@ -502,4 +503,3 @@ Note: runtime logic currently uses `storage` structs directly; `models` package 
 - `ui/file_handler.go`: Picker/progress helper used by UI for file selection and transfer progress state.
 - `ui/clickable_label.go`: Clickable label widget used by chat header for peer fingerprint interactions.
 - `ui/theme.go`: Theme/palette helpers, rounded UI primitives, and hover/tooltip button behavior.
-

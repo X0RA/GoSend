@@ -30,21 +30,22 @@ const (
 )
 
 const (
-	TypeHandshake         = "handshake"
-	TypeHandshakeResponse = "handshake_response"
-	TypePeerAddRequest    = "peer_add_request"
-	TypePeerAddResponse   = "peer_add_response"
-	TypePeerRemove        = "peer_remove"
-	TypePeerDisconnect    = "peer_disconnect"
-	TypePing              = "ping"
-	TypePong              = "pong"
-	TypeMessage           = "message"
-	TypeFileRequest       = "file_request"
-	TypeFileResponse      = "file_response"
-	TypeFileData          = "file_data"
-	TypeFileComplete      = "file_complete"
-	TypeAck               = "ack"
-	TypeError             = "error"
+	TypeHandshakeChallenge = "handshake_challenge"
+	TypeHandshake          = "handshake"
+	TypeHandshakeResponse  = "handshake_response"
+	TypePeerAddRequest     = "peer_add_request"
+	TypePeerAddResponse    = "peer_add_response"
+	TypePeerRemove         = "peer_remove"
+	TypePeerDisconnect     = "peer_disconnect"
+	TypePing               = "ping"
+	TypePong               = "pong"
+	TypeMessage            = "message"
+	TypeFileRequest        = "file_request"
+	TypeFileResponse       = "file_response"
+	TypeFileData           = "file_data"
+	TypeFileComplete       = "file_complete"
+	TypeAck                = "ack"
+	TypeError              = "error"
 )
 
 var (
@@ -71,6 +72,12 @@ type Envelope struct {
 	Type string `json:"type"`
 }
 
+// HandshakeChallenge is the pre-handshake nonce challenge sent by the listener.
+type HandshakeChallenge struct {
+	Type  string `json:"type"`
+	Nonce string `json:"nonce"`
+}
+
 // HandshakeMessage is the initial connection handshake payload.
 type HandshakeMessage struct {
 	Type             string `json:"type"`
@@ -78,6 +85,7 @@ type HandshakeMessage struct {
 	DeviceName       string `json:"device_name"`
 	Ed25519PublicKey string `json:"ed25519_public_key"`
 	X25519PublicKey  string `json:"x25519_public_key"`
+	ChallengeNonce   string `json:"challenge_nonce,omitempty"`
 	ProtocolVersion  int    `json:"protocol_version"`
 	Timestamp        int64  `json:"timestamp"`
 	Signature        string `json:"signature"`
@@ -204,6 +212,7 @@ type FileComplete struct {
 	Status    string `json:"status"`
 	Message   string `json:"message,omitempty"`
 	Timestamp int64  `json:"timestamp"`
+	Signature string `json:"signature"`
 }
 
 // AckMessage confirms message delivery.
@@ -213,6 +222,7 @@ type AckMessage struct {
 	FromDeviceID string `json:"from_device_id"`
 	Status       string `json:"status"`
 	Timestamp    int64  `json:"timestamp"`
+	Signature    string `json:"signature"`
 }
 
 // ErrorMessage reports protocol errors.
@@ -304,7 +314,7 @@ func ReadFrameWithTimeout(conn net.Conn, timeout time.Duration) ([]byte, error) 
 	return ReadFrame(conn)
 }
 
-func buildHandshakeMessage(identity LocalIdentity, ephemeralPublicKey []byte, msgType string) (HandshakeMessage, error) {
+func buildHandshakeMessage(identity LocalIdentity, ephemeralPublicKey []byte, challengeNonce, msgType string) (HandshakeMessage, error) {
 	if len(identity.Ed25519PrivateKey) != ed25519.PrivateKeySize {
 		return HandshakeMessage{}, errors.New("invalid local Ed25519 private key")
 	}
@@ -318,6 +328,7 @@ func buildHandshakeMessage(identity LocalIdentity, ephemeralPublicKey []byte, ms
 		DeviceName:       identity.DeviceName,
 		Ed25519PublicKey: base64.StdEncoding.EncodeToString(identity.Ed25519PublicKey),
 		X25519PublicKey:  base64.StdEncoding.EncodeToString(ephemeralPublicKey),
+		ChallengeNonce:   challengeNonce,
 		ProtocolVersion:  ProtocolVersion,
 		Timestamp:        time.Now().UnixMilli(),
 	}
@@ -331,13 +342,13 @@ func buildHandshakeMessage(identity LocalIdentity, ephemeralPublicKey []byte, ms
 }
 
 // BuildHandshakeMessage builds and signs a handshake message.
-func BuildHandshakeMessage(identity LocalIdentity, ephemeralPublicKey []byte) (HandshakeMessage, error) {
-	return buildHandshakeMessage(identity, ephemeralPublicKey, TypeHandshake)
+func BuildHandshakeMessage(identity LocalIdentity, ephemeralPublicKey []byte, challengeNonce string) (HandshakeMessage, error) {
+	return buildHandshakeMessage(identity, ephemeralPublicKey, challengeNonce, TypeHandshake)
 }
 
 // BuildHandshakeResponse builds and signs a handshake response.
 func BuildHandshakeResponse(identity LocalIdentity, ephemeralPublicKey []byte) (HandshakeResponse, error) {
-	msg, err := buildHandshakeMessage(identity, ephemeralPublicKey, TypeHandshakeResponse)
+	msg, err := buildHandshakeMessage(identity, ephemeralPublicKey, "", TypeHandshakeResponse)
 	if err != nil {
 		return HandshakeResponse{}, err
 	}
@@ -376,6 +387,9 @@ func VerifyHandshakeResponse(msg HandshakeResponse) (ed25519.PublicKey, error) {
 func verifyHandshake(msg HandshakeMessage) (ed25519.PublicKey, error) {
 	if msg.ProtocolVersion != ProtocolVersion {
 		return nil, ErrUnsupportedVersion
+	}
+	if msg.Type == TypeHandshake && msg.ChallengeNonce == "" {
+		return nil, errors.New("missing handshake challenge nonce")
 	}
 
 	publicKeyBytes, err := base64.StdEncoding.DecodeString(msg.Ed25519PublicKey)

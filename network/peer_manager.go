@@ -902,13 +902,17 @@ func (m *PeerManager) handleIncomingEncryptedMessage(conn *PeerConnection, messa
 		Status:       deliveryStatusDelivered,
 		Timestamp:    receivedAt,
 	}
+	if err := m.signAck(&ack); err != nil {
+		m.reportError(err)
+		return
+	}
 	if err := conn.SendMessage(ack); err != nil {
 		m.reportError(err)
 	}
 }
 
 func (m *PeerManager) handleAck(conn *PeerConnection, ack AckMessage) {
-	if ack.MessageID == "" {
+	if ack.MessageID == "" || ack.Signature == "" {
 		return
 	}
 	peerID := conn.PeerDeviceID()
@@ -917,6 +921,11 @@ func (m *PeerManager) handleAck(conn *PeerConnection, ack AckMessage) {
 	}
 	if ack.FromDeviceID != peerID {
 		m.reportError(fmt.Errorf("rejecting ack %q: sender mismatch %q != %q", ack.MessageID, ack.FromDeviceID, peerID))
+		return
+	}
+	if err := m.verifyAck(conn, ack); err != nil {
+		m.reportError(fmt.Errorf("rejecting ack %q from %q: %w", ack.MessageID, peerID, err))
+		_ = m.sendErrorMessage(conn, "invalid_signature", "ack signature verification failed", ack.MessageID)
 		return
 	}
 
@@ -1612,6 +1621,42 @@ func (m *PeerManager) signEncryptedMessage(msg *EncryptedMessage) error {
 		return err
 	}
 	msg.Signature = base64.StdEncoding.EncodeToString(signature)
+	return nil
+}
+
+func (m *PeerManager) signAck(msg *AckMessage) error {
+	signable := *msg
+	signable.Signature = ""
+	raw, err := json.Marshal(signable)
+	if err != nil {
+		return err
+	}
+	signature, err := appcrypto.Sign(m.options.Identity.Ed25519PrivateKey, raw)
+	if err != nil {
+		return err
+	}
+	msg.Signature = base64.StdEncoding.EncodeToString(signature)
+	return nil
+}
+
+func (m *PeerManager) verifyAck(conn *PeerConnection, msg AckMessage) error {
+	publicKey, err := decodePeerPublicKey(conn.PeerPublicKey())
+	if err != nil {
+		return err
+	}
+	signature, err := base64.StdEncoding.DecodeString(msg.Signature)
+	if err != nil {
+		return fmt.Errorf("decode ack signature: %w", err)
+	}
+	signable := msg
+	signable.Signature = ""
+	raw, err := json.Marshal(signable)
+	if err != nil {
+		return err
+	}
+	if !appcrypto.Verify(publicKey, raw, signature) {
+		return errors.New("invalid ack signature")
+	}
 	return nil
 }
 

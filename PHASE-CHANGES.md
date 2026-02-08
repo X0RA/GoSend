@@ -10,22 +10,22 @@ This phase focuses entirely on the wire protocol and cryptographic layer. The ch
 
 Currently `ack`, `file_complete`, `chunk_ack`, and `chunk_nack` are not signature-protected. Every protocol message that triggers a state transition should be cryptographically attributable to the sender, otherwise a compromised transport could forge delivery confirmations or file completion signals.
 
-- [ ] Add `Signature` field to `AckMessage` in `protocol.go`
-- [ ] Add `Signature` field to `FileComplete` in `protocol.go`
-- [ ] Add `Signature` and `FromDeviceID` fields to chunk ack/nack responses in `FileResponse` (already has signature — verify it's being set and checked on chunk_ack/chunk_nack paths)
-- [ ] Update `peer_manager.go` send paths to sign these messages with the local Ed25519 key before dispatch
-- [ ] Update `peer_manager.go` receive paths to verify signatures on `ack`, `file_complete`, and chunk responses before processing state transitions
-- [ ] Add tests covering forged/missing signatures on each of these message types to confirm rejection
+- [x] Add `Signature` field to `AckMessage` in `protocol.go`
+- [x] Add `Signature` field to `FileComplete` in `protocol.go`
+- [x] Add `Signature` and `FromDeviceID` fields to chunk ack/nack responses in `FileResponse` (already has signature — verify it's being set and checked on chunk_ack/chunk_nack paths)
+- [x] Update `peer_manager.go` send paths to sign these messages with the local Ed25519 key before dispatch
+- [x] Update `peer_manager.go` receive paths to verify signatures on `ack`, `file_complete`, and chunk responses before processing state transitions
+- [x] Add tests covering forged/missing signatures on each of these message types to confirm rejection
 
 ### 1.2 — Handshake Replay Protection via Challenge-Response Nonce
 
 The handshake currently relies on timestamps and transport timing for freshness. An attacker who records a valid handshake could replay it later on the same network. Adding an explicit challenge-response nonce binds the session key derivation to a specific handshake exchange and makes recorded handshakes useless.
 
-- [ ] Define a new pre-handshake frame type (e.g., `handshake_challenge`) containing a random 32-byte nonce, sent by the listener immediately upon accepting a TCP connection
-- [ ] Update the dialer in `client.go` to read the challenge nonce before sending its `handshake` message, and include the nonce in the signed handshake payload
-- [ ] Update the listener in `server.go` to generate and send the challenge, then verify the nonce is echoed back correctly in the received handshake
-- [ ] Include the challenge nonce in the HKDF info string during session key derivation in `handshake.go`, so that replayed handshakes derive a different (useless) key
-- [ ] Add tests that replay a recorded handshake and verify the connection is rejected or derives an incompatible session key
+- [x] Define a new pre-handshake frame type (e.g., `handshake_challenge`) containing a random 32-byte nonce, sent by the listener immediately upon accepting a TCP connection
+- [x] Update the dialer in `client.go` to read the challenge nonce before sending its `handshake` message, and include the nonce in the signed handshake payload
+- [x] Update the listener in `server.go` to generate and send the challenge, then verify the nonce is echoed back correctly in the received handshake
+- [x] Include the challenge nonce in the HKDF info string during session key derivation in `handshake.go`, so that replayed handshakes derive a different (useless) key
+- [x] Add tests that replay a recorded handshake and verify the connection is rejected or derives an incompatible session key
 
 ### 1.3 — Periodic Session Rekeying
 

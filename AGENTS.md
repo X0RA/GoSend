@@ -28,6 +28,10 @@ structure, style, and tooling. Prefer small, correct, well-tested increments.
 
 If the repo provides a `Makefile`, `Taskfile.yml`, or CI scripts, prefer those commands.
 
+## Sandbox note
+- In restricted sandbox environments, tests that open local TCP listeners (notably in `network/`) may fail with `socket: operation not permitted`.
+- If that happens, rerun the relevant test command with elevated permissions instead of treating it as an application failure.
+
 ## Editing rules
 - Don’t commit or log secrets.
 - Don’t change public APIs without checking for downstream usage.

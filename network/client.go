@@ -1,6 +1,7 @@
 package network
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,13 +28,52 @@ func Dial(address string, options HandshakeOptions) (*PeerConnection, error) {
 		return nil, fmt.Errorf("set handshake deadline: %w", err)
 	}
 
+	challengePayload, err := ReadFrameWithTimeout(conn, opts.ConnectionTimeout)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("read handshake challenge: %w", err)
+	}
+	challengeType, err := DecodeMessageType(challengePayload)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	if challengeType == TypeError {
+		remoteErr := ErrorMessage{}
+		if err := json.Unmarshal(challengePayload, &remoteErr); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("decode remote error response: %w", err)
+		}
+		_ = conn.Close()
+		return nil, fmt.Errorf("remote error [%s]: %s", remoteErr.Code, remoteErr.Message)
+	}
+	if challengeType != TypeHandshakeChallenge {
+		_ = conn.Close()
+		return nil, fmt.Errorf("expected %q, got %q", TypeHandshakeChallenge, challengeType)
+	}
+
+	var challenge HandshakeChallenge
+	if err := json.Unmarshal(challengePayload, &challenge); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("decode handshake challenge: %w", err)
+	}
+	rawNonce, err := base64.StdEncoding.DecodeString(challenge.Nonce)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("decode handshake challenge nonce: %w", err)
+	}
+	if len(rawNonce) != 32 {
+		_ = conn.Close()
+		return nil, fmt.Errorf("invalid handshake challenge nonce length: got %d want %d", len(rawNonce), 32)
+	}
+
 	localEphemeralPrivateKey, localEphemeralPublicKey, err := crypto.GenerateEphemeralX25519KeyPair()
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
 
-	handshake, err := BuildHandshakeMessage(opts.Identity, localEphemeralPublicKey.Bytes())
+	handshake, err := BuildHandshakeMessage(opts.Identity, localEphemeralPublicKey.Bytes(), challenge.Nonce)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -92,7 +132,7 @@ func Dial(address string, options HandshakeOptions) (*PeerConnection, error) {
 		return nil, err
 	}
 
-	sessionKey, err := deriveSessionKey(localEphemeralPrivateKey, response.X25519PublicKey, opts.Identity.DeviceID, response.DeviceID)
+	sessionKey, err := deriveSessionKey(localEphemeralPrivateKey, response.X25519PublicKey, opts.Identity.DeviceID, response.DeviceID, challenge.Nonce)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
