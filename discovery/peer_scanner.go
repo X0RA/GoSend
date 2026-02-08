@@ -2,6 +2,9 @@ package discovery
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"sort"
 	"strconv"
@@ -33,6 +36,7 @@ type DiscoveredPeer struct {
 	DeviceID       string
 	DeviceName     string
 	KeyFingerprint string
+	DiscoveryToken string
 	Version        int
 	HostName       string
 	Port           int
@@ -221,7 +225,7 @@ func (s *PeerScanner) runScan(requestCtx context.Context) error {
 				if entry == nil {
 					continue
 				}
-				peer, ok := parseEntry(entry, s.cfg.SelfDeviceID)
+				peer, ok := parseEntry(entry, s.cfg)
 				if !ok {
 					continue
 				}
@@ -292,13 +296,9 @@ func (s *PeerScanner) emitEvent(event Event) {
 	}
 }
 
-func parseEntry(entry *zeroconf.ServiceEntry, selfDeviceID string) (DiscoveredPeer, bool) {
+func parseEntry(entry *zeroconf.ServiceEntry, cfg Config) (DiscoveredPeer, bool) {
 	txt := txtToMap(entry.Text)
-
-	deviceID := strings.TrimSpace(txt["device_id"])
-	if deviceID == "" || deviceID == selfDeviceID {
-		return DiscoveredPeer{}, false
-	}
+	token := strings.TrimSpace(txt[discoveryTokenTXTKey])
 
 	version := 0
 	if txt["version"] != "" {
@@ -330,18 +330,90 @@ func parseEntry(entry *zeroconf.ServiceEntry, selfDeviceID string) (DiscoveredPe
 		name = strings.TrimSpace(entry.HostName)
 	}
 	if name == "" {
-		name = deviceID
+		name = "Unknown Peer"
+	}
+
+	now := time.Now()
+	if cfg.Now != nil {
+		now = cfg.Now()
+	}
+	deviceID, matchedKnownPeer := resolveKnownPeerByToken(token, cfg, now)
+	if deviceID == cfg.SelfDeviceID {
+		return DiscoveredPeer{}, false
+	}
+	if !matchedKnownPeer && token != "" && len(cfg.Ed25519PublicKey) > 0 {
+		if verifyTokenWithHourSkew(token, cfg.SelfDeviceID, cfg.Ed25519PublicKey, now, 1) {
+			return DiscoveredPeer{}, false
+		}
+	}
+	if deviceID == "" {
+		deviceID = syntheticUnknownDeviceID(entry, addresses)
+	}
+	if deviceID == "" {
+		return DiscoveredPeer{}, false
 	}
 
 	return DiscoveredPeer{
 		DeviceID:       deviceID,
 		DeviceName:     name,
 		KeyFingerprint: strings.TrimSpace(txt["key_fingerprint"]),
+		DiscoveryToken: token,
 		Version:        version,
 		HostName:       entry.HostName,
 		Port:           entry.Port,
 		Addresses:      addresses,
 	}, true
+}
+
+func resolveKnownPeerByToken(token string, cfg Config, now time.Time) (string, bool) {
+	token = strings.TrimSpace(token)
+	if token == "" || cfg.KnownPeerProvider == nil {
+		return "", false
+	}
+
+	for _, peer := range cfg.KnownPeerProvider() {
+		deviceID := strings.TrimSpace(peer.DeviceID)
+		if deviceID == "" {
+			continue
+		}
+		keyBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(peer.Ed25519PublicKey))
+		if err != nil || len(keyBytes) == 0 {
+			continue
+		}
+		if verifyTokenWithHourSkew(token, deviceID, keyBytes, now, 1) {
+			return deviceID, true
+		}
+	}
+
+	return "", false
+}
+
+func verifyTokenWithHourSkew(token, deviceID string, ed25519PublicKey []byte, now time.Time, hourSkew int) bool {
+	for offset := -hourSkew; offset <= hourSkew; offset++ {
+		candidate := now.Add(time.Duration(offset) * time.Hour)
+		if VerifyDiscoveryToken(token, deviceID, ed25519PublicKey, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func syntheticUnknownDeviceID(entry *zeroconf.ServiceEntry, addresses []string) string {
+	builder := strings.Builder{}
+	builder.WriteString(strings.TrimSpace(entry.Instance))
+	builder.WriteString("|")
+	builder.WriteString(strings.TrimSpace(entry.HostName))
+	builder.WriteString("|")
+	builder.WriteString(strconv.Itoa(entry.Port))
+	builder.WriteString("|")
+	builder.WriteString(strings.Join(addresses, ","))
+	value := strings.TrimSpace(builder.String())
+	if value == "" {
+		return ""
+	}
+
+	sum := sha256.Sum256([]byte(value))
+	return "unknown-" + hex.EncodeToString(sum[:8])
 }
 
 func txtToMap(text []string) map[string]string {
@@ -364,6 +436,7 @@ func peersEqual(a, b DiscoveredPeer) bool {
 	if a.DeviceID != b.DeviceID ||
 		a.DeviceName != b.DeviceName ||
 		a.KeyFingerprint != b.KeyFingerprint ||
+		a.DiscoveryToken != b.DiscoveryToken ||
 		a.Version != b.Version ||
 		a.HostName != b.HostName ||
 		a.Port != b.Port ||

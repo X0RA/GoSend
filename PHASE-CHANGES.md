@@ -150,43 +150,43 @@ This phase hardens the networking layer against abuse and instability. The chang
 
 Without rate limits, a malicious device on the LAN can flood the listener with connections or spam add requests, degrading performance and responsiveness.
 
-- [ ] Add a per-IP connection rate limiter to the TCP accept loop in `network/server.go` (e.g., max 5 new connections per IP per minute, using `golang.org/x/time/rate` or a simple token bucket)
-- [ ] Add a per-connection malformed frame counter in `network/connection.go` that disconnects the peer after 3 consecutive invalid frames
-- [ ] Add a per-peer cooldown for add requests in `peer_manager.go` (e.g., one add request per peer device ID per 30 seconds, rejecting duplicates silently)
-- [ ] Add a per-peer cooldown for file requests (e.g., max 5 file requests per minute from the same peer)
-- [ ] Log rate limit triggers to the security events table (from Phase 2.3)
-- [ ] Add tests that simulate rapid connection floods and verify the rate limiter engages correctly
+- [x] Add a per-IP connection rate limiter to the TCP accept loop in `network/server.go` (e.g., max 5 new connections per IP per minute, using `golang.org/x/time/rate` or a simple token bucket)
+- [x] Add a per-connection malformed frame counter in `network/connection.go` that disconnects the peer after 3 consecutive invalid frames
+- [x] Add a per-peer cooldown for add requests in `peer_manager.go` (e.g., one add request per peer device ID per 30 seconds, rejecting duplicates silently)
+- [x] Add a per-peer cooldown for file requests (e.g., max 5 file requests per minute from the same peer)
+- [x] Log rate limit triggers to the security events table (from Phase 2.3)
+- [x] Add tests that simulate rapid connection floods and verify the rate limiter engages correctly
 
 ### 4.2 — Jittered Exponential Backoff with Endpoint Health Scoring
 
 The fixed reconnect backoff sequence creates synchronized retry storms when multiple peers recover simultaneously. Adding jitter and preferring recently-successful endpoints improves reconnect reliability.
 
-- [ ] Modify the reconnect backoff logic in `peer_manager.go` to add ±25% random jitter to each interval (e.g., a 60s base becomes 45–75s)
-- [ ] Add an `endpoint_health` field to the in-memory peer connection state tracking: increment on successful connect, decrement (with floor of 0) on failure
-- [ ] When a peer has been discovered at multiple addresses (via mDNS), sort candidate addresses by health score and attempt the highest-scored first
-- [ ] Add a cap on maximum reconnect attempts before giving up (e.g., 50 attempts), after which the peer is left in offline state until the next mDNS discovery event triggers a fresh attempt
-- [ ] Add tests that verify jitter is applied and that health scoring affects endpoint selection order
+- [x] Modify the reconnect backoff logic in `peer_manager.go` to add ±25% random jitter to each interval (e.g., a 60s base becomes 45–75s)
+- [x] Add an `endpoint_health` field to the in-memory peer connection state tracking: increment on successful connect, decrement (with floor of 0) on failure
+- [x] When a peer has been discovered at multiple addresses (via mDNS), sort candidate addresses by health score and attempt the highest-scored first
+- [x] Add a cap on maximum reconnect attempts before giving up (e.g., 50 attempts), after which the peer is left in offline state until the next mDNS discovery event triggers a fresh attempt
+- [x] Add tests that verify jitter is applied and that health scoring affects endpoint selection order
 
 ### 4.3 — Harden mDNS Privacy Surface
 
 mDNS currently advertises `device_id` and `key_fingerprint` as stable identifiers in cleartext TXT records. Any device on the LAN can passively track GoSend presence over time.
 
-- [ ] Remove `key_fingerprint` from the mDNS TXT records in `discovery/mdns.go` — this value is exchanged during the handshake and does not need to be broadcast
-- [ ] Replace the raw `device_id` in TXT records with a rotating discovery token derived from HMAC(device_id, current_hour) using a key derived from the Ed25519 identity, so passive observers see a changing value
-- [ ] Update `discovery/peer_scanner.go` to verify rotating tokens from known peers by trying HMAC verification against stored peer public keys and device IDs
-- [ ] Ensure unknown peers (not yet added) can still be discovered — the instance name and service type remain sufficient for the discovery dialog
-- [ ] Add tests that verify token rotation works across hour boundaries and that known peers are still correctly identified
+- [x] Remove `key_fingerprint` from the mDNS TXT records in `discovery/mdns.go` — this value is exchanged during the handshake and does not need to be broadcast
+- [x] Replace the raw `device_id` in TXT records with a rotating discovery token derived from HMAC(device_id, current_hour) using a key derived from the Ed25519 identity, so passive observers see a changing value
+- [x] Update `discovery/peer_scanner.go` to verify rotating tokens from known peers by trying HMAC verification against stored peer public keys and device IDs
+- [x] Ensure unknown peers (not yet added) can still be discovered — the instance name and service type remain sufficient for the discovery dialog
+- [x] Add tests that verify token rotation works across hour boundaries and that known peers are still correctly identified
 
 ### 4.4 — Persist Outbound File Transfer State for Crash Recovery
 
 If the app crashes during a large file transfer, all progress is lost because outbound transfer state lives only in memory. Persisting checkpoints enables resume after restart.
 
-- [ ] Create a `transfer_checkpoints` table in `storage/database.go` with: `file_id`, `direction` (send/receive), `next_chunk`, `bytes_transferred`, `temp_path`, `updated_at`
-- [ ] Update `file_transfer.go`'s send loop to write a checkpoint every 50 chunks or 10 MB (whichever comes first)
-- [ ] Update `file_transfer.go`'s receive side to write a checkpoint on each successfully received chunk (or batched every N chunks for performance)
-- [ ] On startup, scan for incomplete transfer checkpoints in `peer_manager.go` and register them as resumable; when the relevant peer reconnects, re-initiate using the `resume_from_chunk` mechanism in `FileResponse`
-- [ ] Clean up checkpoint rows when a transfer completes or fails definitively
-- [ ] Add tests for crash-resume scenarios: simulate a partial transfer, restart, and verify the transfer resumes from the checkpoint rather than the beginning
+- [x] Create a `transfer_checkpoints` table in `storage/database.go` with: `file_id`, `direction` (send/receive), `next_chunk`, `bytes_transferred`, `temp_path`, `updated_at`
+- [x] Update `file_transfer.go`'s send loop to write a checkpoint every 50 chunks or 10 MB (whichever comes first)
+- [x] Update `file_transfer.go`'s receive side to write a checkpoint on each successfully received chunk (or batched every N chunks for performance)
+- [x] On startup, scan for incomplete transfer checkpoints in `peer_manager.go` and register them as resumable; when the relevant peer reconnects, re-initiate using the `resume_from_chunk` mechanism in `FileResponse`
+- [x] Clean up checkpoint rows when a transfer completes or fails definitively
+- [x] Add tests for crash-resume scenarios: simulate a partial transfer, restart, and verify the transfer resumes from the checkpoint rather than the beginning
 
 ---
 

@@ -41,6 +41,13 @@ const (
 )
 
 const (
+	// TransferDirectionSend marks an outbound transfer checkpoint.
+	TransferDirectionSend = "send"
+	// TransferDirectionReceive marks an inbound transfer checkpoint.
+	TransferDirectionReceive = "receive"
+)
+
+const (
 	// KeyRotationDecisionTrusted means a presented replacement key was accepted.
 	KeyRotationDecisionTrusted = "trusted"
 	// KeyRotationDecisionRejected means a presented replacement key was rejected.
@@ -103,6 +110,16 @@ type FileMetadata struct {
 	Checksum          string
 	TimestampReceived *int64
 	TransferStatus    string
+}
+
+// TransferCheckpoint stores resumable transfer progress state.
+type TransferCheckpoint struct {
+	FileID           string
+	Direction        string
+	NextChunk        int
+	BytesTransferred int64
+	TempPath         string
+	UpdatedAt        int64
 }
 
 // KeyRotationEvent tracks one trust/reject decision for a peer key change.
@@ -179,6 +196,15 @@ func validateTransferStatus(status string) error {
 		return nil
 	default:
 		return fmt.Errorf("invalid transfer status %q", status)
+	}
+}
+
+func validateTransferDirection(direction string) error {
+	switch direction {
+	case TransferDirectionSend, TransferDirectionReceive:
+		return nil
+	default:
+		return fmt.Errorf("invalid transfer checkpoint direction %q", direction)
 	}
 }
 

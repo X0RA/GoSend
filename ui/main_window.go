@@ -230,10 +230,12 @@ func (c *controller) startServices() error {
 	c.activeListenPort = activePort
 
 	discoveryService, err := discovery.Start(discovery.Config{
-		SelfDeviceID:   c.cfg.DeviceID,
-		DeviceName:     c.cfg.DeviceName,
-		ListeningPort:  activePort,
-		KeyFingerprint: c.cfg.KeyFingerprint,
+		SelfDeviceID:      c.cfg.DeviceID,
+		DeviceName:        c.cfg.DeviceName,
+		ListeningPort:     activePort,
+		KeyFingerprint:    c.cfg.KeyFingerprint,
+		Ed25519PublicKey:  c.identity.Ed25519PublicKey,
+		KnownPeerProvider: c.discoveryKnownPeers,
 	})
 	if err != nil {
 		c.manager.Stop()
@@ -633,6 +635,32 @@ func (c *controller) syncDiscoveredFromScanner() {
 	c.refreshDiscoveryRows()
 }
 
+func (c *controller) discoveryKnownPeers() []discovery.KnownPeerIdentity {
+	peers, err := c.store.ListPeers()
+	if err != nil {
+		return nil
+	}
+
+	known := make([]discovery.KnownPeerIdentity, 0, len(peers))
+	for _, peer := range peers {
+		deviceID := strings.TrimSpace(peer.DeviceID)
+		publicKey := strings.TrimSpace(peer.Ed25519PublicKey)
+		if deviceID == "" || publicKey == "" {
+			continue
+		}
+		known = append(known, discovery.KnownPeerIdentity{
+			DeviceID:         deviceID,
+			Ed25519PublicKey: publicKey,
+		})
+	}
+
+	known = append(known, discovery.KnownPeerIdentity{
+		DeviceID:         c.identity.DeviceID,
+		Ed25519PublicKey: base64.StdEncoding.EncodeToString(c.identity.Ed25519PublicKey),
+	})
+	return known
+}
+
 func (c *controller) tryReconnectDiscoveredPeer(peer discovery.DiscoveredPeer) {
 	if c.manager == nil || len(peer.Addresses) == 0 || peer.Port <= 0 {
 		return
@@ -640,7 +668,7 @@ func (c *controller) tryReconnectDiscoveredPeer(peer discovery.DiscoveredPeer) {
 	if !c.isKnownPeer(peer.DeviceID) {
 		return
 	}
-	c.manager.NotifyPeerDiscovered(peer.DeviceID, peer.DeviceName, peer.Addresses[0], peer.Port)
+	c.manager.NotifyPeerDiscoveredEndpoints(peer.DeviceID, peer.DeviceName, peer.Addresses, peer.Port)
 }
 
 func (c *controller) reconnectDiscoveredKnownPeers() {

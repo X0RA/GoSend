@@ -1,6 +1,7 @@
 package network
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -326,6 +327,62 @@ func TestFileTransferChecksumMismatchFails(t *testing.T) {
 	waitForFileStatus(t, b.store, fileID, "failed", 12*time.Second)
 }
 
+func TestFileTransferResumeAfterSenderRestartUsesCheckpoint(t *testing.T) {
+	bPort := freeTCPPort(t)
+	sourcePath := createFixtureFile(t, t.TempDir(), "resume-after-crash.bin", 16*1024*1024)
+
+	aIdentity := generateIdentity(t, "peer-a", "Peer A")
+	aStore, _, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open A store failed: %v", err)
+	}
+	defer func() {
+		_ = aStore.Close()
+	}()
+	a := newTestManagerWithParts(t, aStore, aIdentity, "127.0.0.1:0")
+	defer a.stop()
+
+	bIdentity := generateIdentity(t, "peer-b", "Peer B")
+	bStore, _, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open B store failed: %v", err)
+	}
+	defer func() {
+		_ = bStore.Close()
+	}()
+	b := newTestManagerWithParts(t, bStore, bIdentity, "127.0.0.1:"+bPort)
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a"); err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+
+	fileID, err := a.manager.SendFile("peer-b", sourcePath)
+	if err != nil {
+		t.Fatalf("SendFile failed: %v", err)
+	}
+
+	waitForCheckpointProgress(t, aStore, fileID, storage.TransferDirectionSend, 1, 20*time.Second)
+
+	a.stop()
+
+	aRestarted := newTestManagerWithParts(t, aStore, aIdentity, "127.0.0.1:0")
+	defer aRestarted.stop()
+
+	waitForFileStatus(t, aStore, fileID, "complete", 25*time.Second)
+	waitForFileStatus(t, bStore, fileID, "complete", 25*time.Second)
+
+	if _, err := aStore.GetTransferCheckpoint(fileID, storage.TransferDirectionSend); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("expected outbound checkpoint cleanup after completion, got err=%v", err)
+	}
+	if _, err := bStore.GetTransferCheckpoint(fileID, storage.TransferDirectionReceive); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("expected inbound checkpoint cleanup after completion, got err=%v", err)
+	}
+}
+
 func TestChunkResponseMissingOrForgedSignatureRejected(t *testing.T) {
 	a := newTestManager(t, testManagerConfig{
 		deviceID: "peer-a",
@@ -474,6 +531,23 @@ func expectNoFileTransferEvent(t *testing.T, events <-chan fileTransferEvent, ti
 		t.Fatalf("unexpected file transfer event")
 	case <-time.After(timeout):
 	}
+}
+
+func waitForCheckpointProgress(t *testing.T, store *storage.Store, fileID, direction string, minNextChunk int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		checkpoint, err := store.GetTransferCheckpoint(fileID, direction)
+		if err == nil && checkpoint.NextChunk >= minNextChunk {
+			return
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+	checkpoint, err := store.GetTransferCheckpoint(fileID, direction)
+	if err != nil {
+		t.Fatalf("timed out waiting for checkpoint %q/%q, final err=%v", fileID, direction, err)
+	}
+	t.Fatalf("timed out waiting for checkpoint %q/%q next_chunk >= %d, final=%d", fileID, direction, minNextChunk, checkpoint.NextChunk)
 }
 
 func createFixtureFile(t *testing.T, dir, name string, size int) string {

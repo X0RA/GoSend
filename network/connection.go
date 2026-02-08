@@ -27,6 +27,7 @@ var (
 const (
 	defaultRekeyInterval   = time.Hour
 	defaultRekeyAfterBytes = uint64(1 << 30) // 1 GiB
+	maxMalformedFrames     = 3
 )
 
 // ConnectionState represents the lifecycle state of one peer connection.
@@ -355,6 +356,8 @@ func (pc *PeerConnection) Close() error {
 }
 
 func (pc *PeerConnection) readLoop() {
+	consecutiveMalformedFrames := 0
+
 	for {
 		select {
 		case <-pc.closed:
@@ -384,8 +387,12 @@ func (pc *PeerConnection) readLoop() {
 
 		payload, err := pc.decryptPayload(framePayload)
 		if err != nil {
-			pc.closeWithError(fmt.Errorf("decrypt frame: %w", err))
-			return
+			consecutiveMalformedFrames++
+			if consecutiveMalformedFrames >= maxMalformedFrames {
+				pc.closeWithError(fmt.Errorf("disconnect after %d malformed frames: %w", consecutiveMalformedFrames, err))
+				return
+			}
+			continue
 		}
 		if len(payload) == 0 {
 			continue
@@ -397,9 +404,10 @@ func (pc *PeerConnection) readLoop() {
 				pc.closeWithError(ErrFrameTooLarge)
 				return
 			}
-			select {
-			case pc.inbound <- payload:
-			case <-pc.closed:
+			consecutiveMalformedFrames++
+			if consecutiveMalformedFrames >= maxMalformedFrames {
+				pc.closeWithError(fmt.Errorf("disconnect after %d malformed frames: %w", consecutiveMalformedFrames, err))
+				return
 			}
 			continue
 		}
@@ -407,6 +415,7 @@ func (pc *PeerConnection) readLoop() {
 			pc.closeWithError(ErrFrameTooLarge)
 			return
 		}
+		consecutiveMalformedFrames = 0
 
 		switch msgType {
 		case TypePing:

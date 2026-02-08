@@ -2,6 +2,8 @@ package discovery
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
 	"net"
 	"testing"
 	"time"
@@ -19,10 +21,11 @@ func TestStartBroadcasterBuildsExpectedTXTRecords(t *testing.T) {
 	)
 
 	cfg := Config{
-		SelfDeviceID:   "device-123",
-		DeviceName:     "Alice Laptop",
-		ListeningPort:  9999,
-		KeyFingerprint: "AABBCCDDEEFF0011",
+		SelfDeviceID:     "device-123",
+		DeviceName:       "Alice Laptop",
+		ListeningPort:    9999,
+		Ed25519PublicKey: deterministicTestPublicKey("device-123"),
+		Now:              func() time.Time { return time.Unix(1_706_000_000, 0).UTC() },
 		registerFn: func(instance, service, domain string, port int, text []string, ifaces []net.Interface) (*zeroconf.Server, error) {
 			gotInstance = instance
 			gotService = service
@@ -54,17 +57,18 @@ func TestStartBroadcasterBuildsExpectedTXTRecords(t *testing.T) {
 		t.Fatalf("unexpected port: %d", gotPort)
 	}
 
-	assertContainsTXT(t, gotTXT, "device_id=device-123")
+	assertContainsTXTPrefix(t, gotTXT, discoveryTokenTXTKey+"=")
 	assertContainsTXT(t, gotTXT, "version=1")
-	assertContainsTXT(t, gotTXT, "key_fingerprint=AABBCCDDEEFF0011")
+	assertNotContainsTXTPrefix(t, gotTXT, "device_id=")
+	assertNotContainsTXTPrefix(t, gotTXT, "key_fingerprint=")
 }
 
 func TestServiceStartAndStop(t *testing.T) {
 	cfg := Config{
-		SelfDeviceID:   "self",
-		DeviceName:     "Self",
-		ListeningPort:  9999,
-		KeyFingerprint: "ff00",
+		SelfDeviceID:     "self",
+		DeviceName:       "Self",
+		ListeningPort:    9999,
+		Ed25519PublicKey: deterministicTestPublicKey("self"),
 		registerFn: func(instance, service, domain string, port int, text []string, ifaces []net.Interface) (*zeroconf.Server, error) {
 			return nil, nil
 		},
@@ -98,6 +102,35 @@ func TestConfigWithDefaultsSetsPeerStaleAfterFromTTL(t *testing.T) {
 	}
 }
 
+func TestComputeDiscoveryTokenRotatesAcrossHourBoundary(t *testing.T) {
+	publicKey := deterministicTestPublicKey("token-device")
+	deviceID := "token-device"
+
+	base := time.Unix(1_706_000_000, 0).UTC().Truncate(time.Hour)
+	sameHour := base.Add(30 * time.Minute)
+	nextHour := base.Add(90 * time.Minute)
+
+	first := ComputeDiscoveryToken(deviceID, publicKey, base)
+	second := ComputeDiscoveryToken(deviceID, publicKey, sameHour)
+	third := ComputeDiscoveryToken(deviceID, publicKey, nextHour)
+
+	if first == "" || second == "" || third == "" {
+		t.Fatalf("expected non-empty discovery tokens")
+	}
+	if first != second {
+		t.Fatalf("expected token to remain stable inside one hour bucket")
+	}
+	if first == third {
+		t.Fatalf("expected token to rotate across hour boundary")
+	}
+	if !VerifyDiscoveryToken(first, deviceID, publicKey, base) {
+		t.Fatalf("expected token verification to succeed for matching hour")
+	}
+	if VerifyDiscoveryToken(first, deviceID, publicKey, nextHour) {
+		t.Fatalf("expected token verification to fail for different hour")
+	}
+}
+
 func assertContainsTXT(t *testing.T, txt []string, expected string) {
 	t.Helper()
 	for _, v := range txt {
@@ -106,4 +139,30 @@ func assertContainsTXT(t *testing.T, txt []string, expected string) {
 		}
 	}
 	t.Fatalf("missing TXT record %q in %v", expected, txt)
+}
+
+func assertContainsTXTPrefix(t *testing.T, txt []string, prefix string) {
+	t.Helper()
+	for _, value := range txt {
+		if len(value) >= len(prefix) && value[:len(prefix)] == prefix {
+			return
+		}
+	}
+	t.Fatalf("missing TXT prefix %q in %v", prefix, txt)
+}
+
+func assertNotContainsTXTPrefix(t *testing.T, txt []string, prefix string) {
+	t.Helper()
+	for _, value := range txt {
+		if len(value) >= len(prefix) && value[:len(prefix)] == prefix {
+			t.Fatalf("unexpected TXT prefix %q found in %v", prefix, txt)
+		}
+	}
+}
+
+func deterministicTestPublicKey(seed string) ed25519.PublicKey {
+	sum := sha256.Sum256([]byte("mdns-test-seed|" + seed))
+	privateKey := ed25519.NewKeyFromSeed(sum[:])
+	publicKey, _ := privateKey.Public().(ed25519.PublicKey)
+	return publicKey
 }

@@ -34,6 +34,11 @@ const (
 
 	fileCompleteStatusComplete = "complete"
 	fileCompleteStatusFailed   = "failed"
+
+	outboundCheckpointChunkInterval = 50
+	outboundCheckpointByteInterval  = 10 * 1024 * 1024
+	inboundCheckpointChunkInterval  = 10
+	inboundCheckpointByteInterval   = 2 * 1024 * 1024
 )
 
 type outboundFileTransfer struct {
@@ -57,6 +62,9 @@ type outboundFileTransfer struct {
 	Running  bool
 	Done     bool
 	Rejected bool
+
+	checkpointChunk int
+	checkpointBytes int64
 }
 
 type inboundFileTransfer struct {
@@ -77,6 +85,9 @@ type inboundFileTransfer struct {
 	ReceivedChunks map[int]bool
 	NextChunk      int
 	BytesReceived  int64
+
+	checkpointChunk int
+	checkpointBytes int64
 }
 
 type fileTransferEvent struct {
@@ -245,6 +256,7 @@ func (m *PeerManager) runOutboundFileTransfer(transfer *outboundFileTransfer, co
 		transfer.Rejected = true
 		transfer.mu.Unlock()
 		_ = m.options.Store.UpdateTransferStatus(transfer.FileID, "rejected")
+		m.removeTransferCheckpoint(transfer.FileID, storage.TransferDirectionSend)
 		return nil
 	}
 	if err := m.options.Store.UpdateTransferStatus(transfer.FileID, "accepted"); err != nil && !errors.Is(err, storage.ErrNotFound) {
@@ -265,7 +277,16 @@ func (m *PeerManager) runOutboundFileTransfer(transfer *outboundFileTransfer, co
 	}
 	transfer.NextChunk = startChunk
 	bytesSent := transfer.BytesSent
+	minBytes := int64(startChunk) * int64(transfer.ChunkSize)
+	if minBytes > transfer.Filesize {
+		minBytes = transfer.Filesize
+	}
+	if bytesSent < minBytes {
+		bytesSent = minBytes
+		transfer.BytesSent = bytesSent
+	}
 	transfer.mu.Unlock()
+	m.maybePersistOutboundCheckpoint(transfer, true)
 
 	file, err := os.Open(transfer.SourcePath)
 	if err != nil {
@@ -324,6 +345,7 @@ func (m *PeerManager) runOutboundFileTransfer(transfer *outboundFileTransfer, co
 				transfer.Rejected = true
 				transfer.mu.Unlock()
 				_ = m.options.Store.UpdateTransferStatus(transfer.FileID, "rejected")
+				m.removeTransferCheckpoint(transfer.FileID, storage.TransferDirectionSend)
 				return nil
 			}
 			if response.Status == fileResponseStatusChunkAck {
@@ -341,6 +363,7 @@ func (m *PeerManager) runOutboundFileTransfer(transfer *outboundFileTransfer, co
 		transfer.NextChunk = chunkIndex + 1
 		transfer.BytesSent = bytesSent
 		transfer.mu.Unlock()
+		m.maybePersistOutboundCheckpoint(transfer, false)
 
 		m.emitFileProgress(FileProgress{
 			FileID:           transfer.FileID,
@@ -374,6 +397,7 @@ func (m *PeerManager) runOutboundFileTransfer(transfer *outboundFileTransfer, co
 		transfer.Done = true
 		transfer.mu.Unlock()
 		_ = m.options.Store.UpdateTransferStatus(transfer.FileID, "failed")
+		m.removeTransferCheckpoint(transfer.FileID, storage.TransferDirectionSend)
 		return nil
 	}
 
@@ -382,6 +406,7 @@ func (m *PeerManager) runOutboundFileTransfer(transfer *outboundFileTransfer, co
 	transfer.Running = false
 	transfer.mu.Unlock()
 	_ = m.options.Store.UpdateTransferStatus(transfer.FileID, "complete")
+	m.removeTransferCheckpoint(transfer.FileID, storage.TransferDirectionSend)
 
 	m.emitFileProgress(FileProgress{
 		FileID:            transfer.FileID,
@@ -429,6 +454,27 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 		_ = m.sendErrorMessage(conn, "invalid_signature", "file request signature verification failed", request.FileID)
 		return
 	}
+	if !m.allowFileRequest(request.FromDeviceID, time.Now()) {
+		m.logSecurityEvent(securityEventTypeConnectionRateLimitTriggered, request.FromDeviceID, storage.SecuritySeverityWarning, map[string]any{
+			"limit_type":       "file_request_per_peer",
+			"limit_per_window": m.options.FileRequestRateLimit,
+			"window_seconds":   m.options.FileRequestWindow.Seconds(),
+		})
+		response := FileResponse{
+			Type:         TypeFileResponse,
+			FileID:       request.FileID,
+			Status:       fileResponseStatusRejected,
+			FromDeviceID: m.options.Identity.DeviceID,
+			Timestamp:    time.Now().UnixMilli(),
+			Message:      "file request rate limit exceeded",
+		}
+		if err := m.signFileResponse(&response); err != nil {
+			m.reportError(err)
+			return
+		}
+		_ = conn.SendMessage(response)
+		return
+	}
 
 	peerSettings := m.getPeerSettingsSnapshot(request.FromDeviceID)
 	downloadDir := m.resolveInboundDownloadDirectory(peerSettings)
@@ -462,6 +508,11 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 
 	inbound := m.getInboundTransfer(request.FileID)
 	if !accept {
+		if inbound != nil {
+			m.removeInboundTransfer(request.FileID)
+			m.removeTransferCheckpoint(request.FileID, storage.TransferDirectionReceive)
+			_ = os.Remove(inbound.TempPath)
+		}
 		meta := storage.FileMetadata{
 			FileID:         request.FileID,
 			FromDeviceID:   request.FromDeviceID,
@@ -539,6 +590,7 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 		if err := m.upsertFileMetadata(meta); err != nil {
 			m.reportError(err)
 		}
+		m.maybePersistInboundCheckpoint(inbound, true)
 	}
 
 	_ = m.options.Store.UpdateTransferStatus(request.FileID, "accepted")
@@ -661,6 +713,7 @@ func (m *PeerManager) handleFileData(conn *PeerConnection, data FileData) {
 	totalBytes := transfer.Filesize
 	totalChunks := transfer.TotalChunks
 	transfer.mu.Unlock()
+	m.maybePersistInboundCheckpoint(transfer, false)
 
 	ack := FileResponse{
 		Type:         TypeFileResponse,
@@ -729,6 +782,7 @@ func (m *PeerManager) handleFileComplete(conn *PeerConnection, complete FileComp
 				totalChunks := outbound.TotalChunks
 				outbound.mu.Unlock()
 				_ = m.options.Store.UpdateTransferStatus(fileID, "complete")
+				m.removeTransferCheckpoint(fileID, storage.TransferDirectionSend)
 				m.emitFileProgress(FileProgress{
 					FileID:            fileID,
 					PeerDeviceID:      peerID,
@@ -749,6 +803,7 @@ func (m *PeerManager) handleFileComplete(conn *PeerConnection, complete FileComp
 	if complete.Status != fileCompleteStatusComplete {
 		_ = m.options.Store.UpdateTransferStatus(complete.FileID, "failed")
 		m.removeInboundTransfer(complete.FileID)
+		m.removeTransferCheckpoint(complete.FileID, storage.TransferDirectionReceive)
 		if err := m.sendSignedFileComplete(conn, FileComplete{
 			Type:      TypeFileComplete,
 			FileID:    complete.FileID,
@@ -765,6 +820,8 @@ func (m *PeerManager) handleFileComplete(conn *PeerConnection, complete FileComp
 	if err != nil {
 		m.reportError(err)
 		_ = m.options.Store.UpdateTransferStatus(complete.FileID, "failed")
+		m.removeInboundTransfer(complete.FileID)
+		m.removeTransferCheckpoint(complete.FileID, storage.TransferDirectionReceive)
 		if sendErr := m.sendSignedFileComplete(conn, FileComplete{
 			Type:      TypeFileComplete,
 			FileID:    complete.FileID,
@@ -778,6 +835,8 @@ func (m *PeerManager) handleFileComplete(conn *PeerConnection, complete FileComp
 	}
 	if !strings.EqualFold(checksum, inbound.Checksum) {
 		_ = m.options.Store.UpdateTransferStatus(complete.FileID, "failed")
+		m.removeInboundTransfer(complete.FileID)
+		m.removeTransferCheckpoint(complete.FileID, storage.TransferDirectionReceive)
 		if err := m.sendSignedFileComplete(conn, FileComplete{
 			Type:      TypeFileComplete,
 			FileID:    complete.FileID,
@@ -793,6 +852,8 @@ func (m *PeerManager) handleFileComplete(conn *PeerConnection, complete FileComp
 	if err := os.Rename(inbound.TempPath, inbound.FinalPath); err != nil {
 		m.reportError(err)
 		_ = m.options.Store.UpdateTransferStatus(complete.FileID, "failed")
+		m.removeInboundTransfer(complete.FileID)
+		m.removeTransferCheckpoint(complete.FileID, storage.TransferDirectionReceive)
 		if sendErr := m.sendSignedFileComplete(conn, FileComplete{
 			Type:      TypeFileComplete,
 			FileID:    complete.FileID,
@@ -807,6 +868,7 @@ func (m *PeerManager) handleFileComplete(conn *PeerConnection, complete FileComp
 
 	_ = m.options.Store.UpdateTransferStatus(complete.FileID, "complete")
 	m.removeInboundTransfer(complete.FileID)
+	m.removeTransferCheckpoint(complete.FileID, storage.TransferDirectionReceive)
 
 	if err := m.sendSignedFileComplete(conn, FileComplete{
 		Type:      TypeFileComplete,
@@ -926,6 +988,187 @@ func (m *PeerManager) upsertFileMetadata(meta storage.FileMetadata) error {
 		return nil
 	}
 	return err
+}
+
+func (m *PeerManager) loadTransferCheckpoints() error {
+	checkpoints, err := m.options.Store.ListTransferCheckpoints("")
+	if err != nil {
+		return fmt.Errorf("list transfer checkpoints: %w", err)
+	}
+
+	for _, checkpoint := range checkpoints {
+		switch checkpoint.Direction {
+		case storage.TransferDirectionSend:
+			if err := m.restoreOutboundTransfer(checkpoint); err != nil {
+				m.reportError(err)
+			}
+		case storage.TransferDirectionReceive:
+			if err := m.restoreInboundTransfer(checkpoint); err != nil {
+				m.reportError(err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (m *PeerManager) restoreOutboundTransfer(checkpoint storage.TransferCheckpoint) error {
+	meta, err := m.options.Store.GetFileByID(checkpoint.FileID)
+	if errors.Is(err, storage.ErrNotFound) {
+		m.removeTransferCheckpoint(checkpoint.FileID, storage.TransferDirectionSend)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load outbound checkpoint metadata %q: %w", checkpoint.FileID, err)
+	}
+	if isTerminalTransferStatus(meta.TransferStatus) {
+		m.removeTransferCheckpoint(checkpoint.FileID, storage.TransferDirectionSend)
+		return nil
+	}
+	if strings.TrimSpace(meta.ToDeviceID) == "" {
+		m.removeTransferCheckpoint(checkpoint.FileID, storage.TransferDirectionSend)
+		return nil
+	}
+
+	sourcePath := strings.TrimSpace(meta.StoredPath)
+	if sourcePath == "" {
+		m.removeTransferCheckpoint(checkpoint.FileID, storage.TransferDirectionSend)
+		return nil
+	}
+	if _, statErr := os.Stat(sourcePath); statErr != nil {
+		_ = m.options.Store.UpdateTransferStatus(checkpoint.FileID, "failed")
+		m.removeTransferCheckpoint(checkpoint.FileID, storage.TransferDirectionSend)
+		return fmt.Errorf("resume outbound transfer %q source missing: %w", checkpoint.FileID, statErr)
+	}
+
+	totalChunks := chunkCount(meta.Filesize, m.options.FileChunkSize)
+	nextChunk := checkpoint.NextChunk
+	if nextChunk < 0 {
+		nextChunk = 0
+	}
+	if nextChunk > totalChunks {
+		nextChunk = totalChunks
+	}
+	bytesSent := checkpoint.BytesTransferred
+	if bytesSent < 0 {
+		bytesSent = 0
+	}
+	if bytesSent > meta.Filesize {
+		bytesSent = meta.Filesize
+	}
+
+	transfer := &outboundFileTransfer{
+		FileID:          meta.FileID,
+		MessageID:       meta.MessageID,
+		PeerDeviceID:    meta.ToDeviceID,
+		SourcePath:      sourcePath,
+		Filename:        meta.Filename,
+		Filesize:        meta.Filesize,
+		Filetype:        meta.Filetype,
+		Checksum:        meta.Checksum,
+		ChunkSize:       m.options.FileChunkSize,
+		TotalChunks:     totalChunks,
+		NextChunk:       nextChunk,
+		BytesSent:       bytesSent,
+		checkpointChunk: nextChunk,
+		checkpointBytes: bytesSent,
+	}
+
+	m.fileMu.Lock()
+	if _, exists := m.outboundFileTransfers[transfer.FileID]; !exists {
+		m.outboundFileTransfers[transfer.FileID] = transfer
+	}
+	m.fileMu.Unlock()
+	return nil
+}
+
+func (m *PeerManager) restoreInboundTransfer(checkpoint storage.TransferCheckpoint) error {
+	meta, err := m.options.Store.GetFileByID(checkpoint.FileID)
+	if errors.Is(err, storage.ErrNotFound) {
+		m.removeTransferCheckpoint(checkpoint.FileID, storage.TransferDirectionReceive)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load inbound checkpoint metadata %q: %w", checkpoint.FileID, err)
+	}
+	if isTerminalTransferStatus(meta.TransferStatus) {
+		m.removeTransferCheckpoint(checkpoint.FileID, storage.TransferDirectionReceive)
+		return nil
+	}
+
+	tempPath := strings.TrimSpace(checkpoint.TempPath)
+	if tempPath == "" {
+		tempPath = strings.TrimSpace(meta.StoredPath) + ".part"
+	}
+	finalPath := strings.TrimSpace(meta.StoredPath)
+	if tempPath == "" || finalPath == "" {
+		m.removeTransferCheckpoint(checkpoint.FileID, storage.TransferDirectionReceive)
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(tempPath), 0o700); err != nil {
+		return fmt.Errorf("restore inbound checkpoint %q create temp dir: %w", checkpoint.FileID, err)
+	}
+	file, openErr := os.OpenFile(tempPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if openErr != nil {
+		return fmt.Errorf("restore inbound checkpoint %q open temp file: %w", checkpoint.FileID, openErr)
+	}
+	if truncateErr := file.Truncate(meta.Filesize); truncateErr != nil {
+		_ = file.Close()
+		return fmt.Errorf("restore inbound checkpoint %q truncate temp file: %w", checkpoint.FileID, truncateErr)
+	}
+	_ = file.Close()
+
+	totalChunks := chunkCount(meta.Filesize, m.options.FileChunkSize)
+	nextChunk := checkpoint.NextChunk
+	if nextChunk < 0 {
+		nextChunk = 0
+	}
+	if nextChunk > totalChunks {
+		nextChunk = totalChunks
+	}
+	bytesReceived := checkpoint.BytesTransferred
+	if bytesReceived < 0 {
+		bytesReceived = 0
+	}
+	if bytesReceived > meta.Filesize {
+		bytesReceived = meta.Filesize
+	}
+
+	receivedChunks := make(map[int]bool, nextChunk)
+	for chunkIndex := 0; chunkIndex < nextChunk; chunkIndex++ {
+		receivedChunks[chunkIndex] = true
+	}
+
+	transfer := &inboundFileTransfer{
+		FileID:          meta.FileID,
+		FromDeviceID:    meta.FromDeviceID,
+		Filename:        meta.Filename,
+		Filesize:        meta.Filesize,
+		Filetype:        meta.Filetype,
+		Checksum:        meta.Checksum,
+		ChunkSize:       m.options.FileChunkSize,
+		TotalChunks:     totalChunks,
+		TempPath:        tempPath,
+		FinalPath:       finalPath,
+		ReceivedChunks:  receivedChunks,
+		NextChunk:       nextChunk,
+		BytesReceived:   bytesReceived,
+		checkpointChunk: nextChunk,
+		checkpointBytes: bytesReceived,
+	}
+
+	m.setInboundTransfer(transfer)
+	return nil
+}
+
+func isTerminalTransferStatus(status string) bool {
+	switch status {
+	case "complete", "rejected", "failed":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *PeerManager) getPeerSettingsSnapshot(peerDeviceID string) *storage.PeerSettings {
@@ -1102,6 +1345,79 @@ func (m *PeerManager) removeInboundTransfer(fileID string) {
 	m.fileMu.Lock()
 	delete(m.inboundFileTransfers, fileID)
 	m.fileMu.Unlock()
+}
+
+func (m *PeerManager) maybePersistOutboundCheckpoint(transfer *outboundFileTransfer, force bool) {
+	if transfer == nil {
+		return
+	}
+
+	transfer.mu.Lock()
+	if !force {
+		chunkDelta := transfer.NextChunk - transfer.checkpointChunk
+		byteDelta := transfer.BytesSent - transfer.checkpointBytes
+		if chunkDelta < outboundCheckpointChunkInterval && byteDelta < outboundCheckpointByteInterval {
+			transfer.mu.Unlock()
+			return
+		}
+	}
+
+	checkpoint := storage.TransferCheckpoint{
+		FileID:           transfer.FileID,
+		Direction:        storage.TransferDirectionSend,
+		NextChunk:        transfer.NextChunk,
+		BytesTransferred: transfer.BytesSent,
+		TempPath:         transfer.SourcePath,
+		UpdatedAt:        time.Now().UnixMilli(),
+	}
+	transfer.checkpointChunk = transfer.NextChunk
+	transfer.checkpointBytes = transfer.BytesSent
+	transfer.mu.Unlock()
+
+	if err := m.options.Store.UpsertTransferCheckpoint(checkpoint); err != nil {
+		m.reportError(fmt.Errorf("upsert outbound transfer checkpoint %q: %w", transfer.FileID, err))
+	}
+}
+
+func (m *PeerManager) maybePersistInboundCheckpoint(transfer *inboundFileTransfer, force bool) {
+	if transfer == nil {
+		return
+	}
+
+	transfer.mu.Lock()
+	if !force {
+		chunkDelta := transfer.NextChunk - transfer.checkpointChunk
+		byteDelta := transfer.BytesReceived - transfer.checkpointBytes
+		if chunkDelta < inboundCheckpointChunkInterval && byteDelta < inboundCheckpointByteInterval {
+			transfer.mu.Unlock()
+			return
+		}
+	}
+
+	checkpoint := storage.TransferCheckpoint{
+		FileID:           transfer.FileID,
+		Direction:        storage.TransferDirectionReceive,
+		NextChunk:        transfer.NextChunk,
+		BytesTransferred: transfer.BytesReceived,
+		TempPath:         transfer.TempPath,
+		UpdatedAt:        time.Now().UnixMilli(),
+	}
+	transfer.checkpointChunk = transfer.NextChunk
+	transfer.checkpointBytes = transfer.BytesReceived
+	transfer.mu.Unlock()
+
+	if err := m.options.Store.UpsertTransferCheckpoint(checkpoint); err != nil {
+		m.reportError(fmt.Errorf("upsert inbound transfer checkpoint %q: %w", transfer.FileID, err))
+	}
+}
+
+func (m *PeerManager) removeTransferCheckpoint(fileID, direction string) {
+	if strings.TrimSpace(fileID) == "" {
+		return
+	}
+	if err := m.options.Store.DeleteTransferCheckpoint(fileID, direction); err != nil {
+		m.reportError(fmt.Errorf("delete transfer checkpoint %q/%s: %w", fileID, direction, err))
+	}
 }
 
 func (m *PeerManager) emitFileProgress(progress FileProgress) {

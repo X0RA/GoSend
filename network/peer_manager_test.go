@@ -6,8 +6,11 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	mathrand "math/rand"
 	"net"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -576,6 +579,208 @@ func TestPeerAddResponseMustMatchConnectionPeer(t *testing.T) {
 	}
 }
 
+func TestPeerAddRequestCooldownDropsRapidDuplicates(t *testing.T) {
+	var approveCount int
+	var approveMu sync.Mutex
+
+	a := newTestManager(t, testManagerConfig{
+		deviceID: "peer-a",
+		name:     "Peer A",
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID: "peer-b",
+		name:     "Peer B",
+		approve: func(notification AddRequestNotification) (bool, error) {
+			approveMu.Lock()
+			approveCount++
+			approveMu.Unlock()
+			return true, nil
+		},
+		addRequestCooldown: 5 * time.Second,
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	conn := a.manager.getConnection("peer-b")
+	if conn == nil {
+		t.Fatalf("expected connection to peer-b")
+	}
+
+	sendAddRequest := func() {
+		request := PeerAddRequest{
+			Type:           TypePeerAddRequest,
+			FromDeviceID:   "peer-a",
+			FromDeviceName: "Peer A",
+			Timestamp:      time.Now().UnixMilli(),
+		}
+		if err := a.manager.signPeerAddRequest(&request); err != nil {
+			t.Fatalf("sign peer add request failed: %v", err)
+		}
+		if err := conn.SendMessage(request); err != nil {
+			t.Fatalf("send peer add request failed: %v", err)
+		}
+	}
+
+	sendAddRequest()
+	waitForCondition(t, 2*time.Second, func() bool {
+		approveMu.Lock()
+		defer approveMu.Unlock()
+		return approveCount == 1
+	})
+
+	sendAddRequest()
+	time.Sleep(300 * time.Millisecond)
+
+	approveMu.Lock()
+	finalApprovals := approveCount
+	approveMu.Unlock()
+	if finalApprovals != 1 {
+		t.Fatalf("expected cooldown to suppress duplicate add request, approvals=%d", finalApprovals)
+	}
+
+	events, err := b.store.GetSecurityEvents(storage.SecurityEventFilter{
+		EventType:    securityEventTypeConnectionRateLimitTriggered,
+		PeerDeviceID: "peer-a",
+		Limit:        20,
+	})
+	if err != nil {
+		t.Fatalf("GetSecurityEvents failed: %v", err)
+	}
+	found := false
+	for _, event := range events {
+		if strings.Contains(event.Details, "peer_add_request_cooldown") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected peer_add_request_cooldown security event")
+	}
+}
+
+func TestFileRequestRateLimitTriggersAfterBurst(t *testing.T) {
+	a := newTestManager(t, testManagerConfig{
+		deviceID: "peer-a",
+		name:     "Peer A",
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID:             "peer-b",
+		name:                 "Peer B",
+		fileRequestRateLimit: 5,
+		fileRequestWindow:    time.Minute,
+		approveFile: func(notification FileRequestNotification) (bool, error) {
+			return false, nil
+		},
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	conn := a.manager.getConnection("peer-b")
+	if conn == nil {
+		t.Fatalf("expected connection to peer-b")
+	}
+
+	for i := 0; i < 6; i++ {
+		request := FileRequest{
+			Type:         TypeFileRequest,
+			FileID:       "burst-file-" + strconv.Itoa(i),
+			FromDeviceID: "peer-a",
+			ToDeviceID:   "peer-b",
+			Filename:     "burst.bin",
+			Filesize:     1024,
+			Filetype:     "application/octet-stream",
+			Checksum:     strings.Repeat("a", 64),
+			Sequence:     conn.NextSendSequence(),
+			Timestamp:    time.Now().UnixMilli(),
+		}
+		if err := a.manager.signFileRequest(&request); err != nil {
+			t.Fatalf("sign file request failed: %v", err)
+		}
+		if err := conn.SendMessage(request); err != nil {
+			t.Fatalf("send file request failed: %v", err)
+		}
+	}
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		events, err := b.store.GetSecurityEvents(storage.SecurityEventFilter{
+			EventType:    securityEventTypeConnectionRateLimitTriggered,
+			PeerDeviceID: "peer-a",
+			Limit:        20,
+		})
+		if err != nil {
+			return false
+		}
+		for _, event := range events {
+			if strings.Contains(event.Details, "file_request_per_peer") {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func TestBackoffAppliesJitterWithinBounds(t *testing.T) {
+	manager := newTestManager(t, testManagerConfig{
+		deviceID:                "peer-jitter",
+		name:                    "Peer Jitter",
+		reconnectJitterFraction: 0.25,
+		randomSource:            mathrand.New(mathrand.NewSource(7)),
+	})
+	defer manager.stop()
+
+	manager.manager.options.ReconnectBackoff = []time.Duration{100 * time.Millisecond}
+	for i := 0; i < 25; i++ {
+		delay := manager.manager.backoffForAttempt(i)
+		if delay < 75*time.Millisecond || delay > 125*time.Millisecond {
+			t.Fatalf("jittered delay out of range: %s", delay)
+		}
+	}
+}
+
+func TestSortEndpointsByHealthPrefersHigherScores(t *testing.T) {
+	manager := newTestManager(t, testManagerConfig{
+		deviceID: "peer-health",
+		name:     "Peer Health",
+	})
+	defer manager.stop()
+
+	peerID := "peer-target"
+	endpointA := "10.0.0.1:9000"
+	endpointB := "10.0.0.2:9000"
+	endpointC := "10.0.0.3:9000"
+
+	manager.manager.adjustEndpointHealth(peerID, endpointA, 3)
+	manager.manager.adjustEndpointHealth(peerID, endpointC, 1)
+	sorted := manager.manager.sortEndpointsByHealth(peerID, []string{endpointB, endpointC, endpointA})
+
+	if len(sorted) != 3 {
+		t.Fatalf("unexpected sorted endpoint count: %d", len(sorted))
+	}
+	if sorted[0] != endpointA || sorted[1] != endpointC || sorted[2] != endpointB {
+		t.Fatalf("unexpected endpoint order: %v", sorted)
+	}
+}
+
+func waitForCondition(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("condition not met before timeout %s", timeout)
+}
+
 type testManager struct {
 	manager  *PeerManager
 	store    *storage.Store
@@ -603,17 +808,25 @@ func (m *testManager) stop() {
 }
 
 type testManagerConfig struct {
-	deviceID           string
-	name               string
-	approve            func(notification AddRequestNotification) (bool, error)
-	onKeyChange        KeyChangeDecisionFunc
-	approveFile        func(notification FileRequestNotification) (bool, error)
-	onFileProgress     func(progress FileProgress)
-	filesDir           string
-	maxReceiveFileSize int64
-	fileChunkSize      int
-	rekeyInterval      time.Duration
-	rekeyAfterBytes    uint64
+	deviceID                  string
+	name                      string
+	approve                   func(notification AddRequestNotification) (bool, error)
+	onKeyChange               KeyChangeDecisionFunc
+	approveFile               func(notification FileRequestNotification) (bool, error)
+	onFileProgress            func(progress FileProgress)
+	filesDir                  string
+	maxReceiveFileSize        int64
+	fileChunkSize             int
+	rekeyInterval             time.Duration
+	rekeyAfterBytes           uint64
+	addRequestCooldown        time.Duration
+	fileRequestRateLimit      int
+	fileRequestWindow         time.Duration
+	maxReconnectAttempts      int
+	reconnectJitterFraction   float64
+	randomSource              *mathrand.Rand
+	connectionRateLimitPerIP  int
+	connectionRateLimitWindow time.Duration
 }
 
 func newTestManager(t *testing.T, cfg testManagerConfig) *testManager {
@@ -651,27 +864,35 @@ func newTestManagerWithConfig(t *testing.T, store *storage.Store, identity Local
 	}
 
 	manager, err := NewPeerManager(PeerManagerOptions{
-		Identity:             identity,
-		Store:                store,
-		ListenAddress:        listenAddress,
-		ApproveAddRequest:    cfg.approve,
-		OnKeyChange:          cfg.onKeyChange,
-		OnFileRequest:        cfg.approveFile,
-		OnFileProgress:       cfg.onFileProgress,
-		FilesDir:             filesDir,
-		MaxReceiveFileSize:   cfg.maxReceiveFileSize,
-		FileChunkSize:        chunkSize,
-		FileResponseTimeout:  2 * time.Second,
-		MaxChunkRetries:      3,
-		ReconnectBackoff:     []time.Duration{0, 50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond},
-		AddResponseTimeout:   3 * time.Second,
-		ConnectionTimeout:    2 * time.Second,
-		KeepAliveInterval:    80 * time.Millisecond,
-		KeepAliveTimeout:     80 * time.Millisecond,
-		FrameReadTimeout:     30 * time.Millisecond,
-		RekeyInterval:        cfg.rekeyInterval,
-		RekeyAfterBytes:      cfg.rekeyAfterBytes,
-		RekeyResponseTimeout: 2 * time.Second,
+		Identity:                  identity,
+		Store:                     store,
+		ListenAddress:             listenAddress,
+		ApproveAddRequest:         cfg.approve,
+		OnKeyChange:               cfg.onKeyChange,
+		OnFileRequest:             cfg.approveFile,
+		OnFileProgress:            cfg.onFileProgress,
+		FilesDir:                  filesDir,
+		MaxReceiveFileSize:        cfg.maxReceiveFileSize,
+		FileChunkSize:             chunkSize,
+		FileResponseTimeout:       2 * time.Second,
+		MaxChunkRetries:           3,
+		ReconnectBackoff:          []time.Duration{0, 50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond},
+		MaxReconnectAttempts:      cfg.maxReconnectAttempts,
+		ReconnectJitterFraction:   cfg.reconnectJitterFraction,
+		RandomSource:              cfg.randomSource,
+		AddResponseTimeout:        3 * time.Second,
+		AddRequestCooldown:        cfg.addRequestCooldown,
+		FileRequestRateLimit:      cfg.fileRequestRateLimit,
+		FileRequestWindow:         cfg.fileRequestWindow,
+		ConnectionTimeout:         2 * time.Second,
+		KeepAliveInterval:         80 * time.Millisecond,
+		KeepAliveTimeout:          80 * time.Millisecond,
+		FrameReadTimeout:          30 * time.Millisecond,
+		ConnectionRateLimitPerIP:  cfg.connectionRateLimitPerIP,
+		ConnectionRateLimitWindow: cfg.connectionRateLimitWindow,
+		RekeyInterval:             cfg.rekeyInterval,
+		RekeyAfterBytes:           cfg.rekeyAfterBytes,
+		RekeyResponseTimeout:      2 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("NewPeerManager failed: %v", err)

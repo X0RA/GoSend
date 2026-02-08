@@ -124,6 +124,21 @@ CREATE TABLE IF NOT EXISTS peer_settings (
   trust_level         TEXT NOT NULL CHECK(trust_level IN ('normal','trusted')) DEFAULT 'normal'
 );
 `,
+	`
+CREATE TABLE IF NOT EXISTS transfer_checkpoints (
+  file_id            TEXT NOT NULL,
+  direction          TEXT NOT NULL CHECK(direction IN ('send','receive')),
+  next_chunk         INTEGER NOT NULL DEFAULT 0,
+  bytes_transferred  INTEGER NOT NULL DEFAULT 0,
+  temp_path          TEXT NOT NULL DEFAULT '',
+  updated_at         INTEGER NOT NULL,
+  PRIMARY KEY (file_id, direction)
+);
+`,
+	`
+CREATE INDEX IF NOT EXISTS idx_transfer_checkpoints_updated_at
+ON transfer_checkpoints (updated_at DESC, file_id, direction);
+`,
 }
 
 // Store is a thin wrapper around a SQLite connection.

@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,6 +45,13 @@ const (
 	defaultFileCompleteTimeout  = 5 * time.Minute // receiver may need time to checksum/rename large files
 	defaultFileChunkRetries     = 3
 	defaultRekeyResponseTimeout = 15 * time.Second
+
+	defaultAddRequestCooldown   = 30 * time.Second
+	defaultFileRequestRateLimit = 5
+	defaultFileRequestWindow    = time.Minute
+
+	defaultMaxReconnectAttempts = 50
+	defaultReconnectJitter      = 0.25
 )
 
 var defaultReconnectBackoff = []time.Duration{
@@ -98,20 +107,29 @@ type PeerManagerOptions struct {
 	ApproveAddRequest func(AddRequestNotification) (bool, error)
 	OnKeyChange       KeyChangeDecisionFunc
 
-	ReconnectBackoff   []time.Duration
-	AddResponseTimeout time.Duration
+	ReconnectBackoff        []time.Duration
+	MaxReconnectAttempts    int
+	ReconnectJitterFraction float64
+	RandomSource            *rand.Rand
+	AddResponseTimeout      time.Duration
+	AddRequestCooldown      time.Duration
 
-	ConnectionTimeout    time.Duration
-	KeepAliveInterval    time.Duration
-	KeepAliveTimeout     time.Duration
-	FrameReadTimeout     time.Duration
-	RekeyInterval        time.Duration
-	RekeyAfterBytes      uint64
-	RekeyResponseTimeout time.Duration
-	AutoRespondPing      *bool
+	ConnectionTimeout         time.Duration
+	KeepAliveInterval         time.Duration
+	KeepAliveTimeout          time.Duration
+	FrameReadTimeout          time.Duration
+	RekeyInterval             time.Duration
+	RekeyAfterBytes           uint64
+	RekeyResponseTimeout      time.Duration
+	AutoRespondPing           *bool
+	ConnectionRateLimitPerIP  int
+	ConnectionRateLimitWindow time.Duration
 
 	OnMessageReceived func(storage.Message)
 	OnQueueOverflow   func(peerDeviceID string, droppedCount int)
+
+	FileRequestRateLimit int
+	FileRequestWindow    time.Duration
 
 	FilesDir              string
 	MaxReceiveFileSize    int64
@@ -157,6 +175,17 @@ type PeerManager struct {
 	suppressMu        sync.Mutex
 	suppressReconnect map[string]bool
 
+	rateLimitMu        sync.Mutex
+	lastAddRequestAt   map[string]time.Time
+	fileRequestHistory map[string][]time.Time
+
+	endpointMu          sync.RWMutex
+	discoveredEndpoints map[string][]string
+	endpointHealth      map[string]map[string]int
+
+	randomMu     sync.Mutex
+	randomSource *rand.Rand
+
 	drainMu      sync.Mutex
 	activeDrains map[string]bool
 
@@ -196,8 +225,32 @@ func NewPeerManager(options PeerManagerOptions) (*PeerManager, error) {
 	if options.AddResponseTimeout <= 0 {
 		options.AddResponseTimeout = 15 * time.Second
 	}
+	if options.AddRequestCooldown <= 0 {
+		options.AddRequestCooldown = defaultAddRequestCooldown
+	}
+	if options.ConnectionRateLimitPerIP <= 0 {
+		options.ConnectionRateLimitPerIP = defaultConnectionRateLimitPerIP
+	}
+	if options.ConnectionRateLimitWindow <= 0 {
+		options.ConnectionRateLimitWindow = defaultConnectionRateLimitWindow
+	}
 	if len(options.ReconnectBackoff) == 0 {
 		options.ReconnectBackoff = append([]time.Duration(nil), defaultReconnectBackoff...)
+	}
+	if options.MaxReconnectAttempts <= 0 {
+		options.MaxReconnectAttempts = defaultMaxReconnectAttempts
+	}
+	if options.ReconnectJitterFraction <= 0 {
+		options.ReconnectJitterFraction = defaultReconnectJitter
+	}
+	if options.ReconnectJitterFraction > 1 {
+		options.ReconnectJitterFraction = 1
+	}
+	if options.FileRequestRateLimit <= 0 {
+		options.FileRequestRateLimit = defaultFileRequestRateLimit
+	}
+	if options.FileRequestWindow <= 0 {
+		options.FileRequestWindow = defaultFileRequestWindow
 	}
 	if options.FileChunkSize <= 0 {
 		options.FileChunkSize = defaultFileChunkSize
@@ -231,12 +284,20 @@ func NewPeerManager(options PeerManagerOptions) (*PeerManager, error) {
 		addRequests:            make(chan AddRequestNotification, 64),
 		reconnectWorkers:       make(map[string]context.CancelFunc),
 		suppressReconnect:      make(map[string]bool),
+		lastAddRequestAt:       make(map[string]time.Time),
+		fileRequestHistory:     make(map[string][]time.Time),
+		discoveredEndpoints:    make(map[string][]string),
+		endpointHealth:         make(map[string]map[string]int),
 		activeDrains:           make(map[string]bool),
 		outboundFileTransfers:  make(map[string]*outboundFileTransfer),
 		inboundFileTransfers:   make(map[string]*inboundFileTransfer),
 		outboundFileEventChans: make(map[string]chan fileTransferEvent),
 		pendingRekeyWaiters:    make(map[string]chan rekeyWaitResult),
 		errors:                 make(chan error, 64),
+		randomSource:           options.RandomSource,
+	}
+	if manager.randomSource == nil {
+		manager.randomSource = rand.New(rand.NewSource(time.Now().UnixNano()))
 	}
 
 	return manager, nil
@@ -261,6 +322,9 @@ func (m *PeerManager) Start() error {
 	if err := m.loadKnownPeers(); err != nil {
 		return err
 	}
+	if err := m.loadTransferCheckpoints(); err != nil {
+		return err
+	}
 
 	server, err := Listen(m.options.ListenAddress, m.handshakeOptionsForServer())
 	if err != nil {
@@ -277,7 +341,7 @@ func (m *PeerManager) Start() error {
 			if peer.DeviceID == m.options.Identity.DeviceID {
 				continue
 			}
-			if peer.Status == peerStatusOnline {
+			if peer.Status == peerStatusOnline || m.hasPendingOutboundTransferForPeer(peer.DeviceID) {
 				m.startReconnect(peer.DeviceID)
 			}
 		}
@@ -690,6 +754,13 @@ func (m *PeerManager) handlePeerAddRequest(conn *PeerConnection, request PeerAdd
 	}
 	if !withinTimestampSkew(request.Timestamp) {
 		m.reportError(fmt.Errorf("rejecting peer_add_request from %q: timestamp outside skew", peerID))
+		return
+	}
+	if !m.allowAddRequest(peerID, time.Now()) {
+		m.logSecurityEvent(securityEventTypeConnectionRateLimitTriggered, peerID, storage.SecuritySeverityWarning, map[string]any{
+			"limit_type":       "peer_add_request_cooldown",
+			"cooldown_seconds": m.options.AddRequestCooldown.Seconds(),
+		})
 		return
 	}
 	if err := m.verifyPeerAddRequest(conn, request); err != nil {
@@ -1443,6 +1514,11 @@ func (m *PeerManager) startReconnect(peerID string) {
 
 		attempt := 0
 		for {
+			if m.options.MaxReconnectAttempts > 0 && attempt >= m.options.MaxReconnectAttempts {
+				m.reportError(fmt.Errorf("reconnect attempts exhausted for peer %q after %d tries", peerID, attempt))
+				return
+			}
+
 			delay := m.backoffForAttempt(attempt)
 			timer := time.NewTimer(delay)
 			select {
@@ -1452,22 +1528,33 @@ func (m *PeerManager) startReconnect(peerID string) {
 				return
 			}
 
-			address, err := m.resolvePeerAddress(peerID)
+			addresses, err := m.resolvePeerAddresses(peerID)
 			if err != nil {
 				attempt++
 				continue
 			}
-			conn, err := m.dialAndRegister(address)
-			if err != nil {
-				attempt++
-				continue
+
+			connected := false
+			for _, address := range addresses {
+				conn, err := m.dialAndRegister(address)
+				if err != nil {
+					m.recordEndpointFailure(peerID, address)
+					continue
+				}
+				if conn.PeerDeviceID() != peerID {
+					m.recordEndpointFailure(peerID, address)
+					_ = conn.Close()
+					continue
+				}
+				m.recordEndpointSuccess(peerID, address)
+				connected = true
+				break
 			}
-			if conn.PeerDeviceID() != peerID {
-				_ = conn.Close()
-				attempt++
-				continue
+
+			if connected {
+				return
 			}
-			return
+			attempt++
 		}
 	}()
 }
@@ -1489,24 +1576,157 @@ func (m *PeerManager) backoffForAttempt(attempt int) time.Duration {
 	if len(backoff) == 0 {
 		return 0
 	}
+	base := backoff[len(backoff)-1]
 	if attempt < len(backoff) {
-		return backoff[attempt]
+		base = backoff[attempt]
 	}
-	return backoff[len(backoff)-1]
+	if base <= 0 {
+		return 0
+	}
+
+	jitterFraction := m.options.ReconnectJitterFraction
+	if jitterFraction <= 0 {
+		return base
+	}
+	jitterDelta := (m.randomFloat64()*2 - 1) * jitterFraction
+	delay := time.Duration(float64(base) * (1 + jitterDelta))
+	if delay < 0 {
+		return 0
+	}
+	return delay
 }
 
-func (m *PeerManager) resolvePeerAddress(peerID string) (string, error) {
+func (m *PeerManager) resolvePeerAddresses(peerID string) ([]string, error) {
 	peer, err := m.options.Store.GetPeer(peerID)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if peer.Status == peerStatusBlocked || peer.Status == peerStatusPending {
-		return "", fmt.Errorf("peer %q is not reconnectable with status %q", peerID, peer.Status)
+		return nil, fmt.Errorf("peer %q is not reconnectable with status %q", peerID, peer.Status)
 	}
-	if peer.LastKnownIP == nil || peer.LastKnownPort == nil {
-		return "", fmt.Errorf("peer %q has no known endpoint", peerID)
+
+	candidates := m.discoveredEndpointsForPeer(peerID)
+	if peer.LastKnownIP != nil && peer.LastKnownPort != nil {
+		candidates = append(candidates, net.JoinHostPort(*peer.LastKnownIP, strconv.Itoa(*peer.LastKnownPort)))
 	}
-	return net.JoinHostPort(*peer.LastKnownIP, strconv.Itoa(*peer.LastKnownPort)), nil
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("peer %q has no known endpoint", peerID)
+	}
+
+	seen := make(map[string]struct{}, len(candidates))
+	deduped := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		deduped = append(deduped, candidate)
+	}
+
+	return m.sortEndpointsByHealth(peerID, deduped), nil
+}
+
+func (m *PeerManager) randomFloat64() float64 {
+	m.randomMu.Lock()
+	defer m.randomMu.Unlock()
+	if m.randomSource == nil {
+		m.randomSource = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+	return m.randomSource.Float64()
+}
+
+func (m *PeerManager) discoveredEndpointsForPeer(peerID string) []string {
+	m.endpointMu.RLock()
+	defer m.endpointMu.RUnlock()
+
+	candidates := m.discoveredEndpoints[peerID]
+	if len(candidates) == 0 {
+		return nil
+	}
+	out := make([]string, len(candidates))
+	copy(out, candidates)
+	return out
+}
+
+func (m *PeerManager) sortEndpointsByHealth(peerID string, candidates []string) []string {
+	out := append([]string(nil), candidates...)
+	sort.SliceStable(out, func(i, j int) bool {
+		leftScore := m.endpointHealthScore(peerID, out[i])
+		rightScore := m.endpointHealthScore(peerID, out[j])
+		if leftScore == rightScore {
+			return out[i] < out[j]
+		}
+		return leftScore > rightScore
+	})
+	return out
+}
+
+func (m *PeerManager) endpointHealthScore(peerID, endpoint string) int {
+	m.endpointMu.RLock()
+	defer m.endpointMu.RUnlock()
+
+	peerScores := m.endpointHealth[peerID]
+	if peerScores == nil {
+		return 0
+	}
+	return peerScores[endpoint]
+}
+
+func (m *PeerManager) setDiscoveredEndpoints(peerID string, endpoints []string) {
+	m.endpointMu.Lock()
+	defer m.endpointMu.Unlock()
+
+	cleaned := make([]string, 0, len(endpoints))
+	seen := make(map[string]struct{}, len(endpoints))
+	for _, endpoint := range endpoints {
+		endpoint = strings.TrimSpace(endpoint)
+		if endpoint == "" {
+			continue
+		}
+		if _, exists := seen[endpoint]; exists {
+			continue
+		}
+		seen[endpoint] = struct{}{}
+		cleaned = append(cleaned, endpoint)
+	}
+	if len(cleaned) == 0 {
+		delete(m.discoveredEndpoints, peerID)
+		return
+	}
+	m.discoveredEndpoints[peerID] = cleaned
+}
+
+func (m *PeerManager) recordEndpointSuccess(peerID, endpoint string) {
+	m.adjustEndpointHealth(peerID, endpoint, 1)
+}
+
+func (m *PeerManager) recordEndpointFailure(peerID, endpoint string) {
+	m.adjustEndpointHealth(peerID, endpoint, -1)
+}
+
+func (m *PeerManager) adjustEndpointHealth(peerID, endpoint string, delta int) {
+	if peerID == "" || endpoint == "" || delta == 0 {
+		return
+	}
+
+	m.endpointMu.Lock()
+	defer m.endpointMu.Unlock()
+
+	peerScores := m.endpointHealth[peerID]
+	if peerScores == nil {
+		peerScores = make(map[string]int)
+		m.endpointHealth[peerID] = peerScores
+	}
+
+	next := peerScores[endpoint] + delta
+	if next < 0 {
+		next = 0
+	}
+	peerScores[endpoint] = next
 }
 
 func (m *PeerManager) dialAndRegister(address string) (*PeerConnection, error) {
@@ -1540,17 +1760,20 @@ func (m *PeerManager) dialAndRegister(address string) (*PeerConnection, error) {
 
 func (m *PeerManager) handshakeOptionsForServer() HandshakeOptions {
 	return HandshakeOptions{
-		Identity:            m.options.Identity,
-		KnownPeerKeys:       m.knownKeysSnapshot(),
-		KnownPeerKeyLookup:  m.lookupKnownKey,
-		OnKeyChangeDecision: m.handleKeyChangeDecision,
-		ConnectionTimeout:   m.options.ConnectionTimeout,
-		KeepAliveInterval:   m.options.KeepAliveInterval,
-		KeepAliveTimeout:    m.options.KeepAliveTimeout,
-		FrameReadTimeout:    m.options.FrameReadTimeout,
-		RekeyInterval:       m.options.RekeyInterval,
-		RekeyAfterBytes:     m.options.RekeyAfterBytes,
-		AutoRespondPing:     m.options.AutoRespondPing,
+		Identity:                     m.options.Identity,
+		KnownPeerKeys:                m.knownKeysSnapshot(),
+		KnownPeerKeyLookup:           m.lookupKnownKey,
+		OnKeyChangeDecision:          m.handleKeyChangeDecision,
+		ConnectionTimeout:            m.options.ConnectionTimeout,
+		KeepAliveInterval:            m.options.KeepAliveInterval,
+		KeepAliveTimeout:             m.options.KeepAliveTimeout,
+		FrameReadTimeout:             m.options.FrameReadTimeout,
+		RekeyInterval:                m.options.RekeyInterval,
+		RekeyAfterBytes:              m.options.RekeyAfterBytes,
+		AutoRespondPing:              m.options.AutoRespondPing,
+		ConnectionRateLimitPerIP:     m.options.ConnectionRateLimitPerIP,
+		ConnectionRateLimitWindow:    m.options.ConnectionRateLimitWindow,
+		OnInboundConnectionRateLimit: m.onInboundConnectionRateLimited,
 	}
 }
 
@@ -1771,6 +1994,28 @@ func (m *PeerManager) getConnection(peerDeviceID string) *PeerConnection {
 	return m.connections[peerDeviceID]
 }
 
+func (m *PeerManager) hasPendingOutboundTransferForPeer(peerDeviceID string) bool {
+	if peerDeviceID == "" {
+		return false
+	}
+
+	m.fileMu.Lock()
+	defer m.fileMu.Unlock()
+
+	for _, transfer := range m.outboundFileTransfers {
+		if transfer == nil || transfer.PeerDeviceID != peerDeviceID {
+			continue
+		}
+		transfer.mu.Lock()
+		pending := !transfer.Done && !transfer.Rejected
+		transfer.mu.Unlock()
+		if pending {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *PeerManager) isOutboundAddPending(peerDeviceID string) bool {
 	m.outboundMu.Lock()
 	defer m.outboundMu.Unlock()
@@ -1798,6 +2043,73 @@ func (m *PeerManager) consumeSuppressReconnect(peerDeviceID string) bool {
 	suppress := m.suppressReconnect[peerDeviceID]
 	delete(m.suppressReconnect, peerDeviceID)
 	return suppress
+}
+
+func (m *PeerManager) allowAddRequest(peerDeviceID string, now time.Time) bool {
+	if peerDeviceID == "" {
+		return false
+	}
+	cooldown := m.options.AddRequestCooldown
+	if cooldown <= 0 {
+		return true
+	}
+
+	m.rateLimitMu.Lock()
+	defer m.rateLimitMu.Unlock()
+
+	last := m.lastAddRequestAt[peerDeviceID]
+	if !last.IsZero() && now.Sub(last) < cooldown {
+		return false
+	}
+	m.lastAddRequestAt[peerDeviceID] = now
+	return true
+}
+
+func (m *PeerManager) allowFileRequest(peerDeviceID string, now time.Time) bool {
+	if peerDeviceID == "" {
+		return false
+	}
+	limit := m.options.FileRequestRateLimit
+	window := m.options.FileRequestWindow
+	if limit <= 0 || window <= 0 {
+		return true
+	}
+
+	m.rateLimitMu.Lock()
+	defer m.rateLimitMu.Unlock()
+
+	history := m.fileRequestHistory[peerDeviceID]
+	cutoff := now.Add(-window)
+	filtered := history[:0]
+	for _, seenAt := range history {
+		if seenAt.After(cutoff) {
+			filtered = append(filtered, seenAt)
+		}
+	}
+
+	if len(filtered) >= limit {
+		m.fileRequestHistory[peerDeviceID] = filtered
+		return false
+	}
+
+	filtered = append(filtered, now)
+	m.fileRequestHistory[peerDeviceID] = filtered
+	return true
+}
+
+func (m *PeerManager) onInboundConnectionRateLimited(remoteIP string) {
+	limit := m.options.ConnectionRateLimitPerIP
+	windowSeconds := 0.0
+	if m.options.ConnectionRateLimitWindow > 0 {
+		windowSeconds = m.options.ConnectionRateLimitWindow.Seconds()
+	}
+
+	m.logSecurityEvent(securityEventTypeConnectionRateLimitTriggered, "", storage.SecuritySeverityWarning, map[string]any{
+		"limit_type":       "incoming_connections_per_ip",
+		"remote_ip":        remoteIP,
+		"limit_per_window": limit,
+		"window_seconds":   windowSeconds,
+	})
 }
 
 func (m *PeerManager) reportError(err error) {
@@ -1894,6 +2206,15 @@ func fingerprintFromBase64(keyBase64 string) (string, error) {
 // If the peer is a known (added) peer that is not currently connected,
 // it updates the stored endpoint/device name and starts a reconnect attempt.
 func (m *PeerManager) NotifyPeerDiscovered(deviceID, deviceName, ip string, port int) {
+	if strings.TrimSpace(ip) == "" {
+		m.NotifyPeerDiscoveredEndpoints(deviceID, deviceName, nil, port)
+		return
+	}
+	m.NotifyPeerDiscoveredEndpoints(deviceID, deviceName, []string{ip}, port)
+}
+
+// NotifyPeerDiscoveredEndpoints updates known peer endpoint candidates and can trigger reconnect.
+func (m *PeerManager) NotifyPeerDiscoveredEndpoints(deviceID, deviceName string, addresses []string, port int) {
 	if deviceID == "" || deviceID == m.options.Identity.DeviceID {
 		return
 	}
@@ -1910,8 +2231,17 @@ func (m *PeerManager) NotifyPeerDiscovered(deviceID, deviceName, ip string, port
 		_ = m.options.Store.UpdatePeerDeviceName(deviceID, deviceName)
 	}
 
-	if ip != "" && port > 0 {
-		_ = m.options.Store.UpdatePeerEndpoint(deviceID, ip, port, time.Now().UnixMilli())
+	endpoints := buildEndpointCandidates(addresses, port)
+	m.setDiscoveredEndpoints(deviceID, endpoints)
+
+	if len(endpoints) > 0 {
+		host, portText, splitErr := net.SplitHostPort(endpoints[0])
+		if splitErr == nil {
+			parsedPort, parseErr := strconv.Atoi(portText)
+			if parseErr == nil && parsedPort > 0 && host != "" {
+				_ = m.options.Store.UpdatePeerEndpoint(deviceID, host, parsedPort, time.Now().UnixMilli())
+			}
+		}
 	}
 
 	conn := m.getConnection(deviceID)
@@ -1920,6 +2250,28 @@ func (m *PeerManager) NotifyPeerDiscovered(deviceID, deviceName, ip string, port
 	}
 
 	m.startReconnect(deviceID)
+}
+
+func buildEndpointCandidates(addresses []string, port int) []string {
+	if port <= 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(addresses))
+	seen := make(map[string]struct{}, len(addresses))
+	for _, address := range addresses {
+		host := strings.TrimSpace(address)
+		if host == "" {
+			continue
+		}
+		endpoint := net.JoinHostPort(host, strconv.Itoa(port))
+		if _, exists := seen[endpoint]; exists {
+			continue
+		}
+		seen[endpoint] = struct{}{}
+		out = append(out, endpoint)
+	}
+	return out
 }
 
 func stringsEqualFold(a, b string) bool {

@@ -8,20 +8,22 @@ GoSend is a local-network peer-to-peer desktop app built in Go. It uses mDNS for
 
 ## What Is Implemented Today
 
-- Local LAN peer discovery via mDNS service `_p2pchat._tcp.local.` with TXT keys: `device_id`, `version`, `key_fingerprint`.
+- Local LAN peer discovery via mDNS service `_p2pchat._tcp.local.` with TXT keys: `discovery_token`, `version` (no raw `device_id` or `key_fingerprint` broadcast).
 - Challenge-response handshake (`handshake_challenge`, `handshake`, `handshake_response`) with Ed25519 identities and ephemeral X25519 keys.
 - Session key derivation via HKDF-SHA256 using salt `p2pchat-session-v1`, sorted device IDs, and the per-connection handshake challenge nonce.
 - Transport-level encryption for all post-handshake frames using AES-256-GCM (`secure_frame`).
 - Automatic signed rekey exchange (`rekey_request`, `rekey_response`) after 1 hour or 1 GiB sent, with secure-frame epoch tagging and previous-epoch decrypt window during transition.
 - Separate frame limits: `64 KB` for control frames and `10 MB` for data frames.
 - Peer lifecycle flows: add request/response, remove, disconnect, reconnect workers, and discovery-driven reconnect.
+- Network abuse protections: per-IP inbound connection rate limiting, per-peer add-request cooldown, per-peer file-request rate limiting, and disconnect-on-3-consecutive malformed frames.
+- Reconnect improvements: jittered exponential backoff (±25%), endpoint health scoring across discovered addresses, and reconnect-attempt cap (50 by default, reset by fresh discovery).
 - Peers are only persisted after an accepted `peer_add_request`; a raw connection/handshake alone does not auto-add a peer.
 - Encrypted + signed text messages with delivery status tracking (`pending`, `sent`, `delivered`, `failed`).
 - Offline outbound queue with limits: 500 pending messages per peer, 7-day age cutoff, 50 MB pending content per peer.
 - Replay defenses for chat messages: per-connection sequence checks, persistent seen ID table, and timestamp skew checks.
 - Trusted key rotations persist immediately to the pinned peer key plus an auditable `key_rotation_events` trail.
 - Structured `security_events` logging captures handshake failures, signature failures, replay rejections, key-rotation decisions, and queue-limit triggers.
-- File transfer with request/accept/reject, signed chunk ack/nack + signed file completion, reconnect resume from chunk, end checksum verification, global receive limits/download location, and per-peer auto-accept/limit/directory overrides.
+- File transfer with request/accept/reject, signed chunk ack/nack + signed file completion, reconnect resume from chunk, end checksum verification, persistent transfer checkpoints for crash recovery, global receive limits/download location, and per-peer auto-accept/limit/directory overrides.
 - Per-peer controls include custom names, trust level (`normal`/`trusted`), and trusted badges in the peer list.
 - Cross-platform GUI (Fyne) with peer list, chat pane, discovery dialog, device settings dialog, peer settings dialog, key-change prompt, file-transfer prompts/progress, and chat header color that reflects online status.
 
@@ -203,7 +205,7 @@ LAN discovery uses `github.com/grandcat/zeroconf` (mDNS/DNS-SD).
 Advertised:
 
 - Service `_p2pchat._tcp`, domain `local.`; instance name = local `device_name`; port = active TCP listening port.
-- TXT: `device_id`, `version=1`, `key_fingerprint` (16-byte-truncated SHA-256 hex).
+- TXT: `discovery_token` (hourly rotating HMAC derived from local Ed25519 identity + `device_id`) and `version=1`.
 
 Scanner:
 
@@ -212,11 +214,14 @@ Scanner:
 
 Filtering and events:
 
-- Self filtered by `device_id`. Device name: mDNS instance name, then hostname, then device ID fallback. IPv4/IPv6 deduplicated and sorted. Events: `peer_upserted`, `peer_removed`.
+- Known peers are resolved by verifying the rotating token against stored `(device_id, Ed25519 public key)` pairs (current hour ±1 hour skew).
+- Self entries are filtered by token verification.
+- Unknown peers are still discoverable and shown with synthetic IDs derived from instance/host/endpoint metadata.
+- Device name fallback order: mDNS instance name, hostname, then `Unknown Peer`. IPv4/IPv6 addresses are deduplicated and sorted. Events: `peer_upserted`, `peer_removed`.
 
 Integration with networking:
 
-- Discovery does not auto-add unknown peers. For known peers, discovered endpoints are fed to `NotifyPeerDiscovered`, which updates stored endpoint and can trigger reconnect. Unknown peers require the explicit user add flow.
+- Discovery does not auto-add unknown peers. For known peers, discovered endpoint sets are fed to `NotifyPeerDiscoveredEndpoints`, which updates the stored endpoint candidate list and can trigger reconnect. Unknown peers require the explicit user add flow.
 
 ## Messaging, Queue, and Reconnect Behavior
 
@@ -235,9 +240,11 @@ Queue enforcement:
 
 Reconnect:
 
-- Backoff sequence: `0s -> 5s -> 15s -> 60s -> 60s...`.
+- Base backoff sequence: `0s -> 5s -> 15s -> 60s -> 60s...`, each interval jittered by ±25%.
 - On disconnect: peer marked offline and reconnect worker starts (unless suppressed by manual remove/disconnect).
-- Discovery bridge (`NotifyPeerDiscovered`) updates stored endpoint and triggers reconnect for known non-blocked peers.
+- Candidate endpoints are sorted by in-memory `endpoint_health` score (higher first) before each reconnect round; successful dials increment health and failures decrement with floor `0`.
+- Reconnect attempts are capped at `50` by default; after cap exhaustion, retries pause until a fresh discovery event triggers a new worker.
+- Discovery bridge (`NotifyPeerDiscoveredEndpoints`) updates stored endpoint candidates and triggers reconnect for known non-blocked peers.
 
 ## File Transfer Behavior
 
@@ -249,14 +256,17 @@ Outbound:
 - Chunks are read from source file and encrypted as `file_data` with per-chunk nonce.
 - Receiver responds with `chunk_ack` / `chunk_nack`.
 - Each chunk retries up to `MaxChunkRetries` (default 3).
+- Outbound checkpoints are persisted to `transfer_checkpoints` every 50 chunks or 10 MB, whichever comes first.
 - After all chunks are sent, sender sends signed `file_complete` and waits for the receiver’s signed `file_complete` (after checksum and rename). Wait uses `FileCompleteTimeout` (default 5 minutes); chunk acks use `FileResponseTimeout` (default 10s). Default chunk size 256 KiB. If the receiver’s completion arrives after the sender timed out, the sender still applies completion so the UI updates.
 
 Inbound:
 
 - For each incoming `file_request`, the manager resolves peer settings (`peer_settings`) and computes effective receive policy.
 - Effective size limit is peer `max_file_size` when set (`>0`), otherwise global `max_receive_file_size`; oversized requests are auto-rejected with a descriptive message.
+- File requests are rate-limited per peer (default 5/minute); excess requests are rejected and logged as security events.
 - If within limit and `auto_accept_files=true`, the request is auto-accepted; otherwise the UI accept/reject callback is invoked.
 - Accepted transfers write to `<resolved-download-dir>/<file_id>_<basename>.part`, where the resolved directory is peer `download_directory` override first, then global `download_directory`.
+- Inbound checkpoints are persisted in batches (every 10 chunks or 2 MB).
 - On `file_complete`, receiver verifies checksum and renames `.part` to final file.
 
 Completion/failure:
@@ -265,12 +275,13 @@ Completion/failure:
 - Reject => `rejected` on both sides.
 - Checksum mismatch/finalize failure => `failed` and sender receives failed completion.
 - Resume after reconnect is supported via `resume_from_chunk`.
+- Checkpoints are loaded at startup so interrupted transfers can resume automatically when the peer reconnects; checkpoint rows are removed on definitive completion/failure.
 
 ## SQLite Schema and Persistence
 
 Persistence uses `github.com/mattn/go-sqlite3` with a single DB (`app.db`) under the app data directory. DSN enables foreign keys (`_foreign_keys=on`); busy timeout `5000ms`. The database is opened in WAL mode (`PRAGMA journal_mode=WAL`) with startup checkpointing (`PRAGMA wal_checkpoint(TRUNCATE)`) and a periodic 24-hour checkpoint loop. Schema migrations are versioned with `PRAGMA user_version`.
 
-Tables store: **peers** — identity, pinned Ed25519 public key, fingerprint, status, timestamps, last known endpoint. **messages** — content, content type, sent/received timestamps, read flag, delivery status, signature. **files** — file IDs, sender/receiver, filename/type/size/path/checksum, transfer status. **seen_message_ids** — replay defense. **key_rotation_events** — trusted/rejected key-change decisions with old/new fingerprints. **security_events** — structured security logs with severity and JSON details. **peer_settings** — per-peer transfer policy (`auto_accept_files`, `max_file_size`, `download_directory`) plus presentation/trust metadata (`custom_name`, `trust_level`). Status enums: peer `online`/`offline`/`pending`/`blocked`; delivery `pending`/`sent`/`delivered`/`failed`; file `pending`/`accepted`/`rejected`/`complete`/`failed`. Updates in practice: peer add accepted → peer row created/updated to `online` and default `peer_settings` ensured; disconnect → `offline`; message sent → `sent`, after ACK → `delivered`; offline messages stored as `pending` and drained on reconnect; file request/accept/reject/complete update `files.transfer_status`; received message IDs go into `seen_message_ids`; key-change trust/reject decisions write to `key_rotation_events` and (when trusted) update `peers.ed25519_public_key` + `peers.key_fingerprint`. Pending queue prune: messages older than 7 days marked `failed`. Security-event retention pruning defaults to 90 days.
+Tables store: **peers** — identity, pinned Ed25519 public key, fingerprint, status, timestamps, last known endpoint. **messages** — content, content type, sent/received timestamps, read flag, delivery status, signature. **files** — file IDs, sender/receiver, filename/type/size/path/checksum, transfer status. **seen_message_ids** — replay defense. **key_rotation_events** — trusted/rejected key-change decisions with old/new fingerprints. **security_events** — structured security logs with severity and JSON details. **peer_settings** — per-peer transfer policy (`auto_accept_files`, `max_file_size`, `download_directory`) plus presentation/trust metadata (`custom_name`, `trust_level`). **transfer_checkpoints** — resumable send/receive progress (`next_chunk`, `bytes_transferred`, `temp_path`, `updated_at`). Status enums: peer `online`/`offline`/`pending`/`blocked`; delivery `pending`/`sent`/`delivered`/`failed`; file `pending`/`accepted`/`rejected`/`complete`/`failed`. Updates in practice: peer add accepted → peer row created/updated to `online` and default `peer_settings` ensured; disconnect → `offline`; message sent → `sent`, after ACK → `delivered`; offline messages stored as `pending` and drained on reconnect; file request/accept/reject/complete update `files.transfer_status`; received message IDs go into `seen_message_ids`; key-change trust/reject decisions write to `key_rotation_events` and (when trusted) update `peers.ed25519_public_key` + `peers.key_fingerprint`; checkpoint rows are upserted during transfers and removed on definitive completion/failure. Pending queue prune: messages older than 7 days marked `failed`. Security-event retention pruning defaults to 90 days.
 
 Schema:
 
@@ -345,6 +356,16 @@ CREATE TABLE peer_settings (
   custom_name         TEXT NOT NULL DEFAULT '',
   trust_level         TEXT NOT NULL CHECK(trust_level IN ('normal','trusted')) DEFAULT 'normal'
 );
+
+CREATE TABLE transfer_checkpoints (
+  file_id            TEXT NOT NULL,
+  direction          TEXT NOT NULL CHECK(direction IN ('send','receive')),
+  next_chunk         INTEGER NOT NULL DEFAULT 0,
+  bytes_transferred  INTEGER NOT NULL DEFAULT 0,
+  temp_path          TEXT NOT NULL DEFAULT '',
+  updated_at         INTEGER NOT NULL,
+  PRIMARY KEY (file_id, direction)
+);
 ```
 
 Indexes:
@@ -355,6 +376,7 @@ Indexes:
 - `idx_security_events_time` on `(timestamp DESC, id DESC)`
 - `idx_security_events_type` on `(event_type, timestamp DESC, id DESC)`
 - `idx_security_events_peer` on `(peer_device_id, timestamp DESC, id DESC)`
+- `idx_transfer_checkpoints_updated_at` on `(updated_at DESC, file_id, direction)`
 
 ## UI Summary
 
@@ -499,10 +521,10 @@ Theme:
 
 ### `discovery/`
 
-- `discovery/mdns.go`: mDNS config defaults, broadcaster setup, and combined discovery service startup/shutdown orchestration.
-- `discovery/mdns_test.go`: Tests TXT composition, service start/stop wiring, and stale-time default behavior from TTL.
-- `discovery/peer_scanner.go`: Background/manual scanning, in-memory peer cache, stale-peer aging, event emission, and self-filtering.
-- `discovery/peer_scanner_test.go`: Tests self filtering, manual refresh updates, polling/removal behavior, and timeout tolerance.
+- `discovery/mdns.go`: mDNS config defaults, rotating discovery-token generation, broadcaster setup, and combined discovery service startup/shutdown orchestration.
+- `discovery/mdns_test.go`: Tests rotating-token TXT composition, token rotation/verification, service start/stop wiring, and stale-time default behavior from TTL.
+- `discovery/peer_scanner.go`: Background/manual scanning, known-peer token verification, unknown-peer synthetic IDs, in-memory peer cache, stale-peer aging, and event emission.
+- `discovery/peer_scanner_test.go`: Tests self filtering via token verification, known-peer resolution, unknown-peer fallback discovery, manual refresh updates, and polling/removal behavior.
 
 ### `models/`
 
@@ -515,14 +537,14 @@ Note: runtime logic currently uses `storage` structs directly; `models` package 
 ### `storage/`
 
 - `storage/types.go`: Core storage data types, status/content constants, peer-trust constants, validators, null helpers, and shared errors.
-- `storage/database.go`: SQLite open/create helpers, migrations (`peer_settings` included), schema versioning, and connection lifecycle.
+- `storage/database.go`: SQLite open/create helpers, migrations (`peer_settings` and `transfer_checkpoints` included), schema versioning, and connection lifecycle.
 - `storage/database_test.go`: Verifies DB creation, migrations, schema version, and expected table presence.
 - `storage/peers.go`: Peer CRUD + endpoint/status updates, discovery-driven device-name updates, per-peer settings CRUD/default ensure, pinned-key updates, and key-rotation event history helpers.
 - `storage/peers_test.go`: Peer CRUD, endpoint/status update, per-peer settings CRUD/defaults, pinned-key update, and key-rotation event tests.
 - `storage/messages.go`: Message insert/read/update APIs, pending queue reads, and expired queue pruning.
 - `storage/messages_test.go`: Message CRUD, ordering, status updates, pending retrieval, and prune behavior.
-- `storage/files.go`: File metadata insert/read and transfer-status updates.
-- `storage/files_test.go`: File metadata CRUD/status update tests.
+- `storage/files.go`: File metadata insert/read, transfer-status updates, and transfer-checkpoint CRUD/list APIs.
+- `storage/files_test.go`: File metadata CRUD/status update tests plus transfer-checkpoint persistence tests.
 - `storage/security_events.go`: Structured security-event insert/query/retention-prune helpers.
 - `storage/security_events_test.go`: Security-event filter and retention behavior tests.
 - `storage/seen_ids.go`: Seen-message ID insert/check/prune helpers.
@@ -533,18 +555,19 @@ Note: runtime logic currently uses `storage` structs directly; `models` package 
 
 - `network/protocol.go`: Protocol constants/types, JSON helpers, frame read/write helpers (control/data limits), handshake/rekey message helpers.
 - `network/protocol_test.go`: Frame round-trip and oversized frame rejection tests.
-- `network/connection.go`: Encrypted framed peer connection, connection states, keepalive ping/pong, control-frame gating, sequence tracking, rekey triggers, and epoch-based key rotation.
+- `network/connection.go`: Encrypted framed peer connection, connection states, keepalive ping/pong, malformed-frame strike counter (3 consecutive invalid frames), sequence tracking, rekey triggers, and epoch-based key rotation.
 - `network/handshake.go`: Handshake options/defaults, key-change decision flow, and session-key derivation helpers.
 - `network/client.go`: Outbound dial + handshake + session setup.
-- `network/server.go`: Listener accept loop and inbound handshake/session setup.
-- `network/peer_manager.go`: High-level peer lifecycle manager: add/approve/remove/disconnect, message send/receive, queue drain/limits, reconnect workers, discovery-triggered reconnect, dynamic global file-policy callbacks, and default peer-settings creation on first persisted peer.
-- `network/file_transfer.go`: File transfer protocol implementation: request/response, chunk send/ack/nack, resume, checksum verification, status persistence, progress callbacks, per-peer/global receive-limit enforcement, and per-peer/global download-directory resolution.
+- `network/server.go`: Listener accept loop, per-IP inbound connection rate limiting, and inbound handshake/session setup.
+- `network/peer_manager.go`: High-level peer lifecycle manager: add/approve/remove/disconnect, message send/receive, add/file request rate limits, queue drain/limits, jittered reconnect workers with endpoint health scoring, discovery-triggered reconnect, and default peer-settings creation on first persisted peer.
+- `network/file_transfer.go`: File transfer protocol implementation: request/response, chunk send/ack/nack, resume, checksum verification, checkpoint persistence/recovery, status persistence, progress callbacks, and per-peer/global receive-policy resolution.
 - `network/integration_test.go`: Handshake/session/keepalive/ping-timeout/key-change decision, replay, and control-frame-limit integration tests.
-- `network/connection_test.go`: Epoch transition decrypt-window tests for rekey key rotation.
+- `network/server_test.go`: Per-IP inbound connection rate-limit enforcement test.
+- `network/connection_test.go`: Epoch transition decrypt-window tests plus malformed-frame disconnect-threshold tests.
 - `network/rekey_test.go`: Rekey trigger/rekey-under-load/concurrent-transfer/failure-handling tests.
-- `network/peer_manager_test.go`: Add/remove/restart/simultaneous-add/spoof-protection/pending-cleanup behavior tests, including peer-settings row creation for accepted peers.
+- `network/peer_manager_test.go`: Add/remove/restart/simultaneous-add/spoof-protection behavior tests, request-rate-limit tests, jitter/backoff and endpoint-health ordering tests, and peer-settings row creation for accepted peers.
 - `network/messaging_test.go`: Delivery updates, offline queue drain, replay rejection, sequence rejection, signature tamper rejection, spoofed ack rejection tests.
-- `network/file_transfer_test.go`: Accepted/rejected transfer flows, reconnect resume, checksum mismatch failure tests, max-receive-limit auto-reject, and auto-accept directory override behavior.
+- `network/file_transfer_test.go`: Accepted/rejected transfer flows, reconnect/crash-resume coverage, checksum mismatch failure tests, max-receive-limit auto-reject, and auto-accept directory override behavior.
 
 ### `ui/`
 

@@ -13,6 +13,17 @@ import (
 	"gosend/crypto"
 )
 
+const (
+	defaultConnectionRateLimitPerIP  = 5
+	defaultConnectionRateLimitWindow = time.Minute
+)
+
+type inboundConnectionRate struct {
+	windowStart time.Time
+	count       int
+	lastSeen    time.Time
+}
+
 // Server accepts inbound TCP sessions and upgrades them to PeerConnection.
 type Server struct {
 	listener net.Listener
@@ -24,6 +35,9 @@ type Server struct {
 	closed    chan struct{}
 	closeOnce sync.Once
 	wg        sync.WaitGroup
+
+	connectionRates      map[string]inboundConnectionRate
+	lastRateLimiterPrune time.Time
 }
 
 // Listen starts a TCP listener and handshake accept loop.
@@ -43,11 +57,12 @@ func Listen(address string, options HandshakeOptions) (*Server, error) {
 	}
 
 	server := &Server{
-		listener: listener,
-		options:  opts,
-		incoming: make(chan *PeerConnection, 16),
-		errs:     make(chan error, 16),
-		closed:   make(chan struct{}),
+		listener:        listener,
+		options:         opts,
+		incoming:        make(chan *PeerConnection, 16),
+		errs:            make(chan error, 16),
+		closed:          make(chan struct{}),
+		connectionRates: make(map[string]inboundConnectionRate),
 	}
 
 	server.wg.Add(1)
@@ -99,6 +114,15 @@ func (s *Server) acceptLoop() {
 			case s.errs <- fmt.Errorf("accept connection: %w", err):
 			default:
 			}
+			continue
+		}
+
+		allowed, remoteIP := s.allowInboundConnection(conn.RemoteAddr())
+		if !allowed {
+			if s.options.OnInboundConnectionRateLimit != nil {
+				s.options.OnInboundConnectionRateLimit(remoteIP)
+			}
+			_ = conn.Close()
 			continue
 		}
 
@@ -285,4 +309,67 @@ func generateHandshakeChallengeNonce() (string, error) {
 		return "", err
 	}
 	return base64.StdEncoding.EncodeToString(nonce), nil
+}
+
+func (s *Server) allowInboundConnection(addr net.Addr) (bool, string) {
+	limit := s.options.ConnectionRateLimitPerIP
+	window := s.options.ConnectionRateLimitWindow
+	if limit <= 0 || window <= 0 {
+		return true, ""
+	}
+
+	ip := remoteIPFromAddr(addr)
+	if ip == "" {
+		return true, ""
+	}
+
+	now := time.Now()
+	s.pruneConnectionRateEntries(now, window*4)
+
+	entry := s.connectionRates[ip]
+	if entry.windowStart.IsZero() || now.Sub(entry.windowStart) >= window {
+		entry.windowStart = now
+		entry.count = 0
+	}
+	entry.lastSeen = now
+
+	if entry.count >= limit {
+		s.connectionRates[ip] = entry
+		return false, ip
+	}
+
+	entry.count++
+	s.connectionRates[ip] = entry
+	return true, ip
+}
+
+func (s *Server) pruneConnectionRateEntries(now time.Time, maxAge time.Duration) {
+	if len(s.connectionRates) == 0 || maxAge <= 0 {
+		return
+	}
+	if !s.lastRateLimiterPrune.IsZero() && now.Sub(s.lastRateLimiterPrune) < time.Second {
+		return
+	}
+
+	for ip, entry := range s.connectionRates {
+		if entry.lastSeen.IsZero() || now.Sub(entry.lastSeen) > maxAge {
+			delete(s.connectionRates, ip)
+		}
+	}
+	s.lastRateLimiterPrune = now
+}
+
+func remoteIPFromAddr(addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	if tcpAddr, ok := addr.(*net.TCPAddr); ok {
+		return tcpAddr.IP.String()
+	}
+
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return ""
+	}
+	return host
 }

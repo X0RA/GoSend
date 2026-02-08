@@ -2,6 +2,9 @@ package discovery
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -27,6 +30,9 @@ const (
 	DefaultTTL = 120
 	// DefaultPeerStaleAfter keeps a discovered peer visible across transient missed scans.
 	DefaultPeerStaleAfter = 30 * time.Second
+
+	discoveryTokenTXTKey = "discovery_token"
+	discoveryTokenScope  = "gosend-discovery-token-v1"
 )
 
 type registerFunc func(instance, service, domain string, port int, text []string, ifaces []net.Interface) (*zeroconf.Server, error)
@@ -42,13 +48,22 @@ type Config struct {
 	PeerStaleAfter  time.Duration
 	TTL             uint32
 
-	SelfDeviceID   string
-	DeviceName     string
-	ListeningPort  int
-	KeyFingerprint string
+	SelfDeviceID      string
+	DeviceName        string
+	ListeningPort     int
+	KeyFingerprint    string
+	Ed25519PublicKey  []byte
+	KnownPeerProvider func() []KnownPeerIdentity
+	Now               func() time.Time
 
 	registerFn registerFunc
 	browseFn   browseFunc
+}
+
+// KnownPeerIdentity provides the minimum identity material needed for discovery-token verification.
+type KnownPeerIdentity struct {
+	DeviceID         string
+	Ed25519PublicKey string
 }
 
 func (c Config) withDefaults() Config {
@@ -87,6 +102,9 @@ func (c Config) withDefaults() Config {
 	if out.registerFn == nil {
 		out.registerFn = zeroconf.Register
 	}
+	if out.Now == nil {
+		out.Now = time.Now
+	}
 	return out
 }
 
@@ -99,6 +117,9 @@ func (c Config) validateForBroadcast() error {
 	}
 	if c.ListeningPort <= 0 {
 		return errors.New("listening port must be > 0")
+	}
+	if len(c.Ed25519PublicKey) == 0 {
+		return errors.New("ed25519 public key is required")
 	}
 	return nil
 }
@@ -121,11 +142,18 @@ func StartBroadcaster(config Config) (*Broadcaster, error) {
 	if err := cfg.validateForBroadcast(); err != nil {
 		return nil, err
 	}
+	now := time.Now()
+	if cfg.Now != nil {
+		now = cfg.Now()
+	}
+	token := ComputeDiscoveryToken(cfg.SelfDeviceID, cfg.Ed25519PublicKey, now)
+	if token == "" {
+		return nil, errors.New("failed to derive discovery token")
+	}
 
 	txt := []string{
-		"device_id=" + cfg.SelfDeviceID,
+		discoveryTokenTXTKey + "=" + token,
 		"version=" + strconv.Itoa(cfg.Version),
-		"key_fingerprint=" + cfg.KeyFingerprint,
 	}
 
 	server, err := cfg.registerFn(cfg.DeviceName, cfg.Service, cfg.Domain, cfg.ListeningPort, txt, nil)
@@ -186,4 +214,36 @@ func (s *Service) Stop() {
 	if s.Broadcaster != nil {
 		s.Broadcaster.Stop()
 	}
+}
+
+// ComputeDiscoveryToken returns the rotating HMAC token for one device identity at the provided hour.
+func ComputeDiscoveryToken(deviceID string, ed25519PublicKey []byte, now time.Time) string {
+	deviceID = strings.TrimSpace(deviceID)
+	if deviceID == "" || len(ed25519PublicKey) == 0 {
+		return ""
+	}
+
+	hourBucket := now.UTC().Unix() / 3600
+	payload := deviceID + "|" + strconv.FormatInt(hourBucket, 10)
+	mac := hmac.New(sha256.New, deriveDiscoveryTokenKey(ed25519PublicKey))
+	_, _ = mac.Write([]byte(payload))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// VerifyDiscoveryToken verifies a token for one device identity at the provided hour.
+func VerifyDiscoveryToken(token, deviceID string, ed25519PublicKey []byte, now time.Time) bool {
+	expected := ComputeDiscoveryToken(deviceID, ed25519PublicKey, now)
+	if expected == "" || strings.TrimSpace(token) == "" {
+		return false
+	}
+	return hmac.Equal([]byte(strings.ToLower(strings.TrimSpace(token))), []byte(expected))
+}
+
+func deriveDiscoveryTokenKey(ed25519PublicKey []byte) []byte {
+	material := make([]byte, 0, len(discoveryTokenScope)+len(ed25519PublicKey))
+	material = append(material, []byte(discoveryTokenScope)...)
+	material = append(material, '|')
+	material = append(material, ed25519PublicKey...)
+	sum := sha256.Sum256(material)
+	return sum[:]
 }

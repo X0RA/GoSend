@@ -62,3 +62,55 @@ func TestFileCRUD(t *testing.T) {
 		t.Fatalf("expected transfer status %q, got %q", transferStatusComplete, updated.TransferStatus)
 	}
 }
+
+func TestTransferCheckpointCRUD(t *testing.T) {
+	store := newTestStore(t)
+
+	checkpoint := TransferCheckpoint{
+		FileID:           "file-cp-1",
+		Direction:        TransferDirectionSend,
+		NextChunk:        42,
+		BytesTransferred: 42 * 1024,
+		TempPath:         "/tmp/source.bin",
+	}
+	if err := store.UpsertTransferCheckpoint(checkpoint); err != nil {
+		t.Fatalf("UpsertTransferCheckpoint failed: %v", err)
+	}
+
+	got, err := store.GetTransferCheckpoint(checkpoint.FileID, checkpoint.Direction)
+	if err != nil {
+		t.Fatalf("GetTransferCheckpoint failed: %v", err)
+	}
+	if got.NextChunk != checkpoint.NextChunk || got.BytesTransferred != checkpoint.BytesTransferred {
+		t.Fatalf("unexpected checkpoint: %+v", got)
+	}
+
+	checkpoint.NextChunk = 99
+	checkpoint.BytesTransferred = 99 * 2048
+	if err := store.UpsertTransferCheckpoint(checkpoint); err != nil {
+		t.Fatalf("UpsertTransferCheckpoint update failed: %v", err)
+	}
+
+	updated, err := store.GetTransferCheckpoint(checkpoint.FileID, checkpoint.Direction)
+	if err != nil {
+		t.Fatalf("GetTransferCheckpoint after update failed: %v", err)
+	}
+	if updated.NextChunk != checkpoint.NextChunk || updated.BytesTransferred != checkpoint.BytesTransferred {
+		t.Fatalf("unexpected updated checkpoint: %+v", updated)
+	}
+
+	listed, err := store.ListTransferCheckpoints(TransferDirectionSend)
+	if err != nil {
+		t.Fatalf("ListTransferCheckpoints failed: %v", err)
+	}
+	if len(listed) != 1 || listed[0].FileID != checkpoint.FileID {
+		t.Fatalf("unexpected listed checkpoints: %+v", listed)
+	}
+
+	if err := store.DeleteTransferCheckpoint(checkpoint.FileID, checkpoint.Direction); err != nil {
+		t.Fatalf("DeleteTransferCheckpoint failed: %v", err)
+	}
+	if _, err := store.GetTransferCheckpoint(checkpoint.FileID, checkpoint.Direction); err == nil {
+		t.Fatalf("expected ErrNotFound after checkpoint deletion")
+	}
+}

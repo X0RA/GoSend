@@ -33,6 +33,10 @@ type HandshakeOptions struct {
 	RekeyInterval     time.Duration
 	RekeyAfterBytes   uint64
 	AutoRespondPing   *bool
+
+	ConnectionRateLimitPerIP     int
+	ConnectionRateLimitWindow    time.Duration
+	OnInboundConnectionRateLimit func(remoteIP string)
 }
 
 func (o HandshakeOptions) withDefaults() HandshakeOptions {
@@ -54,6 +58,12 @@ func (o HandshakeOptions) withDefaults() HandshakeOptions {
 	}
 	if out.RekeyAfterBytes == 0 {
 		out.RekeyAfterBytes = defaultRekeyAfterBytes
+	}
+	if out.ConnectionRateLimitPerIP <= 0 {
+		out.ConnectionRateLimitPerIP = defaultConnectionRateLimitPerIP
+	}
+	if out.ConnectionRateLimitWindow <= 0 {
+		out.ConnectionRateLimitWindow = defaultConnectionRateLimitWindow
 	}
 	return out
 }
