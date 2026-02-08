@@ -6,6 +6,17 @@ GoSend is a local-network peer-to-peer desktop app built in Go. It uses mDNS for
 
 **Runtime story:** Startup resolves data dir, loads/creates config, ensures Ed25519 identity keys, computes fingerprint, opens SQLite, then starts the GUI. The GUI starts the peer manager (TCP listener + protocol engine) and mDNS discovery (broadcast + scanner). The scanner discovers LAN peers and keeps a live cache. The user explicitly adds a discovered peer (TCP dial + signed handshake + add-request). After mutual acceptance, the peer is persisted and eligible for auto-reconnect. Messages and files are exchanged over encrypted sessions with signatures, replay checks, and persistence. If a peer goes offline, outbound messages/files are queued and resume on reconnect. On shutdown, the UI stops the manager and discovery, waits for loops, then closes the DB.
 
+## Roadmap Completion
+
+All roadmap phases in `PHASE-CHANGES.md` are implemented.
+
+- Phase 1: protocol hardening (signed control frames, handshake challenge nonce, rekey, control/data frame limits, WAL).
+- Phase 2: trust/key lifecycle cleanup (durable key-rotation decisions, structured security events, legacy X25519 config cleanup).
+- Phase 3: global + per-peer transfer policy and trust/profile settings.
+- Phase 4: network resilience and abuse protection (rate limits, jittered reconnect health scoring, mDNS privacy token, crash-resume checkpoints).
+- Phase 5: multi-file queueing, folder transfer manifests, drag-and-drop, and transfer queue management.
+- Phase 6: UX polish (inline transfer cards, notifications, fingerprint verification workflow, runtime state indicators, retention cleanup, chat search, hot-reload device name).
+
 ## What Is Implemented Today
 
 - Local LAN peer discovery via mDNS service `_p2pchat._tcp.local.` with TXT keys: `discovery_token`, `version` (no raw `device_id` or `key_fingerprint` broadcast).
@@ -28,12 +39,13 @@ GoSend is a local-network peer-to-peer desktop app built in Go. It uses mDNS for
 - File transfer with request/accept/reject, signed chunk ack/nack + signed file completion, reconnect resume from chunk, end checksum verification, persistent transfer checkpoints for crash recovery, global receive limits/download location, and per-peer auto-accept/limit/directory overrides.
 - Chat drag-and-drop (single/multi file + folder) plus transfer queue panel with grouped active/pending visibility, speed/ETA display, cancel/retry controls, and short completed-item retention.
 - Inline chat transfer cards are persisted from `files` metadata, show live speed/progress/status, support inline retry, and open the containing folder for completed received files.
-- Desktop notifications for incoming messages and file requests when the app is in background or another peer chat is active, with global enable/disable and per-peer mute.
+- Desktop notifications for incoming messages and file requests when the app is in background or another peer chat is active, with global enable/disable and per-peer mute (auto-accepted inbound transfers do not trigger file-request notifications).
 - Per-peer controls include custom names, trust level (`normal`/`trusted`), notification mute, fingerprint verification flag, trusted badge, and verified badge in the peer list.
 - Peer list state indicators include `Connecting...`, reconnect countdown (`Reconnecting in Ns...`), and inline `Transferring...` progress.
 - Chat search includes message `LIKE` search plus a files-only filter backed by `files` queries.
 - Configurable data retention and maintenance cleanup (messages/files/seen IDs) plus per-peer clear-history action.
 - Device-name settings hot-reload updates active protocol identity and restarts mDNS advertisement without full app restart (port changes still require restart).
+- Runtime state change callbacks refresh peer status indicators immediately while the regular 2-second poll keeps chat/history views synchronized.
 - Cross-platform GUI (Fyne) with peer list, chat pane, discovery dialog, device settings dialog, peer settings dialog, key-change prompt, file-transfer prompts/progress, and chat header color that reflects online status.
 
 ## Quick Start
@@ -480,6 +492,7 @@ Theme:
 ```text
 .
 ├── .github/
+│   ├── Info.plist.template
 │   └── workflows/
 │       └── release-build.yml
 ├── AGENTS.md
@@ -515,6 +528,7 @@ Theme:
 ├── network/
 │   ├── client.go
 │   ├── connection.go
+│   ├── connection_test.go
 │   ├── file_transfer.go
 │   ├── file_transfer_test.go
 │   ├── handshake.go
@@ -524,7 +538,9 @@ Theme:
 │   ├── peer_manager_test.go
 │   ├── protocol.go
 │   ├── protocol_test.go
-│   └── server.go
+│   ├── rekey_test.go
+│   ├── server.go
+│   └── server_test.go
 ├── storage/
 │   ├── database.go
 │   ├── database_test.go
@@ -566,8 +582,8 @@ Theme:
 
 ### `config/`
 
-- `config/config.go`: Data dir resolution, directory creation, config load/save, default config generation, and legacy config normalization/migration (including `port_mode`, `download_directory`, `max_receive_file_size`, and legacy X25519 path removal).
-- `config/config_test.go`: Tests first-run creation, stable reload behavior, legacy port mode/download-path normalization, and legacy X25519 path migration cleanup.
+- `config/config.go`: Data dir resolution, directory creation, config load/save, default config generation, and config normalization/migration (`port_mode`, `download_directory`, `max_receive_file_size`, `notifications_enabled`, `message_retention_days`, `cleanup_downloaded_files`, and legacy X25519 field removal).
+- `config/config_test.go`: Tests first-run creation, stable reload behavior, legacy normalization paths, missing notifications backfill, retention normalization, and legacy X25519 field migration cleanup.
 
 ### `crypto/`
 
@@ -582,8 +598,8 @@ Theme:
 
 ### `discovery/`
 
-- `discovery/mdns.go`: mDNS config defaults, rotating discovery-token generation, broadcaster setup, and combined discovery service startup/shutdown orchestration.
-- `discovery/mdns_test.go`: Tests rotating-token TXT composition, token rotation/verification, service start/stop wiring, and stale-time default behavior from TTL.
+- `discovery/mdns.go`: mDNS config defaults, rotating discovery-token generation, broadcaster setup, runtime `UpdateDeviceName` re-registration, and combined discovery service startup/shutdown orchestration.
+- `discovery/mdns_test.go`: Tests rotating-token TXT composition, token rotation/verification, service start/stop wiring, device-name update re-registration, and stale-time default behavior from TTL.
 - `discovery/peer_scanner.go`: Background/manual scanning, known-peer token verification, unknown-peer synthetic IDs, in-memory peer cache, stale-peer aging, and event emission.
 - `discovery/peer_scanner_test.go`: Tests self filtering via token verification, known-peer resolution, unknown-peer fallback discovery, manual refresh updates, and polling/removal behavior.
 
@@ -598,14 +614,14 @@ Note: runtime logic currently uses `storage` structs directly; `models` package 
 ### `storage/`
 
 - `storage/types.go`: Core storage data types, status/content constants, folder-transfer metadata structs, peer-trust constants, validators, null helpers, and shared errors.
-- `storage/database.go`: SQLite open/create helpers, migrations (`peer_settings`, `transfer_checkpoints`, `folder_transfers`, and `files` folder-link columns), schema versioning, and connection lifecycle.
+- `storage/database.go`: SQLite open/create helpers, WAL mode + periodic checkpointing, migrations (`peer_settings` extensions, `transfer_checkpoints`, `folder_transfers`, `files` folder-link columns, and search/retention indexes), schema versioning, and connection lifecycle.
 - `storage/database_test.go`: Verifies DB creation, migrations, schema version, and expected table presence.
-- `storage/peers.go`: Peer CRUD + endpoint/status updates, discovery-driven device-name updates, per-peer settings CRUD/default ensure, pinned-key updates, and key-rotation event history helpers.
-- `storage/peers_test.go`: Peer CRUD, endpoint/status update, per-peer settings CRUD/defaults, pinned-key update, and key-rotation event tests.
-- `storage/messages.go`: Message insert/read/update APIs, pending queue reads, and expired queue pruning.
-- `storage/messages_test.go`: Message CRUD, ordering, status updates, pending retrieval, and prune behavior.
-- `storage/files.go`: File metadata insert/read (including `folder_id`/`relative_path`), folder-transfer metadata upsert/query/status helpers, and transfer-checkpoint CRUD/list APIs.
-- `storage/files_test.go`: File metadata CRUD/status update tests plus transfer-checkpoint and folder-transfer linkage tests.
+- `storage/peers.go`: Peer CRUD + endpoint/status updates, discovery-driven device-name updates, per-peer settings CRUD/default ensure (including notifications mute + verified), pinned-key updates, verified reset on key change, and key-rotation event history helpers.
+- `storage/peers_test.go`: Peer CRUD, endpoint/status update, per-peer settings CRUD/defaults, verified reset behavior, pinned-key update, and key-rotation event tests.
+- `storage/messages.go`: Message insert/read/update APIs, pending queue reads, search APIs, retention deletion helpers, per-peer history deletion, and expired queue pruning.
+- `storage/messages_test.go`: Message CRUD, ordering, status updates, pending retrieval, search behavior, and retention/peer delete behavior.
+- `storage/files.go`: File metadata insert/read (including `folder_id`/`relative_path`), peer file list/search APIs, timestamp updates, retention/peer metadata deletion helpers, folder-transfer metadata upsert/query/status helpers, and transfer-checkpoint CRUD/list APIs.
+- `storage/files_test.go`: File metadata CRUD/status update tests plus transfer-checkpoint, folder-transfer linkage, and retention/peer-query coverage.
 - `storage/security_events.go`: Structured security-event insert/query/retention-prune helpers.
 - `storage/security_events_test.go`: Security-event filter and retention behavior tests.
 - `storage/seen_ids.go`: Seen-message ID insert/check/prune helpers.
@@ -620,22 +636,22 @@ Note: runtime logic currently uses `storage` structs directly; `models` package 
 - `network/handshake.go`: Handshake options/defaults, key-change decision flow, and session-key derivation helpers.
 - `network/client.go`: Outbound dial + handshake + session setup.
 - `network/server.go`: Listener accept loop, per-IP inbound connection rate limiting, and inbound handshake/session setup.
-- `network/peer_manager.go`: High-level peer lifecycle manager: add/approve/remove/disconnect, message send/receive, add/file request rate limits, reconnect workers, discovery-triggered reconnect, folder-transfer message dispatch, and default peer-settings creation on first persisted peer.
-- `network/file_transfer.go`: File transfer protocol implementation: per-peer outbound queue, send/cancel/retry APIs, folder manifest request/response flow, chunk send/ack/nack, resume, checksum verification, checkpoint persistence/recovery, status persistence, progress callbacks (with speed/ETA), and per-peer/global receive-policy resolution.
+- `network/peer_manager.go`: High-level peer lifecycle manager: add/approve/remove/disconnect, message send/receive, add/file request rate limits, reconnect workers, runtime state callbacks, discovery-triggered reconnect, folder-transfer message dispatch, default peer-settings creation on first persisted peer, maintenance cleanup scheduling, and device-name hot-reload identity updates.
+- `network/file_transfer.go`: File transfer protocol implementation: per-peer outbound queue, send/cancel/retry APIs, folder manifest request/response flow, chunk send/ack/nack, resume, checksum verification, checkpoint persistence/recovery, completion timestamp persistence, status persistence, progress callbacks (with speed/ETA), and per-peer/global receive-policy resolution.
 - `network/integration_test.go`: Handshake/session/keepalive/ping-timeout/key-change decision, replay, and control-frame-limit integration tests.
 - `network/server_test.go`: Per-IP inbound connection rate-limit enforcement test.
 - `network/connection_test.go`: Epoch transition decrypt-window tests plus malformed-frame disconnect-threshold tests.
 - `network/rekey_test.go`: Rekey trigger/rekey-under-load/concurrent-transfer/failure-handling tests.
-- `network/peer_manager_test.go`: Add/remove/restart/simultaneous-add/spoof-protection behavior tests, request-rate-limit tests, jitter/backoff and endpoint-health ordering tests, and peer-settings row creation for accepted peers.
+- `network/peer_manager_test.go`: Add/remove/restart/simultaneous-add/spoof-protection behavior tests, request-rate-limit tests, jitter/backoff and endpoint-health ordering tests, peer-settings row creation for accepted peers, and runtime device-name hot-reload behavior.
 - `network/messaging_test.go`: Delivery updates, offline queue drain, replay rejection, sequence rejection, signature tamper rejection, spoofed ack rejection tests.
 - `network/file_transfer_test.go`: Accepted/rejected transfer flows, sequential queue behavior, queued-cancel behavior, folder structure preservation + traversal rejection, retry flow, reconnect/crash-resume coverage, checksum mismatch failure tests, max-receive-limit auto-reject, and auto-accept directory override behavior.
 
 ### `ui/`
 
-- `ui/main_window.go`: Application controller, service startup/shutdown, event loops, status updates, dialogs, transfer queue panel, window-level drop handling, dynamic file-policy wiring into `PeerManager`, and cross-layer wiring.
-- `ui/peers_list.go`: Peer list pane, discovery dialog rendering, discovered-peer add flow, peer selection, custom-name sorting/secondary labels, and trusted badge rendering.
-- `ui/chat_window.go`: Chat pane rendering, message send flow, multi-file/folder queueing flow, transcript composition, transfer row rendering/progress/actions (cancel/retry/speed/ETA), custom peer-name header, and peer-settings entry point.
-- `ui/settings.go`: Device settings dialog (name, fingerprint, port mode/port, download location, max file size), per-peer settings dialog (custom name/trust/transfer overrides), and key reset workflow.
+- `ui/main_window.go`: Application controller, service startup/shutdown, foreground/background lifecycle handling, event loops, status updates, dialogs, transfer queue panel, notification dispatch for incoming messages/file requests, runtime peer-state event handling, dynamic file/retention-policy wiring into `PeerManager`, and cross-layer wiring.
+- `ui/peers_list.go`: Peer list pane, discovery dialog rendering, discovered-peer add flow, peer selection, custom-name sorting/secondary labels, trusted/verified badges, and runtime state + transfer progress indicators.
+- `ui/chat_window.go`: Chat pane rendering, message send flow, multi-file/folder queueing flow, chat search (with files-only filter), transcript composition, persisted+live transfer row rendering/progress/actions (cancel/retry/speed/ETA), completed-received file folder links, custom peer-name header, and peer-settings entry point.
+- `ui/settings.go`: Device settings dialog (name, fingerprint copy, port mode/port, download location, max file size, notifications, retention, cleanup), per-peer settings dialog (custom name/trust/verified/mute/transfer overrides + clear history), hot-reload handling for name-only changes, and key reset workflow.
 - `ui/file_handler.go`: Picker/progress helper used by UI for multi-path selection and transfer progress state.
 - `ui/clickable_label.go`: Clickable label widget used by chat header for peer fingerprint interactions.
 - `ui/theme.go`: Theme/palette helpers, rounded UI primitives, and hover/tooltip button behavior.
