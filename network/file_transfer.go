@@ -2,7 +2,6 @@ package network
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -2111,7 +2110,7 @@ func (m *PeerManager) verifyFileResponse(conn *PeerConnection, response FileResp
 	if err != nil {
 		return err
 	}
-	if !ed25519.Verify(publicKey, raw, signature) {
+	if !appcrypto.Verify(publicKey, raw, signature) {
 		return errors.New("invalid file response signature")
 	}
 	return nil
@@ -2135,7 +2134,7 @@ func (m *PeerManager) verifyFileComplete(conn *PeerConnection, complete FileComp
 	if err != nil {
 		return err
 	}
-	if !ed25519.Verify(publicKey, raw, signature) {
+	if !appcrypto.Verify(publicKey, raw, signature) {
 		return errors.New("invalid file complete signature")
 	}
 	return nil
@@ -2189,7 +2188,7 @@ func (m *PeerManager) verifyFolderTransferRequest(conn *PeerConnection, request 
 	if err != nil {
 		return err
 	}
-	if !ed25519.Verify(publicKey, raw, signature) {
+	if !appcrypto.Verify(publicKey, raw, signature) {
 		return errors.New("invalid folder transfer request signature")
 	}
 	return nil
@@ -2213,7 +2212,7 @@ func (m *PeerManager) verifyFolderTransferResponse(conn *PeerConnection, respons
 	if err != nil {
 		return err
 	}
-	if !ed25519.Verify(publicKey, raw, signature) {
+	if !appcrypto.Verify(publicKey, raw, signature) {
 		return errors.New("invalid folder transfer response signature")
 	}
 	return nil
