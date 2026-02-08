@@ -11,6 +11,7 @@ GoSend is a local-network peer-to-peer desktop app built in Go. It uses mDNS for
 - Session key derivation via HKDF-SHA256 using salt `p2pchat-session-v1` and sorted device IDs.
 - Transport-level encryption for all post-handshake frames using AES-256-GCM (`secure_frame`).
 - Peer lifecycle flows: add request/response, remove, disconnect, reconnect workers, and discovery-driven reconnect.
+- Peers are only persisted after an accepted `peer_add_request`; a raw connection/handshake alone does not auto-add a peer.
 - Encrypted + signed text messages with delivery status tracking (`pending`, `sent`, `delivered`, `failed`).
 - Offline outbound queue with limits: 500 pending messages per peer, 7-day age cutoff, 50 MB pending content per peer.
 - Replay defenses for chat messages: per-connection sequence checks, persistent seen ID table, and timestamp skew checks.
@@ -277,6 +278,7 @@ Main window:
 
 - Left pane: known peers list from DB (self filtered out).
 - Right pane: selected peer chat transcript + file transfer rows.
+- Text messages show a copy button (clipboard icon) to copy the message text; file/image messages do not show the copy button.
 - Chat composer is hidden until a peer is selected.
 - Chat header text is clickable to show the selected peer fingerprint, and its color reflects online/offline status.
 - Chat composer layout: message box on the left, with `Send` above `Attach` in a vertical action group on the right.

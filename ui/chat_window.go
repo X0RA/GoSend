@@ -349,7 +349,7 @@ func buildConversationRows(messages []storage.Message, files []chatFileEntry, lo
 	out := make([]fyne.CanvasObject, 0, len(rows))
 	for _, row := range rows {
 		if row.message != nil {
-			out = append(out, renderMessageRow(*row.message, localDeviceID))
+			out = append(out, renderMessageRow(*row.message, localDeviceID, parentWindow))
 			continue
 		}
 		if row.file != nil {
@@ -359,7 +359,13 @@ func buildConversationRows(messages []storage.Message, files []chatFileEntry, lo
 	return out
 }
 
-func renderMessageRow(message storage.Message, localDeviceID string) fyne.CanvasObject {
+// isTextMessage returns true if the message is plain text (copyable), not a file or image.
+func isTextMessage(message storage.Message) bool {
+	ct := strings.TrimSpace(strings.ToLower(message.ContentType))
+	return ct == "" || ct == "text"
+}
+
+func renderMessageRow(message storage.Message, localDeviceID string, parentWindow fyne.Window) fyne.CanvasObject {
 	outgoing := isOutgoingMessage(message, localDeviceID)
 	body := widget.NewLabel(message.Content)
 	body.Wrapping = fyne.TextWrapWord
@@ -377,7 +383,19 @@ func renderMessageRow(message storage.Message, localDeviceID string) fyne.Canvas
 		bgColor = colorOutgoingMsg
 	}
 
-	content := container.NewVBox(body, ts)
+	// Bottom row: timestamp and optional copy button for text messages
+	bottomRow := fyne.CanvasObject(ts)
+	if isTextMessage(message) && parentWindow != nil && strings.TrimSpace(message.Content) != "" {
+		copyBtn := newHintButtonWithIcon("", theme.ContentCopyIcon(), "Copy to clipboard", func() {
+			if parentWindow != nil && parentWindow.Clipboard() != nil {
+				parentWindow.Clipboard().SetContent(message.Content)
+			}
+		}, nil)
+		copyBtn.Importance = widget.LowImportance
+		bottomRow = container.NewBorder(nil, nil, nil, container.NewPadded(copyBtn), ts)
+	}
+
+	content := container.NewVBox(body, bottomRow)
 	bubble := newRoundedBg(bgColor, 10, content)
 
 	if outgoing {

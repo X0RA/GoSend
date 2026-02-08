@@ -368,7 +368,7 @@ func (m *PeerManager) SendPeerAddRequest(peerDeviceID string) (bool, error) {
 	case response := <-responseCh:
 		accepted := stringsEqualFold(response.Status, "accepted")
 		if accepted {
-			if err := m.persistPeerConnection(conn, peerStatusOnline); err != nil {
+			if err := m.persistPeerConnection(conn, peerStatusOnline, true); err != nil {
 				return false, err
 			}
 		}
@@ -483,7 +483,7 @@ func (m *PeerManager) registerConnection(conn *PeerConnection) {
 	m.connMu.Unlock()
 
 	m.stopReconnect(peerID)
-	if err := m.persistPeerConnection(conn, peerStatusOnline); err != nil && !errors.Is(err, storage.ErrNotFound) {
+	if err := m.persistPeerConnection(conn, peerStatusOnline, false); err != nil && !errors.Is(err, storage.ErrNotFound) {
 		m.reportError(err)
 	}
 
@@ -596,8 +596,16 @@ loop:
 	m.connMu.Unlock()
 
 	if peerID != "" {
-		_ = m.options.Store.UpdatePeerStatus(peerID, peerStatusOffline, time.Now().UnixMilli())
+		if err := m.options.Store.UpdatePeerStatus(peerID, peerStatusOffline, time.Now().UnixMilli()); err != nil && !errors.Is(err, storage.ErrNotFound) {
+			m.reportError(err)
+		}
 		if m.consumeSuppressReconnect(peerID) {
+			return
+		}
+		if _, err := m.options.Store.GetPeer(peerID); errors.Is(err, storage.ErrNotFound) {
+			return
+		} else if err != nil {
+			m.reportError(err)
 			return
 		}
 		m.startReconnect(peerID)
@@ -687,7 +695,7 @@ func (m *PeerManager) handlePeerAddRequest(conn *PeerConnection, request PeerAdd
 	}
 
 	if accept {
-		if err := m.persistPeerConnection(conn, peerStatusOnline); err != nil {
+		if err := m.persistPeerConnection(conn, peerStatusOnline, true); err != nil {
 			m.reportError(err)
 		}
 		return
@@ -1217,7 +1225,7 @@ func (m *PeerManager) handshakeOptionsForServer() HandshakeOptions {
 	}
 }
 
-func (m *PeerManager) persistPeerConnection(conn *PeerConnection, status string) error {
+func (m *PeerManager) persistPeerConnection(conn *PeerConnection, status string, createIfMissing bool) error {
 	peerID := conn.PeerDeviceID()
 	if peerID == "" {
 		return errors.New("peer ID is required")
@@ -1232,6 +1240,10 @@ func (m *PeerManager) persistPeerConnection(conn *PeerConnection, status string)
 	}
 
 	if errors.Is(err, storage.ErrNotFound) {
+		if !createIfMissing {
+			return storage.ErrNotFound
+		}
+
 		fingerprint, err := fingerprintFromBase64(conn.PeerPublicKey())
 		if err != nil {
 			return err

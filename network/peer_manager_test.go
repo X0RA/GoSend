@@ -71,6 +71,59 @@ func TestPeerAddFlowWithApprovalQueue(t *testing.T) {
 	waitForPeerStatus(t, b.store, "peer-a", peerStatusOnline, 2*time.Second)
 }
 
+func TestConnectDoesNotAutoAddPeer(t *testing.T) {
+	a := newTestManager(t, testManagerConfig{
+		deviceID: "peer-a",
+		name:     "Peer A",
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID: "peer-b",
+		name:     "Peer B",
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+
+	waitForPeerNotFound(t, a.store, "peer-b", 2*time.Second)
+	waitForPeerNotFound(t, b.store, "peer-a", 2*time.Second)
+}
+
+func TestPeerAddRejectedDoesNotPersistPeer(t *testing.T) {
+	a := newTestManager(t, testManagerConfig{
+		deviceID: "peer-a",
+		name:     "Peer A",
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID: "peer-b",
+		name:     "Peer B",
+		approve: func(notification AddRequestNotification) (bool, error) {
+			return false, nil
+		},
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+
+	accepted, err := a.manager.SendPeerAddRequest("peer-b")
+	if err != nil {
+		t.Fatalf("SendPeerAddRequest failed: %v", err)
+	}
+	if accepted {
+		t.Fatalf("expected add request to be rejected")
+	}
+
+	waitForPeerNotFound(t, a.store, "peer-b", 2*time.Second)
+	waitForPeerNotFound(t, b.store, "peer-a", 2*time.Second)
+}
+
 func TestReconnectAfterPeerRestart(t *testing.T) {
 	bPort := freeTCPPort(t)
 
@@ -573,6 +626,23 @@ func waitForPeerStatus(t *testing.T, store *storage.Store, peerID, expectedStatu
 		t.Fatalf("timed out waiting for peer %q status=%q, final error=%v", peerID, expectedStatus, err)
 	}
 	t.Fatalf("timed out waiting for peer %q status=%q, final=%q", peerID, expectedStatus, peer.Status)
+}
+
+func waitForPeerNotFound(t *testing.T, store *storage.Store, peerID string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		_, err := store.GetPeer(peerID)
+		if errors.Is(err, storage.ErrNotFound) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	peer, err := store.GetPeer(peerID)
+	if err == nil {
+		t.Fatalf("timed out waiting for peer %q to stay absent, final status=%q", peerID, peer.Status)
+	}
+	t.Fatalf("timed out waiting for peer %q to stay absent, final error=%v", peerID, err)
 }
 
 func waitForPeerRemoved(t *testing.T, store *storage.Store, peerID string, timeout time.Duration) {
