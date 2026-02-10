@@ -15,6 +15,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 
 	"gosend/crypto"
@@ -99,16 +100,17 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 	c.chatHeader.SetTextStyle(fyne.TextStyle{Bold: false}) // mockup: peer name medium weight
 	c.chatHeader.SetColor(ctpSubtext0)
 	c.chatHeaderPeerIDText = canvas.NewText("", ctpOverlay1)
-	c.chatHeaderPeerIDText.TextSize = 11
+	c.chatHeaderPeerIDText.TextSize = 10
 	c.peerSettingsBtn = newFlatButtonWithIcon(iconSettings(), "Peer settings", c.showSelectedPeerSettingsDialog, c.handleHoverHint)
 	c.peerSettingsBtn.Hide()
 	c.searchBtn = newFlatButtonWithIcon(iconSearch(), "Search chat", c.toggleChatSearch, c.handleHoverHint)
 	c.searchBtn.Hide()
 	rightControls := container.NewHBox(c.searchBtn, c.peerSettingsBtn)
-	headerCenter := container.NewVBox(c.chatHeader, c.chatHeaderPeerIDText)
+	headerCenter := container.NewHBox(c.chatHeader, c.chatHeaderPeerIDText)
 	headerBg := canvas.NewRectangle(ctpMantle)
-	headerBg.SetMinSize(fyne.NewSize(1, 44))
-	header := container.NewStack(headerBg, container.NewPadded(container.NewBorder(nil, nil, nil, rightControls, headerCenter)))
+	headerBg.SetMinSize(fyne.NewSize(1, 38))
+	headerInner := container.New(layout.NewCustomPaddedLayout(1, 1, 8, 8), container.NewBorder(nil, nil, nil, rightControls, headerCenter))
+	header := container.NewStack(headerBg, headerInner)
 
 	c.chatSearchEntry = widget.NewEntry()
 	c.chatSearchEntry.SetPlaceHolder("Search messages and files")
@@ -213,7 +215,11 @@ func (c *controller) updateChatHeader() {
 			c.chatHeader.SetColor(statusColor)
 		}
 		if c.chatHeaderPeerIDText != nil {
-			c.chatHeaderPeerIDText.Text = peerIDShort
+			if strings.TrimSpace(peerIDShort) == "" {
+				c.chatHeaderPeerIDText.Text = ""
+			} else {
+				c.chatHeaderPeerIDText.Text = " - " + peerIDShort
+			}
 			c.chatHeaderPeerIDText.Refresh()
 		}
 		if c.chatComposer != nil {

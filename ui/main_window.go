@@ -188,6 +188,7 @@ func newController(app fyne.App, options RunOptions) (*controller, error) {
 
 	ctrl.fileHandler = NewFileHandler(ctrl.pickFilePath)
 	ctrl.window.Resize(fyne.NewSize(1200, 760))
+	ctrl.window.SetPadded(false)
 
 	app.Lifecycle().SetOnEnteredForeground(func() {
 		ctrl.setAppForeground(true)
