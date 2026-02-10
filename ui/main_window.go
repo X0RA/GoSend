@@ -424,15 +424,12 @@ func (c *controller) buildMainWindow() {
 	sep.SetMinSize(fyne.NewSize(1, 20))
 	// Mockup: toolbar buttons look like text until hover (flat style)
 	queueBtn := newFlatButtonWithIconAndLabel(iconHistory(), "Transfer Queue", "Transfer queue", c.showTransferQueuePanel, c.handleHoverHint)
-	refreshBtn := newFlatButtonWithIconAndLabel(iconRefresh(), "Refresh Discovery", "Refresh discovery", func() {
-		go c.refreshDiscovery()
-	}, c.handleHoverHint)
 	discoverBtn := newFlatButtonWithIconAndLabel(iconSearch(), "Discover", "Discover peers", c.showDiscoveryDialog, c.handleHoverHint)
 	settingsBtn := newFlatButtonWithIconAndLabel(iconSettings(), "Settings", "Open settings", c.showSettingsDialog, c.handleHoverHint)
 	toolbarInner := container.NewHBox(
 		container.NewCenter(appTitle),
 		container.NewCenter(sep),
-		queueBtn, refreshBtn, discoverBtn,
+		queueBtn, discoverBtn,
 		layout.NewSpacer(),
 		settingsBtn,
 	)

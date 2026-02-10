@@ -181,7 +181,17 @@ func (c *controller) buildPeersListPane() fyne.CanvasObject {
 		fyne.NewSize(20, 20),
 		container.NewStack(countBg, container.NewCenter(countBadge)),
 	)
-	topBar := container.NewBorder(nil, nil, container.NewCenter(heading), countWrap)
+	refreshBtn := newCompactFlatButtonWithIcon(iconRefresh(), "Refresh discovery", func() {
+		go c.refreshDiscovery()
+	}, c.handleHoverHint)
+	refreshBtn.iconSize = 12
+	refreshBtn.padTop = 2
+	refreshBtn.padBottom = 2
+	refreshBtn.padLeft = 2
+	refreshBtn.padRight = 2
+	refreshWrap := container.NewGridWrap(fyne.NewSize(20, 20), refreshBtn)
+	headerActions := container.NewHBox(refreshWrap, countWrap)
+	topBar := container.NewBorder(nil, nil, container.NewCenter(heading), headerActions)
 	headerBar := container.NewVBox(container.NewPadded(topBar), widget.NewSeparator())
 
 	panelBg := canvas.NewRectangle(ctpMantle)

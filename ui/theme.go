@@ -284,6 +284,89 @@ func (b *roundedButton) Refresh() {
 	b.Container.Refresh()
 }
 
+type hoverSurface struct {
+	widget.BaseWidget
+	content      fyne.CanvasObject
+	baseColor    color.Color
+	hoverColor   color.Color
+	cornerRadius float32
+	hovered      bool
+}
+
+type hoverSurfaceRenderer struct {
+	surface *hoverSurface
+	bg      *canvas.Rectangle
+}
+
+func newHoverSurface(content fyne.CanvasObject, baseColor, hoverColor color.Color, cornerRadius float32) fyne.CanvasObject {
+	if content == nil {
+		content = canvas.NewRectangle(color.Transparent)
+	}
+	if baseColor == nil {
+		baseColor = color.Transparent
+	}
+	if hoverColor == nil {
+		hoverColor = baseColor
+	}
+	h := &hoverSurface{
+		content:      content,
+		baseColor:    baseColor,
+		hoverColor:   hoverColor,
+		cornerRadius: cornerRadius,
+	}
+	h.ExtendBaseWidget(h)
+	return h
+}
+
+func (h *hoverSurface) CreateRenderer() fyne.WidgetRenderer {
+	bg := canvas.NewRectangle(h.baseColor)
+	bg.CornerRadius = h.cornerRadius
+	return &hoverSurfaceRenderer{
+		surface: h,
+		bg:      bg,
+	}
+}
+
+func (h *hoverSurface) MouseIn(*desktop.MouseEvent) {
+	h.hovered = true
+	h.Refresh()
+}
+
+func (h *hoverSurface) MouseMoved(*desktop.MouseEvent) {}
+
+func (h *hoverSurface) MouseOut() {
+	h.hovered = false
+	h.Refresh()
+}
+
+func (r *hoverSurfaceRenderer) Layout(size fyne.Size) {
+	r.bg.Move(fyne.NewPos(0, 0))
+	r.bg.Resize(size)
+	r.surface.content.Move(fyne.NewPos(0, 0))
+	r.surface.content.Resize(size)
+}
+
+func (r *hoverSurfaceRenderer) MinSize() fyne.Size {
+	return r.surface.content.MinSize()
+}
+
+func (r *hoverSurfaceRenderer) Refresh() {
+	if r.surface.hovered {
+		r.bg.FillColor = r.surface.hoverColor
+	} else {
+		r.bg.FillColor = r.surface.baseColor
+	}
+	r.bg.CornerRadius = r.surface.cornerRadius
+	r.bg.Refresh()
+	r.surface.content.Refresh()
+}
+
+func (r *hoverSurfaceRenderer) Objects() []fyne.CanvasObject {
+	return []fyne.CanvasObject{r.bg, r.surface.content}
+}
+
+func (r *hoverSurfaceRenderer) Destroy() {}
+
 func newRoundedHintButton(label string, icon fyne.Resource, hint string, radius float32, bgColor color.Color, tapped func(), onHoverChanged func(target fyne.CanvasObject, hint string, active bool)) fyne.CanvasObject {
 	button := newHintButtonWithIcon(label, icon, hint, tapped, onHoverChanged)
 	button.Importance = widget.LowImportance
@@ -483,6 +566,12 @@ func newCompactFlatButtonWithIconAndLabel(icon fyne.Resource, label string, hint
 
 func newCompactFlatButtonWithIconAndLabelState(icon fyne.Resource, label string, enabled bool, onClick func()) *flatButton {
 	btn := newCompactFlatButtonWithIconAndLabel(icon, label, "", onClick, nil)
+	btn.labelSize = 11
+	btn.iconSize = 12
+	btn.padTop = 2
+	btn.padBottom = 2
+	btn.padLeft = 8
+	btn.padRight = 8
 	btn.enabled = enabled
 	btn.hoverColor = ctpMantle
 	return btn

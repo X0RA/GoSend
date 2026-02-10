@@ -772,25 +772,28 @@ func renderMessageRow(message storage.Message, localDeviceID string, peerDisplay
 	senderText := canvas.NewText(senderLabel, senderColor)
 	senderText.TextSize = 12
 	senderText.TextStyle = fyne.TextStyle{Bold: true}
+	senderWrap := container.NewCenter(senderText)
 
 	ts := canvas.NewText(formatTimestamp(message.TimestampSent), ctpOverlay1)
 	ts.TextSize = 11
+	tsWrap := container.NewCenter(ts)
 
-	topRowObjects := []fyne.CanvasObject{senderText, ts}
+	topRowObjects := []fyne.CanvasObject{senderWrap, tsWrap}
 	if outgoing {
 		delivery := canvas.NewText(deliveryStatusMark(message.DeliveryStatus), deliveryStatusColor(message.DeliveryStatus))
 		delivery.TextSize = 11
-		topRowObjects = append(topRowObjects, delivery)
+		topRowObjects = append(topRowObjects, container.NewCenter(delivery))
 	}
 	topRow := container.New(layout.NewCustomPaddedHBoxLayout(6), topRowObjects...)
 
 	body := widget.NewLabel(message.Content)
 	body.Wrapping = fyne.TextWrapWord
 	body.Importance = widget.MediumImportance
-	bodyRow := container.New(layout.NewCustomPaddedLayout(1, 0, 0, 0), body)
+	bodyRow := container.New(layout.NewCustomPaddedLayout(-4, 0, -8, 0), body)
 
 	content := container.New(layout.NewCustomPaddedVBoxLayout(0), topRow, bodyRow)
-	return container.New(layout.NewCustomPaddedLayout(1, 1, 4, 4), content)
+	row := container.New(layout.NewCustomPaddedLayout(1, 1, 4, 4), content)
+	return newHoverSurface(row, color.Transparent, color.NRGBA{R: 49, G: 50, B: 68, A: 128}, 4)
 }
 
 func isOutgoingMessage(message storage.Message, localDeviceID string) bool {
@@ -802,8 +805,20 @@ type onProgressBarCreated func(fileID string, bar *widget.ProgressBar)
 
 func renderFileRow(file chatFileEntry, localDeviceID string, parentWindow fyne.Window, registerProgressBar onProgressBarCreated, onCancelTransfer func(string), onRetryTransfer func(string)) fyne.CanvasObject {
 	_ = localDeviceID
-	name := valueOrDefault(file.Filename, file.FileID)
 	storedPath := strings.TrimSpace(file.StoredPath)
+	name := strings.TrimSpace(file.Filename)
+	if name == "" && storedPath != "" {
+		base := strings.TrimSpace(filepath.Base(storedPath))
+		if base != "" && base != "." && base != string(os.PathSeparator) {
+			name = base
+		}
+	}
+	if name == "" && strings.TrimSpace(file.RelativePath) != "" {
+		name = strings.TrimSpace(filepath.Base(file.RelativePath))
+	}
+	if name == "" {
+		name = valueOrDefault(file.FileID, "Unknown file")
+	}
 	outgoing := strings.EqualFold(file.Direction, "send")
 
 	directionColor := ctpTeal
@@ -814,14 +829,16 @@ func renderFileRow(file chatFileEntry, localDeviceID string, parentWindow fyne.W
 	if outgoing {
 		directionLabel = "[Send File]"
 	}
-	dirIcon := container.NewGridWrap(fyne.NewSize(14, 14), widget.NewIcon(iconDocument()))
+	dirIcon := container.NewCenter(container.NewGridWrap(fyne.NewSize(14, 14), widget.NewIcon(iconDocument())))
 	dirText := canvas.NewText(directionLabel, directionColor)
 	dirText.TextSize = 11
 	dirText.TextStyle = fyne.TextStyle{Bold: true}
+	dirTextWrap := container.NewCenter(dirText)
 	nameLabel := widget.NewLabel(name)
 	nameLabel.Truncation = fyne.TextTruncateEllipsis
 	nameLabel.Importance = widget.MediumImportance
-	topRow := container.New(layout.NewCustomPaddedHBoxLayout(6), dirIcon, dirText, nameLabel)
+	leftMeta := container.New(layout.NewCustomPaddedHBoxLayout(6), dirIcon, dirTextWrap)
+	topRow := container.NewBorder(nil, nil, leftMeta, nil, nameLabel)
 
 	indent := func(obj fyne.CanvasObject) fyne.CanvasObject {
 		return container.New(layout.NewCustomPaddedLayout(0, 0, 22, 0), obj)
@@ -837,7 +854,10 @@ func renderFileRow(file chatFileEntry, localDeviceID string, parentWindow fyne.W
 	statusMeta.TextStyle = fyne.TextStyle{Bold: true}
 	metaRow := container.New(layout.NewCustomPaddedHBoxLayout(8), timeText, sizeText, statusMeta)
 
-	contentItems := []fyne.CanvasObject{topRow, indent(metaRow)}
+	contentItems := []fyne.CanvasObject{
+		topRow,
+		indent(container.New(layout.NewCustomPaddedLayout(1, 0, 0, 0), metaRow)),
+	}
 
 	if rel := strings.TrimSpace(file.RelativePath); rel != "" {
 		relLabel := canvas.NewText(rel, ctpOverlay1)
@@ -911,15 +931,16 @@ func renderFileRow(file chatFileEntry, localDeviceID string, parentWindow fyne.W
 	}
 
 	if len(actionButtons) > 0 {
-		actions := container.New(layout.NewCustomPaddedHBoxLayout(2), actionButtons...)
-		contentItems = append(contentItems, indent(actions))
+		actions := container.New(layout.NewCustomPaddedHBoxLayout(6), actionButtons...)
+		contentItems = append(contentItems, indent(container.New(layout.NewCustomPaddedLayout(4, 0, 0, 0), actions)))
 	}
 
 	fileBg := ctpSurface0
 	if !outgoing {
 		fileBg = ctpSurface0
 	}
-	return newRoundedBg(fileBg, 4, container.New(layout.NewCustomPaddedLayout(2, 2, 8, 8), container.New(layout.NewCustomPaddedVBoxLayout(2), contentItems...)))
+	card := container.New(layout.NewCustomPaddedLayout(2, 2, 8, 8), container.New(layout.NewCustomPaddedVBoxLayout(2), contentItems...))
+	return newHoverSurface(card, fileBg, ctpSurface1, 4)
 }
 
 func isImageFile(filename string) bool {
