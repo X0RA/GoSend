@@ -5,6 +5,7 @@ go 1.25.6
 require (
 	fyne.io/fyne/v2 v2.7.2
 	github.com/google/uuid v1.6.0
+	github.com/gosthome/icons/fynico v0.2.0
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/mattn/go-sqlite3 v1.14.33
 	golang.org/x/crypto v0.33.0

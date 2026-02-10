@@ -47,6 +47,7 @@ All roadmap phases in `PHASE-CHANGES.md` are implemented.
 - Device-name settings hot-reload updates active protocol identity and restarts mDNS advertisement without full app restart (port changes still require restart).
 - Runtime state change callbacks refresh peer status indicators immediately while the regular 2-second poll keeps chat/history views synchronized.
 - Cross-platform GUI (Fyne) with peer list, chat pane, discovery dialog, device settings dialog, peer settings dialog, key-change prompt, file-transfer prompts/progress, and chat header color that reflects online status.
+- UI iconography uses Google Material icons from `github.com/gosthome/icons/fynico` (`materialdesigniconsoutlined` collection), with fallback to Fyne defaults when an icon key is unavailable. The current icon pack release does not expose Material Symbols weight variants (for example, weight `200`) as a selectable option.
 
 ## Quick Start
 

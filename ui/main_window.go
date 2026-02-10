@@ -422,12 +422,12 @@ func (c *controller) buildMainWindow() {
 	sep := canvas.NewRectangle(ctpSurface2)
 	sep.SetMinSize(fyne.NewSize(1, 20))
 	// Mockup: toolbar buttons look like text until hover (flat style)
-	queueBtn := newFlatButtonWithIconAndLabel(theme.HistoryIcon(), "Transfer Queue", "Transfer queue", c.showTransferQueuePanel, c.handleHoverHint)
-	refreshBtn := newFlatButtonWithIconAndLabel(theme.ViewRefreshIcon(), "Refresh Discovery", "Refresh discovery", func() {
+	queueBtn := newFlatButtonWithIconAndLabel(iconHistory(), "Transfer Queue", "Transfer queue", c.showTransferQueuePanel, c.handleHoverHint)
+	refreshBtn := newFlatButtonWithIconAndLabel(iconRefresh(), "Refresh Discovery", "Refresh discovery", func() {
 		go c.refreshDiscovery()
 	}, c.handleHoverHint)
-	discoverBtn := newFlatButtonWithIconAndLabel(theme.SearchIcon(), "Discover", "Discover peers", c.showDiscoveryDialog, c.handleHoverHint)
-	settingsBtn := newFlatButtonWithIconAndLabel(theme.SettingsIcon(), "Settings", "Open settings", c.showSettingsDialog, c.handleHoverHint)
+	discoverBtn := newFlatButtonWithIconAndLabel(iconSearch(), "Discover", "Discover peers", c.showDiscoveryDialog, c.handleHoverHint)
+	settingsBtn := newFlatButtonWithIconAndLabel(iconSettings(), "Settings", "Open settings", c.showSettingsDialog, c.handleHoverHint)
 	toolbarInner := container.NewHBox(
 		container.NewCenter(appTitle),
 		container.NewCenter(sep),
@@ -443,7 +443,7 @@ func (c *controller) buildMainWindow() {
 	c.statusLabel.Importance = widget.LowImportance
 	c.statusMessage = "Starting..."
 	// Mockup: status bar very thin (h-7 = 28px), minimal padding; Logs = text-like button
-	logsBtn := newFlatButtonWithIconAndLabel(theme.DocumentIcon(), "Logs", "View application logs", c.showLogsDialog, c.handleHoverHint)
+	logsBtn := newFlatButtonWithIconAndLabel(iconDocument(), "Logs", "View application logs", c.showLogsDialog, c.handleHoverHint)
 	c.statusLabel.TextStyle = fyne.TextStyle{}
 	statusRow := container.NewBorder(nil, nil, c.statusLabel, logsBtn)
 	statusBg := canvas.NewRectangle(ctpCrust)

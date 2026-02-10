@@ -15,7 +15,6 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
-	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"gosend/crypto"
@@ -101,9 +100,9 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 	c.chatHeader.SetColor(ctpSubtext0)
 	c.chatHeaderPeerIDText = canvas.NewText("", ctpOverlay1)
 	c.chatHeaderPeerIDText.TextSize = 11
-	c.peerSettingsBtn = newFlatButtonWithIcon(theme.SettingsIcon(), "Peer settings", c.showSelectedPeerSettingsDialog, c.handleHoverHint)
+	c.peerSettingsBtn = newFlatButtonWithIcon(iconSettings(), "Peer settings", c.showSelectedPeerSettingsDialog, c.handleHoverHint)
 	c.peerSettingsBtn.Hide()
-	c.searchBtn = newFlatButtonWithIcon(theme.SearchIcon(), "Search chat", c.toggleChatSearch, c.handleHoverHint)
+	c.searchBtn = newFlatButtonWithIcon(iconSearch(), "Search chat", c.toggleChatSearch, c.handleHoverHint)
 	c.searchBtn.Hide()
 	rightControls := container.NewHBox(c.searchBtn, c.peerSettingsBtn)
 	headerCenter := container.NewVBox(c.chatHeader, c.chatHeaderPeerIDText)
@@ -125,7 +124,7 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 		c.chatMu.Unlock()
 		c.refreshChatView()
 	})
-	clearSearchBtn := widget.NewButtonWithIcon("", theme.CancelIcon(), func() {
+	clearSearchBtn := widget.NewButtonWithIcon("", iconCancel(), func() {
 		filesOnlyCheck.SetChecked(false)
 		c.chatSearchEntry.SetText("")
 	})
@@ -152,9 +151,9 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 	c.messageInput.SetMinRowsVisible(2)
 
 	// Mockup: attach file + attach folder on left, input center, send on right
-	attachFileBtn := newFlatButtonWithIcon(theme.MailAttachmentIcon(), "Attach file", c.attachFileToCurrentPeer, c.handleHoverHint)
-	attachFolderBtn := newFlatButtonWithIcon(theme.FolderOpenIcon(), "Attach folder", c.attachFolderToCurrentPeer, c.handleHoverHint)
-	sendBtn := newFlatButtonWithIcon(theme.NewPrimaryThemedResource(theme.MailSendIcon()), "Send message", c.sendCurrentMessage, c.handleHoverHint)
+	attachFileBtn := newFlatButtonWithIcon(iconAttachFile(), "Attach file", c.attachFileToCurrentPeer, c.handleHoverHint)
+	attachFolderBtn := newFlatButtonWithIcon(iconFolderOpen(), "Attach folder", c.attachFolderToCurrentPeer, c.handleHoverHint)
+	sendBtn := newFlatButtonWithIcon(iconSendPrimary(), "Send message", c.sendCurrentMessage, c.handleHoverHint)
 	leftControls := container.NewHBox(attachFileBtn, attachFolderBtn)
 	inputPane := container.NewBorder(nil, nil, leftControls, sendBtn, c.messageInput)
 	composerInner := container.NewPadded(inputPane)
@@ -773,7 +772,7 @@ func renderMessageRow(message storage.Message, localDeviceID string, peerDisplay
 
 	content := container.NewVBox(topRow, body)
 	if isTextMessage(message) && parentWindow != nil && strings.TrimSpace(message.Content) != "" {
-		copyBtn := newHintButtonWithIcon("", theme.ContentCopyIcon(), "Copy to clipboard", func() {
+		copyBtn := newHintButtonWithIcon("", iconContentCopy(), "Copy to clipboard", func() {
 			if parentWindow != nil && parentWindow.Clipboard() != nil {
 				parentWindow.Clipboard().SetContent(message.Content)
 			}

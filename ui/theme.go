@@ -167,12 +167,12 @@ func (b *hintButton) MouseOut() {
 // flatButton is a text-like button: transparent/mantle by default, surface0 on hover. Icon-only or icon+label.
 type flatButton struct {
 	widget.BaseWidget
-	icon      fyne.Resource
-	label     string
-	hint      string
-	onClick   func()
-	onHover   func(fyne.CanvasObject, string, bool)
-	hovered   bool
+	icon       fyne.Resource
+	label      string
+	hint       string
+	onClick    func()
+	onHover    func(fyne.CanvasObject, string, bool)
+	hovered    bool
 	usePrimary bool // true = icon in primary (blue) color
 }
 

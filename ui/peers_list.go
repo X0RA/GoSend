@@ -14,7 +14,6 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
-	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"gosend/discovery"
@@ -394,7 +393,7 @@ func (c *controller) showDiscoveryDialog() {
 	title.TextSize = 14
 	title.TextStyle = fyne.TextStyle{Bold: true}
 	headerLeft := container.NewVBox(title, subtitle)
-	refreshBtn := newRoundedHintButton("Refresh", theme.ViewRefreshIcon(), "Refresh discovered peers", 4, ctpSurface0, func() {
+	refreshBtn := newRoundedHintButton("Refresh", iconRefresh(), "Refresh discovered peers", 4, ctpSurface0, func() {
 		go c.refreshDiscovery()
 	}, c.handleHoverHint)
 	header := container.NewBorder(nil, nil, headerLeft, refreshBtn)

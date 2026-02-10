@@ -11,7 +11,6 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"gosend/config"
@@ -140,7 +139,7 @@ func (c *controller) showSettingsDialog() {
 
 	fingerprintLabel := widget.NewLabel(appcrypto.FormatFingerprint(c.cfg.KeyFingerprint))
 	fingerprintLabel.Wrapping = fyne.TextWrapBreak
-	copyFingerprintBtn := widget.NewButtonWithIcon("", theme.ContentCopyIcon(), func() {
+	copyFingerprintBtn := widget.NewButtonWithIcon("", iconContentCopy(), func() {
 		if c.window != nil && c.window.Clipboard() != nil {
 			c.window.Clipboard().SetContent(fingerprintLabel.Text)
 		}
@@ -408,13 +407,13 @@ func (c *controller) showSelectedPeerSettingsDialog() {
 	peerFingerprintLabel.Wrapping = fyne.TextWrapBreak
 	localFingerprintLabel := widget.NewLabel(appcrypto.FormatFingerprint(c.cfg.KeyFingerprint))
 	localFingerprintLabel.Wrapping = fyne.TextWrapBreak
-	copyPeerFingerprintBtn := widget.NewButtonWithIcon("", theme.ContentCopyIcon(), func() {
+	copyPeerFingerprintBtn := widget.NewButtonWithIcon("", iconContentCopy(), func() {
 		if c.window != nil && c.window.Clipboard() != nil {
 			c.window.Clipboard().SetContent(peerFingerprintLabel.Text)
 		}
 		c.setStatus("Peer fingerprint copied")
 	})
-	copyLocalFingerprintBtn := widget.NewButtonWithIcon("", theme.ContentCopyIcon(), func() {
+	copyLocalFingerprintBtn := widget.NewButtonWithIcon("", iconContentCopy(), func() {
 		if c.window != nil && c.window.Clipboard() != nil {
 			c.window.Clipboard().SetContent(localFingerprintLabel.Text)
 		}
