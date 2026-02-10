@@ -164,13 +164,10 @@ Contains a scrollable form with the following fields:
 
 ### Transfer Queue Dialog
 
-Opened from the toolbar's Transfer Queue button.
+Opened from the toolbar's Transfer Queue button. Uses the standard dialog chrome: header bar (Mantle, title "Transfer Queue") and footer bar (Mantle, action buttons).
 
-- A **transfer list** showing all active and recently completed transfers across all peers, using styled card widgets. Active/pending transfers appear before completed ones. Each card displays: peer name (bold, coloured), filename (or file ID), colour-coded status label, progress percentage, transfer speed (bytes/s), estimated time remaining (ETA), and an inline progress bar for active transfers.
-- **Cancel Selected** button — cancels the selected active transfer.
-- **Retry Selected** button — re-queues the selected failed transfer.
-- **Clear Completed** button — removes all completed transfers from the list.
-- **Close** button.
+- A **transfer list** showing all active and recently completed transfers across all peers. Active/pending transfers appear before completed ones. Each card displays: direction icon (↑ peach outbound, ↓ teal inbound), filename, file size, peer name with direction prefix, colour-coded status label, transfer speed, ETA, and an inline progress bar for active transfers (4px height, coloured by status).
+- **Footer buttons**: Cancel Selected, Retry Selected, Clear Completed (all secondary), and Close (primary, blue).
 
 ### Application Logs Dialog
 
@@ -215,4 +212,4 @@ Notifications are suppressed when:
 
 ## Theming
 
-The entire UI uses the **Catppuccin Mocha** dark colour theme. All colours are defined centrally in `ui/qt_theme.go` as named constants with semantic aliases. Widget-specific styling (toolbar, peer list, chat cards, composer, action buttons, icon buttons) is defined via object-name-scoped QSS rules. Styled widgets are built by helper functions in `ui/qt_styled_widgets.go`. Swapping to a different colour scheme requires editing only the colour constants in `qt_theme.go`.
+The visual design closely follows a React-based mockup (`mockup_design/`) and uses the **Catppuccin Mocha** dark colour theme. All colours are defined centrally in `ui/qt_theme.go` as named constants with semantic aliases. The QSS stylesheet includes object-name-scoped rules matching the mockup's exact visual hierarchy: toolbar buttons (transparent/borderless), peer list (left-border selection, mantle bg), chat list (base bg, transparent items), composer (mantle bg), status bar (crust bg), dialog header/footer bars, and primary/secondary/danger button variants. Styled widgets are built by helper functions in `ui/qt_styled_widgets.go`. Swapping to a different colour scheme requires editing only the colour constants in `qt_theme.go`.
