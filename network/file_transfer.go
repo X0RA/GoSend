@@ -737,6 +737,15 @@ func (m *PeerManager) runOutboundFileTransfer(runCtx context.Context, transfer *
 		transfer.mu.Unlock()
 		_ = m.options.Store.UpdateTransferStatus(transfer.FileID, "rejected")
 		m.removeTransferCheckpoint(transfer.FileID, storage.TransferDirectionSend)
+		m.emitFileProgress(FileProgress{
+			FileID:            transfer.FileID,
+			PeerDeviceID:      transfer.PeerDeviceID,
+			Direction:         fileTransferDirectionSend,
+			BytesTransferred:  0,
+			TotalBytes:        transfer.Filesize,
+			Status:            "rejected",
+			TransferCompleted: true,
+		})
 		return nil
 	}
 	if err := m.options.Store.UpdateTransferStatus(transfer.FileID, "accepted"); err != nil && !errors.Is(err, storage.ErrNotFound) {
@@ -832,6 +841,15 @@ func (m *PeerManager) runOutboundFileTransfer(runCtx context.Context, transfer *
 				transfer.mu.Unlock()
 				_ = m.options.Store.UpdateTransferStatus(transfer.FileID, "rejected")
 				m.removeTransferCheckpoint(transfer.FileID, storage.TransferDirectionSend)
+				m.emitFileProgress(FileProgress{
+					FileID:            transfer.FileID,
+					PeerDeviceID:      transfer.PeerDeviceID,
+					Direction:         fileTransferDirectionSend,
+					BytesTransferred:  transfer.BytesSent,
+					TotalBytes:        transfer.Filesize,
+					Status:            "rejected",
+					TransferCompleted: true,
+				})
 				return nil
 			}
 			if response.Status == fileResponseStatusChunkAck {

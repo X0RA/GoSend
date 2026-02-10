@@ -324,10 +324,11 @@ func parseEntry(entry *zeroconf.ServiceEntry, cfg Config) (DiscoveredPeer, bool)
 	}
 	sort.Strings(addresses)
 
-	name := strings.TrimSpace(entry.Instance)
-	if name == "" {
-		name = strings.TrimSpace(entry.HostName)
+	rawName := strings.TrimSpace(entry.Instance)
+	if rawName == "" {
+		rawName = strings.TrimSpace(entry.HostName)
 	}
+	name := unescapeMDNSInstanceName(rawName)
 	if name == "" {
 		name = "Unknown Peer"
 	}
@@ -446,4 +447,10 @@ func peersEqual(a, b DiscoveredPeer) bool {
 		}
 	}
 	return true
+}
+
+// unescapeMDNSInstanceName normalizes mDNS instance names for display (e.g. "my\\ name" -> "my name").
+func unescapeMDNSInstanceName(s string) string {
+	s = strings.ReplaceAll(s, "\\", "")
+	return strings.TrimSpace(s)
 }

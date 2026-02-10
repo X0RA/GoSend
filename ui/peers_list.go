@@ -13,6 +13,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -29,49 +30,97 @@ func (c *controller) buildPeersListPane() fyne.CanvasObject {
 			return len(c.peers)
 		},
 		func() fyne.CanvasObject {
+			leftBar := canvas.NewRectangle(ctpSurface0)
+			leftBar.SetMinSize(fyne.NewSize(2, 1))
 			dot := canvas.NewCircle(colorOffline)
-			dotBox := container.NewGridWrap(fyne.NewSize(10, 10), dot)
+			dotBox := container.NewGridWrap(fyne.NewSize(8, 8), dot)
 			name := widget.NewLabel("")
-			name.TextStyle = fyne.TextStyle{Bold: true}
 			name.Truncation = fyne.TextTruncateEllipsis
+			// Mockup: device names non-bold; Trusted/Verified as separate colored badges
+			trustedBg := canvas.NewRectangle(color.NRGBA{R: 148, G: 226, B: 213, A: 26})
+			trustedBg.CornerRadius = 2
+			trustedLbl := canvas.NewText("Trusted", ctpTeal)
+			trustedLbl.TextSize = 10
+			trustedBadge := container.NewStack(trustedBg, container.NewCenter(trustedLbl))
+			verifiedBg := canvas.NewRectangle(color.NRGBA{R: 166, G: 227, B: 161, A: 26})
+			verifiedBg.CornerRadius = 2
+			verifiedLbl := canvas.NewText("Verified", ctpGreen)
+			verifiedLbl.TextSize = 10
+			verifiedBadge := container.NewStack(verifiedBg, container.NewCenter(verifiedLbl))
+			// Use Border so name (center) gets remaining space; badges on the right
+			badges := container.NewHBox(trustedBadge, verifiedBadge)
+			row1 := container.NewBorder(nil, nil, nil, badges, name)
 			status := canvas.NewText("Offline", colorMuted)
 			status.TextSize = 11
-			transferProgress := widget.NewProgressBar()
-			transferProgress.Hide()
-			info := container.NewVBox(name, status, transferProgress)
-			return container.NewBorder(nil, nil, container.NewCenter(dotBox), nil, info)
+			info := container.NewVBox(row1, status)
+			rightPart := container.NewBorder(nil, nil, container.NewCenter(dotBox), nil, info)
+			return container.NewBorder(nil, nil, leftBar, nil, rightPart)
 		},
 		func(id widget.ListItemID, object fyne.CanvasObject) {
 			row := object.(*fyne.Container)
-			// Border(nil, nil, left, nil, center): Objects = [center, left]
-			info := row.Objects[0].(*fyne.Container)
-			dotCenter := row.Objects[1].(*fyne.Container)
+			// Border stores only non-nil children; row = Border(nil, nil, leftBar, nil, rightPart) -> 2 objects
+			rightPart := row.Objects[0].(*fyne.Container)
+			leftBar := row.Objects[1].(*canvas.Rectangle)
+			// rightPart = Border(nil, nil, dotCenter, nil, info)
+			// Fyne stores: Objects[0]=center (info), Objects[1]=left (dotCenter)
+			// rightPart = Border(nil, nil, dotCenter, nil, info)
+			// Fyne stores: Objects[0]=center(info), Objects[1]=left(dotCenter)
+			info := rightPart.Objects[0].(*fyne.Container)
+			dotCenter := rightPart.Objects[1].(*fyne.Container)
 			dotBox := dotCenter.Objects[0].(*fyne.Container)
 			dot := dotBox.Objects[0].(*canvas.Circle)
-			name := info.Objects[0].(*widget.Label)
+			// info = VBox(row1, status)
+			// row1 = Border(nil, nil, nil, badges, name)
+			// Fyne stores: Objects[0]=center(name), Objects[1]=right(badges)
+			row1 := info.Objects[0].(*fyne.Container)
+			name := row1.Objects[0].(*widget.Label)
+			badges := row1.Objects[1].(*fyne.Container)
+			trustedBadge := badges.Objects[0].(*fyne.Container)
+			verifiedBadge := badges.Objects[1].(*fyne.Container)
 			status := info.Objects[1].(*canvas.Text)
-			transferProgress := info.Objects[2].(*widget.ProgressBar)
 
 			peer := c.peerByIndex(int(id))
 			if peer == nil {
 				name.SetText("")
 				status.Text = ""
 				status.Refresh()
+				leftBar.FillColor = ctpMantle
+				leftBar.Refresh()
+				trustedBadge.Hide()
+				verifiedBadge.Hide()
 				return
 			}
+
+			c.peersMu.RLock()
+			selectedID := c.selectedPeerID
+			c.peersMu.RUnlock()
+			isSelected := peer.DeviceID == selectedID
+
+			if isSelected {
+				leftBar.FillColor = ctpBlue
+			} else {
+				leftBar.FillColor = ctpMantle
+			}
+			leftBar.Refresh()
 
 			displayName := c.peerDisplayName(peer)
 			if strings.TrimSpace(displayName) == "" {
 				displayName = peer.DeviceID
 			}
 			settings := c.peerSettingsByID(peer.DeviceID)
-			if c.peerTrustLevel(peer.DeviceID) == storage.PeerTrustLevelTrusted {
-				displayName += " [Trusted]"
-			}
-			if settings != nil && settings.Verified {
-				displayName += " [Verified]"
-			}
+			trusted := c.peerTrustLevel(peer.DeviceID) == storage.PeerTrustLevelTrusted
+			verified := settings != nil && settings.Verified
 			name.SetText(displayName)
+			if trusted {
+				trustedBadge.Show()
+			} else {
+				trustedBadge.Hide()
+			}
+			if verified {
+				verifiedBadge.Show()
+			} else {
+				verifiedBadge.Hide()
+			}
 
 			runtime := c.runtimeStateForPeer(peer.DeviceID)
 			stateText, dotColor := c.peerStatePresentation(peer, runtime)
@@ -90,34 +139,46 @@ func (c *controller) buildPeersListPane() fyne.CanvasObject {
 			dot.FillColor = dotColor
 			status.Text = stateText
 			if dotColor == colorOnline {
-				status.Color = colorOnline
+				status.Color = ctpGreen
 			} else {
-				status.Color = colorMuted
-			}
-			if activeTransfer {
-				transferProgress.SetValue(transferProgressValue)
-				transferProgress.Show()
-			} else {
-				transferProgress.Hide()
+				status.Color = ctpOverlay1
 			}
 			dot.Refresh()
 			status.Refresh()
-			transferProgress.Refresh()
 		},
 	)
 	c.peerList.OnSelected = func(id widget.ListItemID) {
 		c.selectPeerByIndex(int(id))
 	}
 
-	heading := widget.NewLabel("Peers")
+	heading := canvas.NewText("PEERS", ctpOverlay2)
 	heading.TextStyle = fyne.TextStyle{Bold: true}
-	addBtn := newHintButtonWithIcon("", theme.ContentAddIcon(), "Discover peers", c.showDiscoveryDialog, c.handleHoverHint)
-	topBar := container.NewBorder(nil, nil, heading, addBtn)
+	heading.TextSize = 12
+	onlineCount := c.peersOnlineCount()
+	countBadge := canvas.NewText(fmt.Sprintf("%d", onlineCount), ctpOverlay1)
+	countBadge.TextSize = 12
+	c.peersOnlineCountText = countBadge
+	countWrap := container.NewPadded(container.NewStack(canvas.NewRectangle(ctpSurface0), container.NewCenter(countBadge)))
+	topBar := container.NewBorder(nil, nil, container.NewCenter(heading), countWrap)
+	headerBar := container.NewVBox(container.NewPadded(topBar), widget.NewSeparator())
 
-	return container.NewBorder(
-		container.NewVBox(container.NewPadded(topBar), widget.NewSeparator()),
-		nil, nil, nil, c.peerList,
-	)
+	panelBg := canvas.NewRectangle(ctpMantle)
+	panelBg.SetMinSize(fyne.NewSize(220, 1))
+	panelContent := container.NewBorder(headerBar, nil, nil, nil, c.peerList)
+	return container.NewStack(panelBg, panelContent)
+}
+
+func (c *controller) peersOnlineCount() int {
+	c.peersMu.RLock()
+	defer c.peersMu.RUnlock()
+	n := 0
+	for i := range c.peers {
+		runtime := c.runtimeStateForPeer(c.peers[i].DeviceID)
+		if runtime.ConnectionState == network.StateReady || runtime.ConnectionState == network.StateIdle {
+			n++
+		}
+	}
+	return n
 }
 
 func (c *controller) refreshPeersFromStore() {
@@ -197,6 +258,10 @@ func (c *controller) refreshPeersFromStore() {
 				c.peerList.Select(selectedIndex)
 			}
 		}
+		if c.peersOnlineCountText != nil {
+			c.peersOnlineCountText.Text = fmt.Sprintf("%d", c.peersOnlineCount())
+			c.peersOnlineCountText.Refresh()
+		}
 		c.updateChatHeader()
 	})
 	if selectedID == "" {
@@ -242,16 +307,19 @@ func (c *controller) showDiscoveryDialog() {
 		},
 		func() fyne.CanvasObject {
 			dot := canvas.NewCircle(colorOffline)
-			dotBox := container.NewGridWrap(fyne.NewSize(10, 10), dot)
+			dotBox := container.NewGridWrap(fyne.NewSize(8, 8), dot)
 			name := widget.NewLabel("")
 			name.TextStyle = fyne.TextStyle{Bold: true}
 			name.Truncation = fyne.TextTruncateEllipsis
-			status := canvas.NewText("Online", colorMuted)
+			addrLabel := canvas.NewText("", ctpOverlay1)
+			addrLabel.TextSize = 11
+			status := canvas.NewText("Online", ctpGreen)
 			status.TextSize = 11
-			info := container.NewVBox(name, status)
+			line1 := container.NewHBox(name)
+			line2 := container.NewVBox(container.NewHBox(addrLabel, layout.NewSpacer(), status))
+			info := container.NewVBox(line1, line2)
 			addBtn := widget.NewButton("Add", nil)
 			addBtn.Importance = widget.HighImportance
-			// Border(nil, nil, left, right, center): Objects = [center, left, right]
 			return container.NewBorder(nil, nil, container.NewCenter(dotBox), addBtn, info)
 		},
 		func(id widget.ListItemID, object fyne.CanvasObject) {
@@ -259,11 +327,13 @@ func (c *controller) showDiscoveryDialog() {
 			if len(row.Objects) < 3 {
 				return
 			}
-
-			// Border(nil, nil, left, right, center): Objects = [center, left, right]
 			info := row.Objects[0].(*fyne.Container)
-			nameLabel := info.Objects[0].(*widget.Label)
-			statusText := info.Objects[1].(*canvas.Text)
+			line1 := info.Objects[0].(*fyne.Container)
+			line2 := info.Objects[1].(*fyne.Container)
+			nameLabel := line1.Objects[0].(*widget.Label)
+			addrStatusRow := line2.Objects[0].(*fyne.Container)
+			addrLabel := addrStatusRow.Objects[0].(*canvas.Text)
+			statusText := addrStatusRow.Objects[2].(*canvas.Text)
 			dotCenter := row.Objects[1].(*fyne.Container)
 			dotBox := dotCenter.Objects[0].(*fyne.Container)
 			dot := dotBox.Objects[0].(*canvas.Circle)
@@ -272,6 +342,8 @@ func (c *controller) showDiscoveryDialog() {
 			peer := c.discoveryPeerByIndex(int(id))
 			if peer == nil {
 				nameLabel.SetText("")
+				addrLabel.Text = ""
+				addrLabel.Refresh()
 				statusText.Text = ""
 				statusText.Refresh()
 				addBtn.Disable()
@@ -279,21 +351,29 @@ func (c *controller) showDiscoveryDialog() {
 				return
 			}
 
-			nameLabel.SetText(valueOrDefault(peer.DeviceName, peer.DeviceID))
+			displayName := valueOrDefault(peer.DeviceName, peer.DeviceID)
+			nameLabel.SetText(displayName)
+			addrPort := ""
+			if len(peer.Addresses) > 0 && peer.Port > 0 {
+				addrPort = net.JoinHostPort(peer.Addresses[0], strconv.Itoa(peer.Port))
+			}
+			addrLabel.Text = addrPort
+			addrLabel.Refresh()
+
 			if len(peer.Addresses) > 0 {
-				dot.FillColor = colorOnline
+				dot.FillColor = ctpGreen
 				statusText.Text = "Online"
-				statusText.Color = colorOnline
+				statusText.Color = ctpGreen
 			} else {
-				dot.FillColor = colorOffline
+				dot.FillColor = ctpOverlay0
 				statusText.Text = "Offline"
-				statusText.Color = colorMuted
+				statusText.Color = ctpOverlay0
 			}
 			dot.Refresh()
 			statusText.Refresh()
 
 			if c.isKnownPeer(peer.DeviceID) {
-				addBtn.SetText("Added")
+				addBtn.SetText("added")
 				addBtn.Disable()
 				addBtn.OnTapped = nil
 			} else {
@@ -308,13 +388,17 @@ func (c *controller) showDiscoveryDialog() {
 		},
 	)
 
-	subtitle := widget.NewLabel("Peers discovered on your local network")
-	subtitle.Importance = widget.LowImportance
-	refreshBtn := newRoundedHintButton("Refresh", theme.ViewRefreshIcon(), "Refresh discovered peers", 10, colorButtonFill, func() {
+	subtitle := canvas.NewText("Peers discovered on your local network", ctpOverlay1)
+	subtitle.TextSize = 11
+	title := canvas.NewText("Discover Peers", ctpText)
+	title.TextSize = 14
+	title.TextStyle = fyne.TextStyle{Bold: true}
+	headerLeft := container.NewVBox(title, subtitle)
+	refreshBtn := newRoundedHintButton("Refresh", theme.ViewRefreshIcon(), "Refresh discovered peers", 4, ctpSurface0, func() {
 		go c.refreshDiscovery()
 	}, c.handleHoverHint)
-	header := container.NewBorder(nil, nil, subtitle, refreshBtn)
-	discoveryListPanel := newRoundedBg(colorDialogPanel, 10, c.discoveryList)
+	header := container.NewBorder(nil, nil, headerLeft, refreshBtn)
+	discoveryListPanel := newRoundedBg(ctpSurface0, 4, c.discoveryList)
 	content := container.NewBorder(
 		container.NewVBox(container.NewPadded(header), widget.NewSeparator()),
 		nil, nil, nil, container.NewPadded(discoveryListPanel),
@@ -413,14 +497,14 @@ func (c *controller) peerStatePresentation(peer *storage.Peer, runtime network.P
 		if remaining < 0 {
 			remaining = 0
 		}
-		return fmt.Sprintf("Reconnecting in %s...", remaining.Round(time.Second)), color.NRGBA{R: 255, G: 193, B: 7, A: 255}
+		return fmt.Sprintf("Reconnecting in %s...", remaining.Round(time.Second)), ctpYellow
 	}
 
 	switch runtime.ConnectionState {
 	case network.StateConnecting:
-		return "Connecting...", color.NRGBA{R: 255, G: 193, B: 7, A: 255}
+		return "Connecting...", ctpYellow
 	case network.StateDisconnecting:
-		return "Disconnecting...", color.NRGBA{R: 255, G: 152, B: 0, A: 255}
+		return "Disconnecting...", ctpPeach
 	case network.StateReady, network.StateIdle:
 		return "Online", colorOnline
 	case network.StateDisconnected:

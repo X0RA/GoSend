@@ -452,18 +452,24 @@ Indexes:
 
 ## UI Summary
 
-The GUI (Fyne) is a single-window desktop app that wires user intent to the networking, discovery, and storage layers.
+The GUI (Fyne) is a single-window desktop app that wires user intent to the networking, discovery, and storage layers. The UI uses a **Catppuccin Mocha** dark theme (see `COLORS.md`).
 
 Layout:
 
-- Left pane: known peers list from DB (self filtered out), plus discovery dialog entry point. Rows use custom peer names when set, show the original device name as secondary text, append `[Trusted]` / `[Verified]` badges, and surface runtime states (`Connecting...`, reconnect countdown, transfer progress).
-- Right pane: selected peer chat transcript (messages + persisted file transfer rows), compose box, Send and Attach actions.
-- Top bar: app title, transfer queue panel, discovery refresh, settings. Bottom bar: global runtime feedback (errors, queue warnings, connect state).
-- Text messages show a copy button (clipboard icon); file/image messages do not. Chat composer is hidden until a peer is selected.
-- Chat header is clickable to show the selected peer fingerprint; its color reflects online/offline status; a peer-settings gear button appears when a peer is selected.
-- Chat header includes a search toggle; search supports content filtering and a files-only mode.
-- Composer: message box on the left, `Send` above `Attach` on the right. `Attach` supports multi-file enqueue; folders are supported via drag-and-drop. `Enter` sends; `Shift+Enter` newline.
-- Hovering key buttons (peer info, peer settings, app settings, refresh, discover, send, attach) shows a tooltip and status hint.
+- **Toolbar**: "GoSend" title (blue), vertical separator, then **Transfer Queue**, **Refresh Discovery**, **Discover**, and (right-aligned) **Settings**. Toolbar background uses the theme mantle color.
+- **Left pane**: Peers list with "PEERS" header and online-count badge. No progress bar in the list; transfer state is text only ("Transferring... N%"). Rows show custom peer names when set, original device name as secondary text, `[Trusted]` / `[Verified]` badges, and a blue left-edge indicator when the peer is selected. Status dot colors: green (online), yellow (connecting/reconnecting), gray (offline).
+- **Right pane**: Chat with selected peer. **Chat header**: peer name, truncated peer ID, search and peer-settings buttons; background mantle. **Search bar** (toggle): search input, "Files only" checkbox, clear; surface background. **Transcript**: message rows with sender label ("You" in blue, peer name in mauve), timestamp, delivery marks; file rows as cards (surface background) with direction label ([Send File]/[Receive File]), filename, metadata, progress bar, stored path when present, and actions: Cancel, Retry, Show Path (completed only), Copy Path. **Composer**: mantle background; message input, Attach file, Send.
+- **Status bar**: Darkest (crust) background; status text on the left; **Logs** button on the right opens the **Application Logs** dialog (Runtime tab: last 500 status lines; Security Events tab: recent security events from the store).
+- **Transfer Queue** dialog: Filter tabs (All, Active, Completed, Issues), themed transfer rows with status-colored text, footer with completion/issue counts and Clear Completed / Close.
+- **Discover** dialog: Title and subtitle, list rows with status dot, name, address:port, "added" badge when already known, Refresh and Add/Close in footer.
+- **Device / Peer settings**: Help text for max file size (0 = unlimited globally; 0 = use global default per-peer), Trust Level (informational badge), and Verified out-of-band (manual fingerprint comparison). Single-file attach flow (no "Add another file" prompt).
+
+Behavior and fixes:
+
+- Rejected file transfers now update the sender UI to "rejected" (network layer emits progress on reject).
+- mDNS-discovered device names with backslashes are normalized for display (e.g. `my\ name` → `my name`).
+- Incoming file prompt is deduplicated per FileID so a retry from the sender does not show a second dialog.
+- Cancel sets status "canceled"; retry fully resets terminal flags so the sender no longer shows "Complete" incorrectly after retry. Show Path is shown only for completed (success) transfers, not canceled/failed.
 
 Runtime loops:
 
@@ -485,7 +491,7 @@ Settings:
 
 Theme:
 
-- Custom dark-leaning palette (online/offline colors, message bubbles, overlays). Tooltips use overlay management and delayed show.
+- **Catppuccin Mocha** dark palette (see `COLORS.md`): base/mantle/crust backgrounds, surface levels, text and overlay colors, blue/green/red/yellow/teal/peach/mauve accents. Fyne theme is wrapped so dialogs, inputs, and overlays use the same palette. Tooltips use overlay management and delayed show.
 
 ## Repository Layout
 

@@ -15,7 +15,6 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
-	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -98,14 +97,19 @@ func (e *messageEntry) TypedKey(key *fyne.KeyEvent) {
 
 func (c *controller) buildChatPane() fyne.CanvasObject {
 	c.chatHeader = newClickableLabel("Select a peer to start chatting", c.showSelectedPeerFingerprint)
-	c.chatHeader.SetTextStyle(fyne.TextStyle{Bold: true})
-	c.chatHeader.SetColor(colorMuted)
-	c.peerSettingsBtn = newHintButtonWithIcon("", theme.SettingsIcon(), "Peer settings", c.showSelectedPeerSettingsDialog, c.handleHoverHint)
+	c.chatHeader.SetTextStyle(fyne.TextStyle{Bold: false}) // mockup: peer name medium weight
+	c.chatHeader.SetColor(ctpSubtext0)
+	c.chatHeaderPeerIDText = canvas.NewText("", ctpOverlay1)
+	c.chatHeaderPeerIDText.TextSize = 11
+	c.peerSettingsBtn = newFlatButtonWithIcon(theme.SettingsIcon(), "Peer settings", c.showSelectedPeerSettingsDialog, c.handleHoverHint)
 	c.peerSettingsBtn.Hide()
-	c.searchBtn = newHintButtonWithIcon("", theme.SearchIcon(), "Search chat", c.toggleChatSearch, c.handleHoverHint)
+	c.searchBtn = newFlatButtonWithIcon(theme.SearchIcon(), "Search chat", c.toggleChatSearch, c.handleHoverHint)
 	c.searchBtn.Hide()
 	rightControls := container.NewHBox(c.searchBtn, c.peerSettingsBtn)
-	header := container.NewPadded(container.NewBorder(nil, nil, nil, rightControls, c.chatHeader))
+	headerCenter := container.NewVBox(c.chatHeader, c.chatHeaderPeerIDText)
+	headerBg := canvas.NewRectangle(ctpMantle)
+	headerBg.SetMinSize(fyne.NewSize(1, 44))
+	header := container.NewStack(headerBg, container.NewPadded(container.NewBorder(nil, nil, nil, rightControls, headerCenter)))
 
 	c.chatSearchEntry = widget.NewEntry()
 	c.chatSearchEntry.SetPlaceHolder("Search messages and files")
@@ -125,7 +129,10 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 		filesOnlyCheck.SetChecked(false)
 		c.chatSearchEntry.SetText("")
 	})
-	c.chatSearchBar = container.NewPadded(container.NewBorder(nil, nil, nil, clearSearchBtn, container.NewHBox(c.chatSearchEntry, filesOnlyCheck)))
+	searchInner := container.NewPadded(container.NewBorder(nil, nil, nil, clearSearchBtn, container.NewHBox(c.chatSearchEntry, filesOnlyCheck)))
+	searchBg := canvas.NewRectangle(ctpSurface0)
+	searchBg.SetMinSize(fyne.NewSize(1, 36))
+	c.chatSearchBar = container.NewStack(searchBg, searchInner)
 	c.chatSearchBar.Hide()
 
 	emptyLabel := widget.NewLabel("No messages yet")
@@ -134,24 +141,32 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 	c.chatMessagesBox = container.NewVBox(emptyLabel)
 	c.chatScroll = container.NewVScroll(c.chatMessagesBox)
 	c.chatDropArea = c.chatScroll
+	// Mockup: chat transcript area uses base background (#1e1e2e)
+	chatContentBg := canvas.NewRectangle(ctpBase)
+	chatContentBg.SetMinSize(fyne.NewSize(1, 1))
+	scrollWithBg := container.NewStack(chatContentBg, c.chatScroll)
 
 	c.messageInput = newMessageEntry(c.sendCurrentMessage)
 	c.messageInput.SetPlaceHolder("Type a message...")
 	c.messageInput.Wrapping = fyne.TextWrapWord
 	c.messageInput.SetMinRowsVisible(2)
 
-	attachBtn := newHintButtonWithIcon("", theme.MailAttachmentIcon(), "Attach file", c.attachFileToCurrentPeer, c.handleHoverHint)
-	sendBtn := newHintButton("Send", "Send message", c.sendCurrentMessage, c.handleHoverHint)
-	sendBtn.Importance = widget.HighImportance
-	controls := container.NewVBox(sendBtn, attachBtn)
-	inputPane := container.NewBorder(nil, nil, nil, container.NewPadded(controls), c.messageInput)
-	c.chatComposer = container.NewPadded(inputPane)
+	// Mockup: attach file + attach folder on left, input center, send on right
+	attachFileBtn := newFlatButtonWithIcon(theme.MailAttachmentIcon(), "Attach file", c.attachFileToCurrentPeer, c.handleHoverHint)
+	attachFolderBtn := newFlatButtonWithIcon(theme.FolderOpenIcon(), "Attach folder", c.attachFolderToCurrentPeer, c.handleHoverHint)
+	sendBtn := newFlatButtonWithIcon(theme.NewPrimaryThemedResource(theme.MailSendIcon()), "Send message", c.sendCurrentMessage, c.handleHoverHint)
+	leftControls := container.NewHBox(attachFileBtn, attachFolderBtn)
+	inputPane := container.NewBorder(nil, nil, leftControls, sendBtn, c.messageInput)
+	composerInner := container.NewPadded(inputPane)
+	composerBg := canvas.NewRectangle(ctpMantle)
+	composerBg.SetMinSize(fyne.NewSize(1, 44))
+	c.chatComposer = container.NewStack(composerBg, composerInner)
 	c.chatComposer.Hide()
 
 	base := container.NewBorder(
 		container.NewVBox(header, c.chatSearchBar, widget.NewSeparator()),
 		container.NewVBox(widget.NewSeparator(), c.chatComposer),
-		nil, nil, c.chatScroll,
+		nil, nil, scrollWithBg,
 	)
 
 	dropBg := canvas.NewRectangle(color.NRGBA{R: 76, G: 175, B: 80, A: 36})
@@ -168,8 +183,9 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 func (c *controller) updateChatHeader() {
 	selectedPeerID := c.currentSelectedPeerID()
 	peerName := "Select a peer to start chatting"
+	peerIDShort := ""
 	hasPeer := false
-	statusColor := colorMuted
+	statusColor := ctpSubtext0
 	if selectedPeerID != "" {
 		if peer := c.peerByID(selectedPeerID); peer != nil {
 			hasPeer = true
@@ -181,7 +197,14 @@ func (c *controller) updateChatHeader() {
 				peerName = peer.DeviceID
 			}
 			if strings.EqualFold(peer.Status, "online") {
-				statusColor = colorOnline
+				statusColor = ctpGreen
+			} else {
+				statusColor = ctpText
+			}
+			if len(selectedPeerID) > 12 {
+				peerIDShort = selectedPeerID[:6] + "..." + selectedPeerID[len(selectedPeerID)-4:]
+			} else {
+				peerIDShort = selectedPeerID
 			}
 		}
 	}
@@ -190,6 +213,10 @@ func (c *controller) updateChatHeader() {
 		if c.chatHeader != nil {
 			c.chatHeader.SetText(peerName)
 			c.chatHeader.SetColor(statusColor)
+		}
+		if c.chatHeaderPeerIDText != nil {
+			c.chatHeaderPeerIDText.Text = peerIDShort
+			c.chatHeaderPeerIDText.Refresh()
 		}
 		if c.chatComposer != nil {
 			if hasPeer {
@@ -276,6 +303,28 @@ func (c *controller) attachFileToCurrentPeer() {
 			return
 		}
 		c.queuePathsForPeer(peerID, paths)
+	}()
+}
+
+func (c *controller) attachFolderToCurrentPeer() {
+	peerID := c.currentSelectedPeerID()
+	if peerID == "" {
+		c.setStatus("Select a peer before attaching a folder")
+		return
+	}
+
+	go func() {
+		path, err := c.pickFolderPath()
+		if err != nil {
+			if err != errFilePickerCancelled {
+				c.setStatus(fmt.Sprintf("Pick folder failed: %v", err))
+			}
+			return
+		}
+		if path == "" {
+			return
+		}
+		c.queuePathsForPeer(peerID, []string{path})
 	}()
 }
 
@@ -387,7 +436,7 @@ func (c *controller) cancelTransferFromUI(fileID string) {
 					c.upsertFileTransfer(chatFileEntry{
 						FileID:            fileID,
 						PeerDeviceID:      peerID,
-						Status:            "failed",
+						Status:            "canceled",
 						TransferCompleted: true,
 						CompletedAt:       time.Now().UnixMilli(),
 					})
@@ -417,14 +466,21 @@ func (c *controller) retryTransferFromUI(fileID string) {
 			if meta.FromDeviceID != c.cfg.DeviceID {
 				peerID = meta.FromDeviceID
 			}
+			addedAt := int64(0)
+			if meta.TimestampReceived != nil {
+				addedAt = *meta.TimestampReceived
+			}
 			c.upsertFileTransfer(chatFileEntry{
 				FileID:            fileID,
 				PeerDeviceID:      peerID,
 				Filename:          meta.Filename,
 				Filesize:          meta.Filesize,
 				StoredPath:        meta.StoredPath,
+				AddedAt:           addedAt,
 				Status:            "pending",
 				TransferCompleted: false,
+				BytesTransferred:  0,
+				CompletedAt:       0,
 			})
 			c.refreshChatForPeer(peerID)
 		} else {
@@ -567,6 +623,19 @@ func (c *controller) renderChatTranscript() {
 	copy(files, c.chatFiles)
 	c.chatMu.RUnlock()
 
+	peerDisplayName := ""
+	if peerID := c.currentSelectedPeerID(); peerID != "" {
+		if peer := c.peerByID(peerID); peer != nil {
+			peerDisplayName = c.peerDisplayName(peer)
+			if strings.TrimSpace(peerDisplayName) == "" {
+				peerDisplayName = peer.DeviceName
+			}
+			if strings.TrimSpace(peerDisplayName) == "" {
+				peerDisplayName = peer.DeviceID
+			}
+		}
+	}
+
 	fyne.Do(func() {
 		if c.chatMessagesBox == nil {
 			return
@@ -578,7 +647,7 @@ func (c *controller) renderChatTranscript() {
 				barMap[fileID] = bar
 			}
 		}
-		rows := buildConversationRows(messages, files, c.cfg.DeviceID, c.window, registerBar, c.cancelTransferFromUI, c.retryTransferFromUI)
+		rows := buildConversationRows(messages, files, c.cfg.DeviceID, peerDisplayName, c.window, registerBar, c.cancelTransferFromUI, c.retryTransferFromUI)
 		c.fileProgressBarsMu.Lock()
 		c.fileProgressBars = barMap
 		c.fileProgressBarsMu.Unlock()
@@ -601,7 +670,7 @@ func (c *controller) renderChatTranscript() {
 	})
 }
 
-func buildConversationRows(messages []storage.Message, files []chatFileEntry, localDeviceID string, parentWindow fyne.Window, registerProgressBar onProgressBarCreated, onCancelTransfer func(string), onRetryTransfer func(string)) []fyne.CanvasObject {
+func buildConversationRows(messages []storage.Message, files []chatFileEntry, localDeviceID string, peerDisplayName string, parentWindow fyne.Window, registerProgressBar onProgressBarCreated, onCancelTransfer func(string), onRetryTransfer func(string)) []fyne.CanvasObject {
 	type conversationRow struct {
 		timestamp int64
 		kind      int
@@ -656,7 +725,7 @@ func buildConversationRows(messages []storage.Message, files []chatFileEntry, lo
 	out := make([]fyne.CanvasObject, 0, len(rows))
 	for _, row := range rows {
 		if row.message != nil {
-			out = append(out, renderMessageRow(*row.message, localDeviceID, parentWindow))
+			out = append(out, renderMessageRow(*row.message, localDeviceID, peerDisplayName, parentWindow))
 			continue
 		}
 		if row.file != nil {
@@ -672,26 +741,37 @@ func isTextMessage(message storage.Message) bool {
 	return ct == "" || ct == "text"
 }
 
-func renderMessageRow(message storage.Message, localDeviceID string, parentWindow fyne.Window) fyne.CanvasObject {
+func renderMessageRow(message storage.Message, localDeviceID string, peerDisplayName string, parentWindow fyne.Window) fyne.CanvasObject {
 	outgoing := isOutgoingMessage(message, localDeviceID)
-	body := widget.NewLabel(message.Content)
-	body.Wrapping = fyne.TextWrapWord
+	senderColor := ctpMauve
+	if outgoing {
+		senderColor = ctpBlue
+	}
+	senderLabel := "Peer"
+	if outgoing {
+		senderLabel = "You"
+	}
+	if !outgoing && strings.TrimSpace(peerDisplayName) != "" {
+		senderLabel = peerDisplayName
+	}
+	senderText := canvas.NewText(senderLabel, senderColor)
+	senderText.TextSize = 12
+	senderText.TextStyle = fyne.TextStyle{Bold: true}
 
 	statusStr := ""
 	if outgoing {
 		statusStr = " " + deliveryStatusMark(message.DeliveryStatus)
 	}
-	ts := canvas.NewText(formatTimestamp(message.TimestampSent)+statusStr, colorMuted)
+	ts := canvas.NewText(formatTimestamp(message.TimestampSent)+statusStr, ctpOverlay1)
 	ts.TextSize = 11
 	ts.Alignment = fyne.TextAlignTrailing
 
-	bgColor := colorIncomingMsg
-	if outgoing {
-		bgColor = colorOutgoingMsg
-	}
+	topRow := container.NewBorder(nil, nil, senderText, ts)
 
-	// Bottom row: timestamp and optional copy button for text messages
-	bottomRow := fyne.CanvasObject(ts)
+	body := widget.NewLabel(message.Content)
+	body.Wrapping = fyne.TextWrapWord
+
+	content := container.NewVBox(topRow, body)
 	if isTextMessage(message) && parentWindow != nil && strings.TrimSpace(message.Content) != "" {
 		copyBtn := newHintButtonWithIcon("", theme.ContentCopyIcon(), "Copy to clipboard", func() {
 			if parentWindow != nil && parentWindow.Clipboard() != nil {
@@ -699,16 +779,15 @@ func renderMessageRow(message storage.Message, localDeviceID string, parentWindo
 			}
 		}, nil)
 		copyBtn.Importance = widget.LowImportance
-		bottomRow = container.NewBorder(nil, nil, nil, container.NewPadded(copyBtn), ts)
+		content.Add(container.NewPadded(copyBtn))
 	}
-
-	content := container.NewVBox(body, bottomRow)
-	bubble := newRoundedBg(bgColor, 10, content)
-
+	// Discord-like: all messages left-aligned; subtle background tint for sent vs received
+	msgBg := ctpSurface1
 	if outgoing {
-		return container.NewGridWithColumns(2, layout.NewSpacer(), bubble)
+		msgBg = ctpSurface0
 	}
-	return container.NewGridWithColumns(2, bubble, layout.NewSpacer())
+	bubble := newRoundedBg(msgBg, 4, content)
+	return bubble
 }
 
 func isOutgoingMessage(message storage.Message, localDeviceID string) bool {
@@ -724,28 +803,38 @@ func renderFileRow(file chatFileEntry, localDeviceID string, parentWindow fyne.W
 	storedPath := strings.TrimSpace(file.StoredPath)
 	outgoing := strings.EqualFold(file.Direction, "send")
 
-	titleText := "📄 " + name
+	directionColor := ctpTeal
+	if outgoing {
+		directionColor = ctpPeach
+	}
+	directionLabel := "[Receive File]"
+	if outgoing {
+		directionLabel = "[Send File]"
+	}
+	dirText := canvas.NewText(directionLabel, directionColor)
+	dirText.TextSize = 11
+	dirText.TextStyle = fyne.TextStyle{Bold: true}
+	nameLabel := widget.NewLabel(name)
+	nameLabel.Truncation = fyne.TextTruncateEllipsis
+	titleRow := container.NewHBox(dirText, nameLabel)
+
 	var title fyne.CanvasObject
-	if file.TransferCompleted && !outgoing && storedPath != "" {
-		link := widget.NewHyperlink(titleText, nil)
+	if file.TransferCompleted && storedPath != "" {
+		link := widget.NewHyperlink(name, nil)
 		link.OnTapped = func() {
 			if err := openContainingFolder(storedPath); err != nil && parentWindow != nil {
 				dialog.ShowError(err, parentWindow)
 			}
 		}
 		link.Truncation = fyne.TextTruncateEllipsis
-		title = link
+		title = container.NewHBox(dirText, link)
 	} else {
-		label := widget.NewLabel(titleText)
-		label.TextStyle = fyne.TextStyle{Bold: true}
-		label.Truncation = fyne.TextTruncateEllipsis
-		title = label
+		title = titleRow
 	}
 
 	items := []fyne.CanvasObject{title}
 	if rel := strings.TrimSpace(file.RelativePath); rel != "" {
 		relLabel := widget.NewLabel(rel)
-		relLabel.Importance = widget.LowImportance
 		relLabel.Truncation = fyne.TextTruncateEllipsis
 		items = append(items, relLabel)
 	}
@@ -763,10 +852,9 @@ func renderFileRow(file chatFileEntry, localDeviceID string, parentWindow fyne.W
 	statusText := fileTransferStatusText(file)
 	meta := canvas.NewText(
 		fmt.Sprintf("%s · %s · %s", formatTimestamp(file.AddedAt), formatBytes(file.Filesize), statusText),
-		colorMuted,
+		ctpOverlay1,
 	)
 	meta.TextSize = 11
-	meta.Alignment = fyne.TextAlignTrailing
 	items = append(items, meta)
 
 	if file.SpeedBytesPerSec > 0 && !file.TransferCompleted && strings.EqualFold(file.Status, "accepted") {
@@ -774,9 +862,8 @@ func renderFileRow(file chatFileEntry, localDeviceID string, parentWindow fyne.W
 		if file.ETASeconds > 0 {
 			eta = fmt.Sprintf("ETA %s", (time.Duration(file.ETASeconds) * time.Second).Round(time.Second))
 		}
-		speed := canvas.NewText(fmt.Sprintf("%s/s · %s", formatBytes(int64(file.SpeedBytesPerSec)), eta), colorMuted)
+		speed := canvas.NewText(fmt.Sprintf("%s/s · %s", formatBytes(int64(file.SpeedBytesPerSec)), eta), ctpOverlay1)
 		speed.TextSize = 11
-		speed.Alignment = fyne.TextAlignTrailing
 		items = append(items, speed)
 	}
 
@@ -789,38 +876,45 @@ func renderFileRow(file chatFileEntry, localDeviceID string, parentWindow fyne.W
 		}
 	}
 
+	if storedPath != "" {
+		pathText := canvas.NewText(storedPath, ctpOverlay0)
+		pathText.TextSize = 11
+		items = append(items, pathText)
+	}
+
+	actionBtns := container.NewHBox()
 	if !file.TransferCompleted && (strings.EqualFold(file.Status, "pending") || strings.EqualFold(file.Status, "accepted")) && onCancelTransfer != nil {
-		cancelBtn := widget.NewButton("Cancel", func() {
-			onCancelTransfer(file.FileID)
-		})
+		cancelBtn := widget.NewButton("Cancel", func() { onCancelTransfer(file.FileID) })
 		cancelBtn.Importance = widget.DangerImportance
-		items = append(items, cancelBtn)
+		actionBtns.Add(cancelBtn)
 	}
-
 	if (strings.EqualFold(file.Status, "failed") || strings.EqualFold(file.Status, "rejected")) && strings.EqualFold(file.Direction, "send") && onRetryTransfer != nil {
-		retryBtn := widget.NewButton("Retry", func() {
-			onRetryTransfer(file.FileID)
-		})
-		items = append(items, retryBtn)
+		retryBtn := widget.NewButton("Retry", func() { onRetryTransfer(file.FileID) })
+		actionBtns.Add(retryBtn)
 	}
-
-	if file.TransferCompleted && storedPath != "" && outgoing {
+	if file.TransferCompleted && storedPath != "" && strings.EqualFold(file.Status, "complete") {
 		showPathBtn := widget.NewButton("Show Path", func() {
 			dialog.ShowInformation("File Path", storedPath, parentWindow)
 		})
-		items = append(items, showPathBtn)
+		actionBtns.Add(showPathBtn)
+	}
+	if storedPath != "" && parentWindow != nil && parentWindow.Clipboard() != nil {
+		copyPathBtn := widget.NewButton("Copy Path", func() {
+			parentWindow.Clipboard().SetContent(storedPath)
+		})
+		actionBtns.Add(copyPathBtn)
+	}
+	if len(actionBtns.Objects) > 0 {
+		items = append(items, actionBtns)
 	}
 
-	bgColor := colorIncomingMsg
+	// Discord-like: all file rows left-aligned; subtle background tint for sent vs received
+	fileBg := ctpSurface1
 	if outgoing {
-		bgColor = colorOutgoingMsg
+		fileBg = ctpSurface0
 	}
-	bubble := newRoundedBg(bgColor, 10, container.NewVBox(items...))
-
-	if outgoing {
-		return container.NewGridWithColumns(2, layout.NewSpacer(), bubble)
-	}
-	return container.NewGridWithColumns(2, bubble, layout.NewSpacer())
+	bubble := newRoundedBg(fileBg, 4, container.NewVBox(items...))
+	return bubble
 }
 
 func isImageFile(filename string) bool {
@@ -838,6 +932,8 @@ func fileTransferStatusText(file chatFileEntry) string {
 		return "Failed"
 	case "failed":
 		return "Failed"
+	case "canceled":
+		return "Canceled"
 	case "complete":
 		return "Complete"
 	case "accepted":
@@ -951,7 +1047,12 @@ func (c *controller) upsertFileTransfer(entry chatFileEntry) {
 		if entry.Status == "" {
 			entry.Status = existing.Status
 		}
-		if !entry.TransferCompleted {
+		terminalStatus := strings.EqualFold(entry.Status, "rejected") || strings.EqualFold(entry.Status, "failed") || strings.EqualFold(entry.Status, "complete") || strings.EqualFold(entry.Status, "canceled")
+		if terminalStatus {
+			entry.TransferCompleted = true
+		} else if strings.EqualFold(entry.Status, "pending") {
+			entry.TransferCompleted = false
+		} else if !entry.TransferCompleted {
 			entry.TransferCompleted = existing.TransferCompleted
 		}
 		if entry.CompletedAt == 0 {
@@ -1111,10 +1212,18 @@ func mergeChatFileEntry(base, live chatFileEntry) chatFileEntry {
 	if live.ETASeconds > 0 {
 		merged.ETASeconds = live.ETASeconds
 	}
-	if strings.TrimSpace(live.Status) != "" {
+	baseTerminal := strings.EqualFold(merged.Status, "rejected") || strings.EqualFold(merged.Status, "failed") || strings.EqualFold(merged.Status, "complete") || strings.EqualFold(merged.Status, "canceled")
+	if strings.TrimSpace(live.Status) != "" && !baseTerminal {
 		merged.Status = live.Status
 	}
+	if strings.EqualFold(live.Status, "pending") {
+		merged.TransferCompleted = false
+		merged.BytesTransferred = live.BytesTransferred
+	}
 	if live.TransferCompleted {
+		merged.TransferCompleted = true
+	}
+	if baseTerminal {
 		merged.TransferCompleted = true
 	}
 	if merged.CompletedAt == 0 {
@@ -1179,10 +1288,12 @@ func (c *controller) handleFileProgress(progress network.FileProgress) {
 		entry.StoredPath = meta.StoredPath
 		entry.FolderID = meta.FolderID
 		entry.RelativePath = meta.RelativePath
-		if !(strings.EqualFold(meta.TransferStatus, "pending") && entry.BytesTransferred > 0) {
+		metaTerminal := strings.EqualFold(meta.TransferStatus, "rejected") || strings.EqualFold(meta.TransferStatus, "failed") || strings.EqualFold(meta.TransferStatus, "complete")
+		isRetryReset := strings.EqualFold(entry.Status, "pending") && !entry.TransferCompleted
+		if !isRetryReset && (metaTerminal || !(strings.EqualFold(meta.TransferStatus, "pending") && entry.BytesTransferred > 0)) {
 			entry.Status = meta.TransferStatus
 		}
-		if meta.TransferStatus == "complete" {
+		if !isRetryReset && (meta.TransferStatus == "complete" || meta.TransferStatus == "rejected" || meta.TransferStatus == "failed") {
 			entry.TransferCompleted = true
 		}
 	}

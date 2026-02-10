@@ -154,6 +154,9 @@ func (c *controller) showSettingsDialog() {
 	})
 	resetKeysBtn.Importance = widget.DangerImportance
 
+	maxSizeHint := widget.NewLabel("Set to Unlimited or 0 for no size limit on incoming files.")
+	maxSizeHint.Wrapping = fyne.TextWrapWord
+
 	form := widget.NewForm(
 		widget.NewFormItem("Device Name", nameEntry),
 		widget.NewFormItem("Device ID", deviceIDLabel),
@@ -161,7 +164,7 @@ func (c *controller) showSettingsDialog() {
 		widget.NewFormItem("Port Mode", portModeGroup),
 		widget.NewFormItem("Port", portEntry),
 		widget.NewFormItem("Download Location", container.NewBorder(nil, nil, nil, browseDownloadDirBtn, downloadDirEntry)),
-		widget.NewFormItem("Max File Size", container.NewHBox(maxSizeSelect, maxSizeCustomEntry)),
+		widget.NewFormItem("Max File Size", container.NewVBox(container.NewHBox(maxSizeSelect, maxSizeCustomEntry), maxSizeHint)),
 		widget.NewFormItem("Notifications", notificationsEnabled),
 		widget.NewFormItem("Message Retention", retentionSelect),
 		widget.NewFormItem("File Cleanup", cleanupDownloadedFiles),
@@ -316,12 +319,16 @@ func (c *controller) showSelectedPeerSettingsDialog() {
 	} else {
 		trustLevel.SetSelected("Normal")
 	}
+	trustLevelHint := widget.NewLabel("Trust level is informational metadata shown as a badge; it does not change transfer or security behavior.")
+	trustLevelHint.Wrapping = fyne.TextWrapWord
 
 	notificationsMutedCheck := widget.NewCheck("", nil)
 	notificationsMutedCheck.SetChecked(settings.NotificationsMuted)
 
 	verifiedCheck := widget.NewCheck("Verified out-of-band", nil)
 	verifiedCheck.SetChecked(settings.Verified)
+	verifiedHint := widget.NewLabel("You manually compared this peer's fingerprint with the real device over a separate trusted channel (e.g. in person).")
+	verifiedHint.Wrapping = fyne.TextWrapWord
 
 	maxSizeSelect := widget.NewSelect([]string{
 		maxSizePresetUseGlobal,
@@ -352,6 +359,8 @@ func (c *controller) showSelectedPeerSettingsDialog() {
 		maxSizeCustomEntry.SetText(strconv.FormatInt(settings.MaxFileSize, 10))
 		maxSizeCustomEntry.Enable()
 	}
+	maxSizePeerHint := widget.NewLabel("0 or \"Use global default\" means use the device setting; it does not mean unlimited for this peer.")
+	maxSizePeerHint.Wrapping = fyne.TextWrapWord
 
 	useGlobalDownloadCheck := widget.NewCheck("Use global download directory", nil)
 	downloadDirectoryEntry := widget.NewEntry()
@@ -418,11 +427,11 @@ func (c *controller) showSelectedPeerSettingsDialog() {
 		widget.NewFormItem("Peer Fingerprint", container.NewBorder(nil, nil, nil, copyPeerFingerprintBtn, peerFingerprintLabel)),
 		widget.NewFormItem("Local Fingerprint", container.NewBorder(nil, nil, nil, copyLocalFingerprintBtn, localFingerprintLabel)),
 		widget.NewFormItem("Custom Name", customNameEntry),
-		widget.NewFormItem("Trust Level", trustLevel),
-		widget.NewFormItem("Verified", verifiedCheck),
+		widget.NewFormItem("Trust Level", container.NewVBox(trustLevel, trustLevelHint)),
+		widget.NewFormItem("Verified", container.NewVBox(verifiedCheck, verifiedHint)),
 		widget.NewFormItem("Mute Notifications", notificationsMutedCheck),
 		widget.NewFormItem("Auto-Accept Files", autoAcceptCheck),
-		widget.NewFormItem("Max File Size", container.NewHBox(maxSizeSelect, maxSizeCustomEntry)),
+		widget.NewFormItem("Max File Size", container.NewVBox(container.NewHBox(maxSizeSelect, maxSizeCustomEntry), maxSizePeerHint)),
 		widget.NewFormItem("Download Directory", container.NewVBox(
 			useGlobalDownloadCheck,
 			container.NewBorder(nil, nil, nil, browseDownloadDirectoryBtn, downloadDirectoryEntry),
