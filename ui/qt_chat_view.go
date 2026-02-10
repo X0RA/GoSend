@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/therecipe/qt/core"
 	"github.com/therecipe/qt/gui"
 	"github.com/therecipe/qt/widgets"
 
@@ -98,30 +99,46 @@ func (c *controller) renderPeerList(selectedIndex int) {
 	}
 	c.peerList.Clear()
 	peers := c.listPeersSnapshot()
+
+	onlineCount := 0
 	for _, peer := range peers {
 		display := c.peerDisplayName(&peer)
 		if strings.TrimSpace(display) == "" {
 			display = peer.DeviceID
 		}
 		settings := c.peerSettingsByID(peer.DeviceID)
-		if c.peerTrustLevel(peer.DeviceID) == storage.PeerTrustLevelTrusted {
-			display += " [Trusted]"
-		}
-		if settings != nil && settings.Verified {
-			display += " [Verified]"
-		}
+		isTrusted := c.peerTrustLevel(peer.DeviceID) == storage.PeerTrustLevelTrusted
+		isVerified := settings != nil && settings.Verified
+
 		runtimeState := c.runtimeStateForPeer(peer.DeviceID)
 		stateText := c.peerStatePresentation(&peer, runtimeState)
+
+		// Track online peers for the header badge.
+		if strings.Contains(strings.ToLower(stateText), "online") {
+			onlineCount++
+		}
+
+		secondaryInfo := ""
 		if settings != nil && strings.TrimSpace(settings.CustomName) != "" {
 			secondary := strings.TrimSpace(peer.DeviceName)
 			if secondary == "" {
 				secondary = peer.DeviceID
 			}
-			stateText = fmt.Sprintf("%s | %s", secondary, stateText)
+			secondaryInfo = secondary
 		}
-		item := widgets.NewQListWidgetItem2(display+"\n"+stateText, c.peerList, 0)
-		_ = item
+
+		w := createPeerItemWidget(display, stateText, isTrusted, isVerified, secondaryInfo)
+		item := widgets.NewQListWidgetItem(c.peerList, 0)
+		h := itemHeightForWidget(w, 48)
+		item.SetSizeHint(core.NewQSize2(0, h))
+		c.peerList.SetItemWidget(item, w)
 	}
+
+	// Update count badge.
+	if c.peerCountBadge != nil {
+		c.peerCountBadge.SetText(fmt.Sprintf("%d", onlineCount))
+	}
+
 	if selectedIndex >= 0 && selectedIndex < len(peers) {
 		c.peerList.SetCurrentRow(selectedIndex)
 	}
@@ -152,6 +169,7 @@ func (c *controller) selectPeerByIndex(index int) {
 func (c *controller) updateChatHeader() {
 	selectedPeerID := c.currentSelectedPeerID()
 	peerName := "Select a peer to start chatting"
+	fingerprint := ""
 	hasPeer := false
 	if selectedPeerID != "" {
 		if peer := c.peerByID(selectedPeerID); peer != nil {
@@ -163,13 +181,21 @@ func (c *controller) updateChatHeader() {
 			if strings.TrimSpace(peerName) == "" {
 				peerName = peer.DeviceID
 			}
-			peerName = peerName + " (" + appcrypto.FormatFingerprint(peer.KeyFingerprint) + ")"
+			fingerprint = appcrypto.FormatFingerprint(peer.KeyFingerprint)
 		}
 	}
 
 	c.enqueueUI(func() {
 		if c.chatHeader != nil {
 			c.chatHeader.SetText(peerName)
+		}
+		if c.chatFingerprint != nil {
+			c.chatFingerprint.SetText(fingerprint)
+			if hasPeer {
+				c.chatFingerprint.Show()
+			} else {
+				c.chatFingerprint.Hide()
+			}
 		}
 		if c.chatComposer != nil {
 			if hasPeer {
@@ -517,12 +543,18 @@ func (c *controller) renderTranscript() {
 	c.chatList.Clear()
 	for _, row := range rows {
 		if row.isMessage {
-			item := widgets.NewQListWidgetItem2(c.messageRowText(row.message), c.chatList, 0)
-			_ = item
+			w := c.buildMessageWidget(row.message)
+			item := widgets.NewQListWidgetItem(c.chatList, 0)
+			h := itemHeightForWidget(w, 52)
+			item.SetSizeHint(core.NewQSize2(0, h))
+			c.chatList.SetItemWidget(item, w)
 			continue
 		}
-		item := widgets.NewQListWidgetItem2(c.fileRowText(row.file), c.chatList, 0)
-		_ = item
+		w := createFileTransferCardWidget(row.file)
+		item := widgets.NewQListWidgetItem(c.chatList, 0)
+		h := itemHeightForWidget(w, 64)
+		item.SetSizeHint(core.NewQSize2(0, h))
+		c.chatList.SetItemWidget(item, w)
 	}
 	c.onTranscriptSelectionChanged(-1)
 	if len(rows) > 0 {
@@ -530,37 +562,38 @@ func (c *controller) renderTranscript() {
 	}
 }
 
-func (c *controller) messageRowText(message storage.Message) string {
-	prefix := "Peer"
-	statusMark := ""
-	if message.FromDeviceID == c.cfg.DeviceID {
-		prefix = "You"
-		statusMark = " " + deliveryStatusMark(message.DeliveryStatus)
+// buildMessageWidget creates a styled card for one text message.
+func (c *controller) buildMessageWidget(message storage.Message) *widgets.QWidget {
+	sender := c.senderDisplayName(message)
+	isOutbound := message.FromDeviceID == c.cfg.DeviceID
+	deliveryMark := ""
+	if isOutbound {
+		deliveryMark = deliveryStatusMark(message.DeliveryStatus)
 	}
-	return fmt.Sprintf("[%s] %s%s\n%s", prefix, formatTimestamp(message.TimestampSent), statusMark, message.Content)
+	return createMessageCardWidget(
+		sender,
+		formatTimestamp(message.TimestampSent),
+		message.Content,
+		deliveryMark,
+		isOutbound,
+	)
 }
 
-func (c *controller) fileRowText(file chatFileEntry) string {
-	direction := "Receive"
-	if strings.EqualFold(file.Direction, "send") {
-		direction = "Send"
+// senderDisplayName returns a short display name for the message sender.
+func (c *controller) senderDisplayName(msg storage.Message) string {
+	if msg.FromDeviceID == c.cfg.DeviceID {
+		return "You"
 	}
-	status := fileTransferStatusText(file)
-	progress := ""
-	if file.TotalBytes > 0 {
-		progress = fmt.Sprintf(" %.0f%%", float64(file.BytesTransferred)*100/float64(file.TotalBytes))
+	if peer := c.peerByID(msg.FromDeviceID); peer != nil {
+		name := c.peerDisplayName(peer)
+		if strings.TrimSpace(name) != "" {
+			return name
+		}
+		if strings.TrimSpace(peer.DeviceName) != "" {
+			return peer.DeviceName
+		}
 	}
-	head := fmt.Sprintf("[%s File] %s", direction, valueOrDefault(file.Filename, file.FileID))
-	meta := fmt.Sprintf("%s | %s | %s%s", formatTimestamp(file.AddedAt), formatBytes(file.Filesize), status, progress)
-	pathLine := ""
-	if strings.TrimSpace(file.StoredPath) != "" {
-		pathLine = "\nPath: " + file.StoredPath
-	}
-	rel := ""
-	if strings.TrimSpace(file.RelativePath) != "" {
-		rel = "\nRelative: " + file.RelativePath
-	}
-	return head + "\n" + meta + rel + pathLine
+	return "Peer"
 }
 
 func (c *controller) onTranscriptSelectionChanged(row int) {

@@ -21,22 +21,30 @@ import (
 func (c *controller) buildMainWindow() {
 	central := widgets.NewQWidget(nil, 0)
 	mainLayout := widgets.NewQVBoxLayout()
-	mainLayout.SetContentsMargins(10, 10, 10, 10)
-	mainLayout.SetSpacing(8)
+	mainLayout.SetContentsMargins(0, 0, 0, 0)
+	mainLayout.SetSpacing(0)
 
+	// ── Toolbar ──────────────────────────────────────────────
 	toolbar := widgets.NewQWidget(nil, 0)
+	toolbar.SetObjectName("toolbar")
 	toolbarLayout := widgets.NewQHBoxLayout()
-	toolbarLayout.SetContentsMargins(0, 0, 0, 0)
+	toolbarLayout.SetContentsMargins(12, 6, 12, 6)
 	toolbarLayout.SetSpacing(8)
 
 	title := widgets.NewQLabel2("GoSend", nil, 0)
-	queueBtn := widgets.NewQPushButton2("Transfer Queue", nil)
+	title.SetObjectName("toolbarTitle")
+
+	queueBtn := widgets.NewQPushButton2("⇄  Transfer Queue", nil)
+	queueBtn.SetObjectName("toolbarBtn")
 	queueBtn.ConnectClicked(func(bool) { c.showTransferQueuePanel() })
-	refreshBtn := widgets.NewQPushButton2("Refresh Discovery", nil)
+	refreshBtn := widgets.NewQPushButton2("↻  Refresh Discovery", nil)
+	refreshBtn.SetObjectName("toolbarBtn")
 	refreshBtn.ConnectClicked(func(bool) { go c.refreshDiscovery() })
-	discoverBtn := widgets.NewQPushButton2("Discover", nil)
+	discoverBtn := widgets.NewQPushButton2("⌕  Discover", nil)
+	discoverBtn.SetObjectName("toolbarBtn")
 	discoverBtn.ConnectClicked(func(bool) { c.showDiscoveryDialog() })
-	settingsBtn := widgets.NewQPushButton2("Settings", nil)
+	settingsBtn := widgets.NewQPushButton2("⚙  Settings", nil)
+	settingsBtn.SetObjectName("toolbarBtn")
 	settingsBtn.ConnectClicked(func(bool) { c.showSettingsDialog() })
 	c.hold(queueBtn, refreshBtn, discoverBtn, settingsBtn)
 
@@ -48,22 +56,24 @@ func (c *controller) buildMainWindow() {
 	toolbarLayout.AddWidget(settingsBtn, 0, 0)
 	toolbar.SetLayout(toolbarLayout)
 
+	// ── Content splitter ─────────────────────────────────────
 	splitter := widgets.NewQSplitter(nil)
 	splitter.SetOrientation(core.Qt__Horizontal)
 	splitter.AddWidget(c.buildPeersPane())
 	splitter.AddWidget(c.buildChatPane())
 	splitter.SetStretchFactor(0, 1)
 	splitter.SetStretchFactor(1, 3)
-	splitter.SetSizes([]int{320, 900})
+	splitter.SetSizes([]int{200, 900})
 
 	mainLayout.AddWidget(toolbar, 0, 0)
 	mainLayout.AddWidget(splitter, 1, 0)
 	central.SetLayout(mainLayout)
 	c.window.SetCentralWidget(central)
 
+	// ── Status bar ───────────────────────────────────────────
 	c.statusBar = widgets.NewQStatusBar(c.window)
 	c.statusLabel = widgets.NewQLabel2("Starting...", nil, 0)
-	logsBtn := widgets.NewQPushButton2("Logs", nil)
+	logsBtn := widgets.NewQPushButton2("⊟  Logs", nil)
 	logsBtn.ConnectClicked(func(bool) { c.showLogsDialog() })
 	c.hold(logsBtn)
 	c.statusBar.AddWidget(c.statusLabel, 1)
@@ -93,14 +103,28 @@ func (c *controller) initTrayIcon() {
 func (c *controller) buildPeersPane() *widgets.QWidget {
 	pane := widgets.NewQWidget(nil, 0)
 	layout := widgets.NewQVBoxLayout()
-	layout.SetContentsMargins(0, 0, 0, 0)
-	layout.SetSpacing(6)
+	layout.SetContentsMargins(0, 4, 0, 0)
+	layout.SetSpacing(4)
 
-	header := widgets.NewQLabel2("Peers", nil, 0)
+	// Header row: "PEERS" label + count badge.
+	headerRow := widgets.NewQWidget(nil, 0)
+	headerLayout := widgets.NewQHBoxLayout()
+	headerLayout.SetContentsMargins(10, 4, 10, 0)
+	headerLayout.SetSpacing(6)
+
+	header := widgets.NewQLabel2("PEERS", nil, 0)
+	header.SetObjectName("peersHeaderLabel")
+	c.peerCountBadge = newCountBadge(0)
+	headerLayout.AddWidget(header, 0, 0)
+	headerLayout.AddWidget(c.peerCountBadge, 0, 0)
+	headerLayout.AddStretch(1)
+	headerRow.SetLayout(headerLayout)
+
 	c.peerList = widgets.NewQListWidget(nil)
+	c.peerList.SetObjectName("peerList")
 	c.peerList.ConnectCurrentRowChanged(func(row int) { c.selectPeerByIndex(row) })
 
-	layout.AddWidget(header, 0, 0)
+	layout.AddWidget(headerRow, 0, 0)
 	layout.AddWidget(c.peerList, 1, 0)
 	pane.SetLayout(layout)
 	return pane
@@ -109,25 +133,35 @@ func (c *controller) buildPeersPane() *widgets.QWidget {
 func (c *controller) buildChatPane() *widgets.QWidget {
 	pane := widgets.NewQWidget(nil, 0)
 	layout := widgets.NewQVBoxLayout()
-	layout.SetContentsMargins(0, 0, 0, 0)
-	layout.SetSpacing(6)
+	layout.SetContentsMargins(4, 4, 4, 4)
+	layout.SetSpacing(4)
 
+	// ── Chat header ──────────────────────────────────────────
 	headerRow := widgets.NewQWidget(nil, 0)
 	headerLayout := widgets.NewQHBoxLayout()
-	headerLayout.SetContentsMargins(0, 0, 0, 0)
-	headerLayout.SetSpacing(6)
+	headerLayout.SetContentsMargins(8, 4, 4, 4)
+	headerLayout.SetSpacing(8)
+
 	c.chatHeader = widgets.NewQLabel2("Select a peer to start chatting", nil, 0)
-	c.searchBtn = widgets.NewQPushButton2("Search", nil)
+	c.chatHeader.SetStyleSheet(fmt.Sprintf("color: %s; font-size: 14px; font-weight: bold; background: transparent;", colorText))
+	c.chatFingerprint = widgets.NewQLabel2("", nil, 0)
+	c.chatFingerprint.SetStyleSheet(fmt.Sprintf("color: %s; font-size: 12px; background: transparent;", colorSubtext0))
+
+	c.searchBtn = newIconButton("⌕", "Search messages")
 	c.searchBtn.ConnectClicked(func(bool) { c.toggleChatSearch() })
 	c.searchBtn.Hide()
-	c.peerSettingsBtn = widgets.NewQPushButton2("Peer Settings", nil)
+	c.peerSettingsBtn = newIconButton("⚙", "Peer settings")
 	c.peerSettingsBtn.ConnectClicked(func(bool) { c.showSelectedPeerSettingsDialog() })
 	c.peerSettingsBtn.Hide()
-	headerLayout.AddWidget(c.chatHeader, 1, 0)
+
+	headerLayout.AddWidget(c.chatHeader, 0, 0)
+	headerLayout.AddWidget(c.chatFingerprint, 0, 0)
+	headerLayout.AddStretch(1)
 	headerLayout.AddWidget(c.searchBtn, 0, 0)
 	headerLayout.AddWidget(c.peerSettingsBtn, 0, 0)
 	headerRow.SetLayout(headerLayout)
 
+	// ── Search row ───────────────────────────────────────────
 	c.chatSearchRow = widgets.NewQWidget(nil, 0)
 	searchLayout := widgets.NewQHBoxLayout()
 	searchLayout.SetContentsMargins(0, 0, 0, 0)
@@ -159,7 +193,9 @@ func (c *controller) buildChatPane() *widgets.QWidget {
 	c.chatSearchRow.SetLayout(searchLayout)
 	c.chatSearchRow.Hide()
 
+	// ── Chat list ────────────────────────────────────────────
 	c.chatList = widgets.NewQListWidget(nil)
+	c.chatList.SetObjectName("chatList")
 	c.chatList.ConnectCurrentRowChanged(func(row int) {
 		c.onTranscriptSelectionChanged(row)
 	})
@@ -171,23 +207,28 @@ func (c *controller) buildChatPane() *widgets.QWidget {
 		c.onTranscriptActivated(row)
 	})
 
+	// ── Transfer action row ──────────────────────────────────
 	actionRow := widgets.NewQWidget(nil, 0)
 	actionLayout := widgets.NewQHBoxLayout()
-	actionLayout.SetContentsMargins(0, 0, 0, 0)
-	actionLayout.SetSpacing(6)
-	c.cancelBtn = widgets.NewQPushButton2("Cancel", nil)
+	actionLayout.SetContentsMargins(4, 0, 4, 0)
+	actionLayout.SetSpacing(4)
+
+	c.cancelBtn = widgets.NewQPushButton2("✕ Cancel", nil)
+	c.cancelBtn.SetObjectName("actionBtn")
 	c.cancelBtn.ConnectClicked(func(bool) {
 		if c.selectedFileID != "" {
 			c.cancelTransferFromUI(c.selectedFileID)
 		}
 	})
-	c.retryBtn = widgets.NewQPushButton2("Retry", nil)
+	c.retryBtn = widgets.NewQPushButton2("↻ Retry", nil)
+	c.retryBtn.SetObjectName("actionBtn")
 	c.retryBtn.ConnectClicked(func(bool) {
 		if c.selectedFileID != "" {
 			c.retryTransferFromUI(c.selectedFileID)
 		}
 	})
-	c.showPathBtn = widgets.NewQPushButton2("Show Path", nil)
+	c.showPathBtn = widgets.NewQPushButton2("↗ Show Path", nil)
+	c.showPathBtn.SetObjectName("actionBtn")
 	c.showPathBtn.ConnectClicked(func(bool) {
 		if entry, ok := c.transferByID(c.selectedFileID); ok && strings.TrimSpace(entry.StoredPath) != "" {
 			if err := openContainingFolder(entry.StoredPath); err != nil {
@@ -195,7 +236,8 @@ func (c *controller) buildChatPane() *widgets.QWidget {
 			}
 		}
 	})
-	c.copyPathBtn = widgets.NewQPushButton2("Copy Path", nil)
+	c.copyPathBtn = widgets.NewQPushButton2("⎘ Copy Path", nil)
+	c.copyPathBtn.SetObjectName("actionBtn")
 	c.copyPathBtn.ConnectClicked(func(bool) {
 		if entry, ok := c.transferByID(c.selectedFileID); ok && strings.TrimSpace(entry.StoredPath) != "" {
 			clipboard := gui.QGuiApplication_Clipboard()
@@ -212,38 +254,44 @@ func (c *controller) buildChatPane() *widgets.QWidget {
 	actionLayout.AddStretch(1)
 	actionRow.SetLayout(actionLayout)
 
+	// ── Composer row: [attach] [folder] [input] [send] ──────
 	c.messageInput = widgets.NewQTextEdit(nil)
 	c.messageInput.SetPlaceholderText("Type a message...")
 	c.messageInput.SetAcceptRichText(false)
+	c.messageInput.SetMaximumHeight(80)
 
-	sendBtn := widgets.NewQPushButton2("Send", nil)
-	sendBtn.ConnectClicked(func(bool) { c.sendCurrentMessage() })
-	attachBtn := widgets.NewQPushButton2("Attach Files", nil)
+	attachBtn := widgets.NewQPushButton2("📎", nil)
+	attachBtn.SetObjectName("composerAttachBtn")
+	attachBtn.SetToolTip("Attach files")
+	attachBtn.SetFixedSize2(36, 36)
 	attachBtn.ConnectClicked(func(bool) { c.attachFileToCurrentPeer() })
-	attachFolderBtn := widgets.NewQPushButton2("Attach Folder", nil)
+
+	attachFolderBtn := widgets.NewQPushButton2("📁", nil)
+	attachFolderBtn.SetObjectName("composerAttachBtn")
+	attachFolderBtn.SetToolTip("Attach folder")
+	attachFolderBtn.SetFixedSize2(36, 36)
 	attachFolderBtn.ConnectClicked(func(bool) { c.attachFolderToCurrentPeer() })
+
+	sendBtn := widgets.NewQPushButton2("➤", nil)
+	sendBtn.SetObjectName("composerBtn")
+	sendBtn.SetToolTip("Send message (Ctrl+Enter)")
+	sendBtn.SetFixedSize2(36, 36)
+	sendBtn.ConnectClicked(func(bool) { c.sendCurrentMessage() })
 	c.hold(sendBtn, attachBtn, attachFolderBtn)
 
 	shortcut := widgets.NewQShortcut2(gui.NewQKeySequence2("Ctrl+Return", gui.QKeySequence__NativeText), c.window, "", "", core.Qt__WindowShortcut)
 	shortcut.ConnectActivated(func() { c.sendCurrentMessage() })
 	c.hold(shortcut)
 
-	controls := widgets.NewQWidget(nil, 0)
-	controlsLayout := widgets.NewQVBoxLayout()
-	controlsLayout.SetContentsMargins(0, 0, 0, 0)
-	controlsLayout.SetSpacing(6)
-	controlsLayout.AddWidget(sendBtn, 0, 0)
-	controlsLayout.AddWidget(attachBtn, 0, 0)
-	controlsLayout.AddWidget(attachFolderBtn, 0, 0)
-	controlsLayout.AddStretch(1)
-	controls.SetLayout(controlsLayout)
-
 	c.chatComposer = widgets.NewQWidget(nil, 0)
+	c.chatComposer.SetObjectName("composerRow")
 	composerLayout := widgets.NewQHBoxLayout()
-	composerLayout.SetContentsMargins(0, 0, 0, 0)
+	composerLayout.SetContentsMargins(0, 4, 0, 0)
 	composerLayout.SetSpacing(6)
+	composerLayout.AddWidget(attachBtn, 0, core.Qt__AlignBottom)
+	composerLayout.AddWidget(attachFolderBtn, 0, core.Qt__AlignBottom)
 	composerLayout.AddWidget(c.messageInput, 1, 0)
-	composerLayout.AddWidget(controls, 0, 0)
+	composerLayout.AddWidget(sendBtn, 0, core.Qt__AlignBottom)
 	c.chatComposer.SetLayout(composerLayout)
 	c.chatComposer.Hide()
 

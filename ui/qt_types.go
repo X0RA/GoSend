@@ -135,7 +135,9 @@ type controller struct {
 	activeListenPort int
 
 	peerList         *widgets.QListWidget
+	peerCountBadge   *widgets.QLabel
 	chatHeader       *widgets.QLabel
+	chatFingerprint  *widgets.QLabel
 	peerSettingsBtn  *widgets.QPushButton
 	searchBtn        *widgets.QPushButton
 	chatSearchRow    *widgets.QWidget

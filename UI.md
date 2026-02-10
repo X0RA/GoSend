@@ -8,24 +8,28 @@ The main window is titled **GoSend** and contains the following areas: a toolbar
 
 ### Toolbar
 
-- **GoSend** title label.
-- **Transfer Queue** button — opens the Transfer Queue dialog.
-- **Refresh Discovery** button — triggers a manual mDNS network scan for peers.
-- **Discover** button — opens the Discover Peers dialog.
-- **Settings** button — opens the Device Settings dialog.
+The toolbar has a darker background (Mantle shade) separating it from the content area.
+
+- **GoSend** title label (bold).
+- **⇄ Transfer Queue** button — opens the Transfer Queue dialog.
+- **↻ Refresh Discovery** button — triggers a manual mDNS network scan for peers.
+- **⌕ Discover** button — opens the Discover Peers dialog.
+- **⚙ Settings** button — opens the Device Settings dialog.
+
+Toolbar buttons have icon prefixes and are styled as compact, bordered controls.
 
 ### Peers Panel
 
-- **"Peers"** header label.
-- **Peers list** — shows all known peers (excluding self), sorted alphabetically by display name. Selecting a peer loads their chat transcript.
+- **"PEERS"** header label (uppercase, muted) with a **count badge** showing the number of currently online peers.
+- **Peers list** — shows all known peers (excluding self), sorted alphabetically by display name. Selecting a peer loads their chat transcript and highlights the row.
 
-Each peer row displays:
+Each peer row is a custom styled widget displaying:
 
-- The peer's display name (custom name if set, otherwise device name, otherwise device ID).
-- A **[Trusted]** badge if the peer's trust level is set to Trusted.
-- A **[Verified]** badge if the peer has been marked as verified out-of-band.
-- A secondary line showing connection state: `Online`, `Offline`, `Connecting...`, `Disconnecting...`, or `Reconnecting in Ns`.
-- If a custom name is set, the original device name (or device ID) is shown as secondary context alongside the connection state.
+- A **coloured status dot**: green for Online, gray for Offline, blue for Connecting, yellow for Reconnecting.
+- The peer's **display name** in bold (custom name if set, otherwise device name, otherwise device ID).
+- Coloured pill **badges**: green "Trusted" badge if the peer's trust level is Trusted; lavender "Verified" badge if marked as verified out-of-band.
+- A secondary line showing connection state text (`Online`, `Offline`, `Connecting...`, `Disconnecting...`, or `Reconnecting in Ns`).
+- If a custom name is set, the original device name (or device ID) is shown as secondary context before the connection state.
 
 ### Chat Panel
 
@@ -33,9 +37,10 @@ When no peer is selected, a placeholder message reads **"Select a peer to start 
 
 #### Chat Header
 
-- **Peer name and fingerprint** label — shows the selected peer's display name and their key fingerprint.
-- **Search** button — toggles the search bar on and off.
-- **Peer Settings** button — opens the Peer Settings dialog for the selected peer.
+- **Peer name** label (bold) — shows the selected peer's display name.
+- **Fingerprint** label (muted) — shows the selected peer's key fingerprint separately from the name.
+- **⌕** icon button — toggles the search bar on and off.
+- **⚙** icon button — opens the Peer Settings dialog for the selected peer.
 
 #### Search Bar
 
@@ -49,21 +54,21 @@ Toggled by the Search button. Contains:
 
 A scrollable list that shows all messages and file transfers with the selected peer, sorted chronologically. The list auto-scrolls to the most recent entry.
 
-**Message rows** display:
+**Message cards** (styled card widgets) display:
 
-- A sender label: **"You"** for outbound or **"Peer"** for inbound.
-- A timestamp (e.g. `3:04 PM`).
-- A delivery status mark for outbound messages: `✓✓` (delivered), `✓` (sent), `✗` (failed), `…` (pending).
-- The message content.
+- A **coloured sender label**: blue "You" for outbound, or the peer's display name in mauve for inbound.
+- A **timestamp** (e.g. `3:04 PM`) in muted text.
+- A **delivery status mark** for outbound messages: `✓✓` (delivered, green), `✓` (sent), `✗` (failed, red), `…` (pending, yellow).
+- The **message content** with word-wrapping.
 - Double-clicking a message copies its content to the clipboard.
 
-**File transfer rows** display:
+**File transfer cards** (styled card widgets) display:
 
-- A direction label: **[Send File]** or **[Receive File]**.
-- The filename (or file ID if no name is available).
-- A metadata line with timestamp, file size, transfer status, and progress percentage.
-- The relative path (for folder transfers).
-- The stored file path (for completed transfers).
+- A **file icon** (📄) and a coloured **direction badge**: peach "Send File" or teal "Receive File".
+- The **filename** in bold (or file ID if no name is available).
+- A metadata line with **timestamp**, **file size**, and a colour-coded **status label** (green=Complete, yellow=Sending/Receiving, red=Failed).
+- An inline **progress bar** for active transfers (blue accent).
+- The **stored file path** in muted small text (for completed transfers).
 - Double-clicking a file row opens the containing folder in the system file manager.
 
 Transfer status text for file rows: `Waiting`, `Sending`, `Receiving`, `Sending (N%)`, `Receiving (N%)`, `Complete`, or `Failed`.
@@ -72,10 +77,12 @@ Transfer status text for file rows: `Waiting`, `Sending`, `Receiving`, `Sending 
 
 A row of contextual buttons that activate when a file transfer row is selected in the transcript:
 
-- **Cancel** — cancels a pending or active transfer (shows a confirmation prompt).
-- **Retry** — re-queues a failed or rejected outbound transfer.
-- **Show Path** — opens the containing folder of a completed file in the system file manager.
-- **Copy Path** — copies the file's stored path to the clipboard.
+- **✕ Cancel** — cancels a pending or active transfer (shows a confirmation prompt).
+- **↻ Retry** — re-queues a failed or rejected outbound transfer.
+- **↗ Show Path** — opens the containing folder of a completed file in the system file manager.
+- **⎘ Copy Path** — copies the file's stored path to the clipboard.
+
+Action buttons are styled as flat text buttons with icon prefixes. They are visually subtle when disabled.
 
 All four buttons are disabled when no file transfer row is selected. Each button enables or disables based on the selected transfer's state and direction.
 
@@ -83,10 +90,10 @@ All four buttons are disabled when no file transfer row is selected. Each button
 
 Visible only when a peer is selected. Contains:
 
+- A **📎** icon button — opens a multi-file picker dialog to queue files for transfer.
+- A **📁** icon button — opens a folder picker dialog to queue an entire folder for transfer.
 - A **multiline text input** with placeholder "Type a message..." (plain text only).
-- A **Send** button — sends the typed message. The keyboard shortcut **Ctrl+Enter** also sends.
-- An **Attach Files** button — opens a multi-file picker dialog to queue files for transfer.
-- An **Attach Folder** button — opens a folder picker dialog to queue an entire folder for transfer.
+- A **➤** send icon button (accent coloured) — sends the typed message. The keyboard shortcut **Ctrl+Enter** also sends.
 
 ### Status Bar
 
@@ -158,7 +165,7 @@ Contains a form with the following fields:
 
 Opened from the toolbar's Transfer Queue button.
 
-- A **transfer list** showing all active and recently completed transfers across all peers. Active/pending transfers appear before completed ones. Each row displays: peer name, filename (or file ID), transfer status, progress percentage, speed (bytes/s), and estimated time remaining (ETA).
+- A **transfer list** showing all active and recently completed transfers across all peers, using styled card widgets. Active/pending transfers appear before completed ones. Each card displays: peer name (bold, coloured), filename (or file ID), colour-coded status label, progress percentage, transfer speed (bytes/s), estimated time remaining (ETA), and an inline progress bar for active transfers.
 - **Cancel Selected** button — cancels the selected active transfer.
 - **Retry Selected** button — re-queues the selected failed transfer.
 - **Clear Completed** button — removes all completed transfers from the list.
@@ -207,4 +214,4 @@ Notifications are suppressed when:
 
 ## Theming
 
-The entire UI uses the **Catppuccin Mocha** dark colour theme. All colours are defined centrally in `ui/qt_theme.go` as named constants with semantic aliases, making it straightforward to swap to a different colour scheme by editing only that file.
+The entire UI uses the **Catppuccin Mocha** dark colour theme. All colours are defined centrally in `ui/qt_theme.go` as named constants with semantic aliases. Widget-specific styling (toolbar, peer list, chat cards, composer, action buttons, icon buttons) is defined via object-name-scoped QSS rules. Styled widgets are built by helper functions in `ui/qt_styled_widgets.go`. Swapping to a different colour scheme requires editing only the colour constants in `qt_theme.go`.

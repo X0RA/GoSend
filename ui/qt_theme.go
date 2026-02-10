@@ -507,6 +507,184 @@ QHeaderView::section {
     border: 1px solid %[4]s;
     padding: 4px 8px;
 }
+
+/* =========================================================
+   Toolbar
+   ========================================================= */
+QWidget#toolbar {
+    background: %[13]s;
+    border-bottom: 1px solid %[4]s;
+    border-radius: 0;
+}
+
+QWidget#toolbar QLabel#toolbarTitle {
+    color: %[1]s;
+    font-size: 15px;
+    font-weight: bold;
+    background: transparent;
+}
+
+QPushButton#toolbarBtn {
+    background: %[3]s;
+    border: 1px solid %[4]s;
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-size: 12px;
+}
+
+QPushButton#toolbarBtn:hover {
+    background: %[10]s;
+    border: 1px solid %[7]s;
+}
+
+/* =========================================================
+   Icon buttons (search, peer settings, send, etc.)
+   ========================================================= */
+QPushButton#iconBtn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 0;
+    font-size: 15px;
+    color: %[14]s;
+    min-height: 28px;
+    min-width: 28px;
+}
+
+QPushButton#iconBtn:hover {
+    background: %[3]s;
+    border: 1px solid %[4]s;
+}
+
+/* =========================================================
+   Action row buttons (Cancel, Retry, Show Path, Copy Path)
+   ========================================================= */
+QPushButton#actionBtn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 12px;
+    color: %[14]s;
+}
+
+QPushButton#actionBtn:hover {
+    background: %[3]s;
+    border: 1px solid %[4]s;
+    color: %[1]s;
+}
+
+QPushButton#actionBtn:disabled {
+    color: %[9]s;
+    background: transparent;
+    border: 1px solid transparent;
+}
+
+/* =========================================================
+   Peer list: object-name scoped overrides
+   ========================================================= */
+QListWidget#peerList {
+    background: %[2]s;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+}
+
+QListWidget#peerList::item {
+    background: transparent;
+    border-radius: 6px;
+    padding: 0;
+    margin: 2px 4px;
+}
+
+QListWidget#peerList::item:selected {
+    background: %[3]s;
+}
+
+QListWidget#peerList::item:hover:!selected {
+    background: %[10]s;
+}
+
+/* =========================================================
+   Chat list: object-name scoped overrides
+   ========================================================= */
+QListWidget#chatList {
+    background: %[2]s;
+    border: 1px solid %[4]s;
+    border-radius: 6px;
+    padding: 4px;
+}
+
+QListWidget#chatList::item {
+    background: transparent;
+    border-radius: 0;
+    padding: 2px 4px;
+    margin: 2px 0;
+}
+
+QListWidget#chatList::item:selected {
+    background: transparent;
+    border-left: 3px solid %[7]s;
+}
+
+QListWidget#chatList::item:hover:!selected {
+    background: transparent;
+}
+
+/* =========================================================
+   Composer area
+   ========================================================= */
+QWidget#composerRow {
+    background: transparent;
+}
+
+QWidget#composerRow QTextEdit {
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 13px;
+}
+
+QPushButton#composerBtn {
+    background: %[7]s;
+    color: %[6]s;
+    border: none;
+    border-radius: 8px;
+    padding: 8px;
+    font-size: 14px;
+    min-width: 36px;
+    min-height: 36px;
+}
+
+QPushButton#composerBtn:hover {
+    background: %[15]s;
+}
+
+QPushButton#composerAttachBtn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 6px;
+    font-size: 15px;
+    color: %[14]s;
+    min-width: 36px;
+    min-height: 36px;
+}
+
+QPushButton#composerAttachBtn:hover {
+    background: %[3]s;
+    border: 1px solid %[4]s;
+}
+
+/* =========================================================
+   PEERS header label
+   ========================================================= */
+QLabel#peersHeaderLabel {
+    color: %[14]s;
+    font-size: 11px;
+    font-weight: bold;
+    background: transparent;
+    padding: 4px 10px;
+}
 `,
 		themeText,                // [1]  primary text
 		themeBackground,          // [2]  main background
@@ -522,5 +700,6 @@ QHeaderView::section {
 		colorOverlay0,            // [12] button hover
 		themeBackgroundSecondary, // [13] status bar / menu bar bg
 		themeTextSecondary,       // [14] status bar / secondary text
+		themeAccentHover,         // [15] accent hover (sapphire)
 	)
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/therecipe/qt/core"
 	"github.com/therecipe/qt/widgets"
 
 	"gosend/network"
@@ -431,26 +432,18 @@ func (c *controller) showTransferQueuePanel() {
 
 		layout := widgets.NewQVBoxLayout()
 		list := widgets.NewQListWidget(nil)
+		list.SetObjectName("chatList") // reuse chat-list styling
 		entries := c.transferQueueEntriesSnapshot()
 		render := func() {
 			entries = c.transferQueueEntriesSnapshot()
 			list.Clear()
 			for _, entry := range entries {
 				peerName := c.transferPeerName(entry.PeerDeviceID)
-				pct := "--"
-				if entry.TotalBytes > 0 {
-					pct = fmt.Sprintf("%.0f%%", float64(entry.BytesTransferred)*100/float64(entry.TotalBytes))
-				}
-				speed := "--"
-				if entry.SpeedBytesPerSec > 0 {
-					speed = fmt.Sprintf("%s/s", formatBytes(int64(entry.SpeedBytesPerSec)))
-				}
-				eta := "--"
-				if entry.ETASeconds > 0 {
-					eta = (time.Duration(entry.ETASeconds) * time.Second).Round(time.Second).String()
-				}
-				text := fmt.Sprintf("%s | %s\n%s | %s | %s | ETA %s", peerName, valueOrDefault(entry.Filename, entry.FileID), fileTransferStatusText(entry), pct, speed, eta)
-				_ = widgets.NewQListWidgetItem2(text, list, 0)
+				w := createTransferQueueItemWidget(entry, peerName)
+				item := widgets.NewQListWidgetItem(list, 0)
+				h := itemHeightForWidget(w, 60)
+				item.SetSizeHint(core.NewQSize2(0, h))
+				list.SetItemWidget(item, w)
 			}
 		}
 		render()

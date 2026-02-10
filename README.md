@@ -461,11 +461,11 @@ The GUI (Qt Widgets) is a single-window desktop app that wires user intent to ne
 
 Layout:
 
-- Left pane: known peers list from DB (self filtered out), plus discovery entry point. Rows use custom names, append `[Trusted]` / `[Verified]`, and show runtime state (`Connecting...`, reconnect countdown, online/offline).
-- Right pane: selected peer transcript (messages + persisted/live file transfer rows), search bar toggle (with files-only mode), transfer action row, and composer.
-- Top bar: app title, transfer queue, discovery refresh, discovery dialog, settings.
+- Left pane: known peers list from DB (self filtered out), plus discovery entry point. Each peer row is a custom styled widget with a coloured status dot (green=online, gray=offline, yellow=reconnecting), bold name, coloured pill badges (`Trusted` green, `Verified` lavender), and a secondary info line. The "PEERS" header shows an online-count badge.
+- Right pane: selected peer transcript where messages and file transfers render as styled card widgets. Message cards show a coloured sender name, timestamp, delivery marks, and word-wrapped content. File transfer cards include a direction badge (`Send File` peach, `Receive File` teal), filename, timestamp, size, colour-coded status label, an inline progress bar for active transfers, and the stored path.
+- Top bar (Mantle background): bold "GoSend" title label, icon+text toolbar buttons (Transfer Queue, Refresh Discovery, Discover, Settings).
 - Bottom status bar: runtime status text plus a far-right `Logs` button that opens runtime + security-event history.
-- Composer: multiline message editor, `Send`, `Attach Files`, and `Attach Folder` actions (`Ctrl+Enter` sends).
+- Composer: icon attach buttons (paperclip/folder), multiline message input, and a send arrow button (`Ctrl+Enter` sends). Transfer action buttons are styled as flat text buttons with icon prefixes (✕ Cancel, ↻ Retry, ↗ Show Path, ⎘ Copy Path).
 
 Runtime loops:
 
@@ -576,6 +576,7 @@ Settings:
     ├── qt_notifications_helpers.go
     ├── qt_runtime.go
     ├── qt_settings.go
+    ├── qt_styled_widgets.go
     ├── qt_theme.go
     ├── qt_types.go
     └── qt_window.go
@@ -670,5 +671,6 @@ Note: runtime logic currently uses `storage` structs directly; `models` package 
 - `ui/qt_chat_transfers.go`: Transfer state merge/update logic, transfer actions, and transfer queue dialog.
 - `ui/qt_discovery.go`: Discovery dialog lifecycle, discovered-peer state sync, reconnect helpers, and inbound decision prompts.
 - `ui/qt_settings.go`: Global device settings and per-peer settings dialogs, key reset flow, peer history clear flow.
-- `ui/qt_theme.go`: Catppuccin Mocha colour palette constants, semantic colour aliases, and full QSS stylesheet generator (`themeStyleSheet`). Swap palette constants here to re-theme the entire app.
+- `ui/qt_styled_widgets.go`: Reusable widget builders for styled peer list items (status dot + badges), message cards, file transfer cards (with progress bars), and transfer queue items. Also provides helpers for icon buttons, badge labels, and count badges.
+- `ui/qt_theme.go`: Catppuccin Mocha colour palette constants, semantic colour aliases, and full QSS stylesheet generator (`themeStyleSheet`). Includes object-name-scoped styles for toolbar, peer list, chat list, composer, action buttons, and icon buttons. Swap palette constants here to re-theme the entire app.
 - `ui/qt_notifications_helpers.go`: Runtime notifications and shared UI helpers (formatting, path open, address/fingerprint helpers, retention/size selectors).
