@@ -428,6 +428,9 @@ func (b *hintButton) MouseOut() {
 type flatButton struct {
 	widget.BaseWidget
 	icon       fyne.Resource
+	iconOn     fyne.Resource
+	iconOff    fyne.Resource
+	iconWidget *widget.Icon
 	label      string
 	labelSize  float32
 	iconSize   float32
@@ -474,6 +477,10 @@ func (r *flatButtonRenderer) Refresh() {
 		r.rect.FillColor = hover
 	} else {
 		r.rect.FillColor = color.Transparent
+	}
+	if r.btn.iconWidget != nil {
+		r.btn.iconWidget.SetResource(r.btn.currentIcon())
+		r.btn.iconWidget.Refresh()
 	}
 	r.rect.CornerRadius = 4
 	r.rect.Refresh()
@@ -577,10 +584,27 @@ func newCompactFlatButtonWithIconAndLabelState(icon fyne.Resource, label string,
 	return btn
 }
 
+func (b *flatButton) currentIcon() fyne.Resource {
+	if b.enabled {
+		if b.iconOn != nil {
+			return b.iconOn
+		}
+		return b.icon
+	}
+	if b.iconOff != nil {
+		return b.iconOff
+	}
+	if b.icon == nil {
+		return nil
+	}
+	return theme.NewDisabledResource(b.icon)
+}
+
 func (b *flatButton) CreateRenderer() fyne.WidgetRenderer {
 	rect := canvas.NewRectangle(color.Transparent)
 	rect.CornerRadius = 4
-	icon := widget.NewIcon(b.icon)
+	icon := widget.NewIcon(b.currentIcon())
+	b.iconWidget = icon
 	iconObj := fyne.CanvasObject(icon)
 	if b.iconSize > 0 {
 		iconObj = container.NewGridWrap(fyne.NewSize(b.iconSize, b.iconSize), icon)

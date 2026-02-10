@@ -70,8 +70,11 @@ type controller struct {
 	discoveredMu    sync.RWMutex
 	discovered      map[string]discovery.DiscoveredPeer
 	discoveryRows   []discovery.DiscoveredPeer
-	discoveryDialog dialog.Dialog
+	discoveryDialog *widget.PopUp
 	discoveryList   *widget.List
+	discoverySelect string
+	discoveryAddBtn *flatButton
+	discoveryAddBg  *canvas.Rectangle
 
 	chatMu            sync.RWMutex
 	chatMessages      []storage.Message

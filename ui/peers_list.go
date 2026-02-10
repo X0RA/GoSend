@@ -12,7 +12,6 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -331,6 +330,10 @@ func (c *controller) showDiscoveryDialog() {
 		return
 	}
 
+	c.discoverySelect = ""
+	c.discoveryAddBtn = nil
+	c.discoveryAddBg = nil
+
 	c.discoveryList = widget.NewList(
 		func() int {
 			c.discoveredMu.RLock()
@@ -338,38 +341,61 @@ func (c *controller) showDiscoveryDialog() {
 			return len(c.discoveryRows)
 		},
 		func() fyne.CanvasObject {
-			dot := canvas.NewCircle(colorOffline)
-			dotBox := container.NewGridWrap(fyne.NewSize(8, 8), dot)
+			rowBg := canvas.NewRectangle(color.Transparent)
+
+			statusIcon := widget.NewIcon(theme.NewDisabledResource(iconWifiOff()))
+			statusIconWrap := container.NewGridWrap(fyne.NewSize(14, 14), statusIcon)
+			statusSlot := container.New(layout.NewCustomPaddedLayout(0, 0, 0, 6), statusIconWrap)
+
 			name := widget.NewLabel("")
-			name.TextStyle = fyne.TextStyle{Bold: true}
 			name.Truncation = fyne.TextTruncateEllipsis
+
+			addedText := canvas.NewText("added", ctpBlue)
+			addedText.TextSize = 10
+			addedBg := canvas.NewRectangle(color.NRGBA{R: 137, G: 180, B: 250, A: 26})
+			addedBg.CornerRadius = 3
+			addedInner := container.New(layout.NewCustomPaddedLayout(1, 1, 4, 4), addedText)
+			addedChip := container.NewStack(addedBg, container.NewCenter(addedInner))
+			addedWrap := container.NewGridWrap(addedChip.MinSize(), addedChip)
+			addedSlot := container.New(layout.NewCustomPaddedLayout(0, 0, 6, 0), addedWrap)
+			addedWrap.Hide()
+
 			addrLabel := canvas.NewText("", ctpOverlay1)
 			addrLabel.TextSize = 11
-			status := canvas.NewText("Online", ctpGreen)
+			addrLabel.TextStyle = fyne.TextStyle{Monospace: true}
+
+			nameRow := container.NewBorder(nil, nil, nil, addedSlot, name)
+			line1 := container.NewBorder(nil, nil, statusSlot, addrLabel, nameRow)
+
+			status := canvas.NewText("Offline", ctpOverlay0)
 			status.TextSize = 11
-			line1 := container.NewHBox(name)
-			line2 := container.NewVBox(container.NewHBox(addrLabel, layout.NewSpacer(), status))
-			info := container.NewVBox(line1, line2)
-			addBtn := widget.NewButton("Add", nil)
-			addBtn.Importance = widget.HighImportance
-			return container.NewBorder(nil, nil, container.NewCenter(dotBox), addBtn, info)
+			line2 := container.New(layout.NewCustomPaddedLayout(0, 0, 20, 0), status)
+
+			info := container.New(layout.NewCustomPaddedVBoxLayout(1), line1, line2)
+			content := container.New(layout.NewCustomPaddedLayout(6, 6, 12, 12), info)
+			row := container.NewStack(rowBg, content)
+			return withBottomDivider(row)
 		},
 		func(id widget.ListItemID, object fyne.CanvasObject) {
 			row := object.(*fyne.Container)
-			if len(row.Objects) < 3 {
+			if len(row.Objects) < 2 {
 				return
 			}
-			info := row.Objects[0].(*fyne.Container)
+			body := row.Objects[0].(*fyne.Container)
+			rowBg := body.Objects[0].(*canvas.Rectangle)
+			content := body.Objects[1].(*fyne.Container)
+			info := content.Objects[0].(*fyne.Container)
 			line1 := info.Objects[0].(*fyne.Container)
 			line2 := info.Objects[1].(*fyne.Container)
-			nameLabel := line1.Objects[0].(*widget.Label)
-			addrStatusRow := line2.Objects[0].(*fyne.Container)
-			addrLabel := addrStatusRow.Objects[0].(*canvas.Text)
-			statusText := addrStatusRow.Objects[2].(*canvas.Text)
-			dotCenter := row.Objects[1].(*fyne.Container)
-			dotBox := dotCenter.Objects[0].(*fyne.Container)
-			dot := dotBox.Objects[0].(*canvas.Circle)
-			addBtn := row.Objects[2].(*widget.Button)
+			nameRow := line1.Objects[0].(*fyne.Container)
+			addrLabel := line1.Objects[2].(*canvas.Text)
+			statusText := line2.Objects[0].(*canvas.Text)
+			statusSlot := line1.Objects[1].(*fyne.Container)
+			nameLabel := nameRow.Objects[0].(*widget.Label)
+			addedSlot := nameRow.Objects[1].(*fyne.Container)
+			addedWrap := addedSlot.Objects[0].(*fyne.Container)
+			iconWrap := statusSlot.Objects[0].(*fyne.Container)
+			statusIcon := iconWrap.Objects[0].(*widget.Icon)
 
 			peer := c.discoveryPeerByIndex(int(id))
 			if peer == nil {
@@ -378,12 +404,13 @@ func (c *controller) showDiscoveryDialog() {
 				addrLabel.Refresh()
 				statusText.Text = ""
 				statusText.Refresh()
-				addBtn.Disable()
-				addBtn.OnTapped = nil
+				addedWrap.Hide()
+				rowBg.FillColor = color.Transparent
+				rowBg.Refresh()
 				return
 			}
 
-			displayName := valueOrDefault(peer.DeviceName, peer.DeviceID)
+			displayName := c.discoveryDisplayName(peer)
 			nameLabel.SetText(displayName)
 			addrPort := ""
 			if len(peer.Addresses) > 0 && peer.Port > 0 {
@@ -392,33 +419,52 @@ func (c *controller) showDiscoveryDialog() {
 			addrLabel.Text = addrPort
 			addrLabel.Refresh()
 
-			if len(peer.Addresses) > 0 {
-				dot.FillColor = ctpGreen
+			online := len(peer.Addresses) > 0
+			if online {
+				statusIcon.SetResource(theme.NewSuccessThemedResource(iconWifi()))
 				statusText.Text = "Online"
 				statusText.Color = ctpGreen
 			} else {
-				dot.FillColor = ctpOverlay0
+				statusIcon.SetResource(theme.NewDisabledResource(iconWifiOff()))
 				statusText.Text = "Offline"
 				statusText.Color = ctpOverlay0
 			}
-			dot.Refresh()
+			statusIcon.Refresh()
 			statusText.Refresh()
 
 			if c.isKnownPeer(peer.DeviceID) {
-				addBtn.SetText("added")
-				addBtn.Disable()
-				addBtn.OnTapped = nil
+				addedWrap.Show()
 			} else {
-				addBtn.SetText("Add")
-				addBtn.Enable()
-				peerCopy := *peer
-				addBtn.OnTapped = func() {
-					go c.addDiscoveredPeer(peerCopy)
-				}
+				addedWrap.Hide()
 			}
-			addBtn.Refresh()
+
+			if c.discoverySelect != "" && peer.DeviceID == c.discoverySelect {
+				rowBg.FillColor = ctpSurface0
+			} else {
+				rowBg.FillColor = color.Transparent
+			}
+			rowBg.Refresh()
 		},
 	)
+	c.discoveryList.OnSelected = func(id widget.ListItemID) {
+		peer := c.discoveryPeerByIndex(int(id))
+		if peer == nil {
+			c.discoverySelect = ""
+		} else {
+			c.discoverySelect = peer.DeviceID
+		}
+		if c.discoveryList != nil {
+			c.discoveryList.Refresh()
+		}
+		c.syncDiscoveryAddButton()
+	}
+	c.discoveryList.OnUnselected = func(widget.ListItemID) {
+		c.discoverySelect = ""
+		if c.discoveryList != nil {
+			c.discoveryList.Refresh()
+		}
+		c.syncDiscoveryAddButton()
+	}
 
 	subtitle := canvas.NewText("Peers discovered on your local network", ctpOverlay1)
 	subtitle.TextSize = 11
@@ -426,24 +472,98 @@ func (c *controller) showDiscoveryDialog() {
 	title.TextSize = 14
 	title.TextStyle = fyne.TextStyle{Bold: true}
 	headerLeft := container.NewVBox(title, subtitle)
-	refreshBtn := newRoundedHintButton("Refresh", iconRefresh(), "Refresh discovered peers", 4, ctpSurface0, func() {
+
+	closeBtn := newCompactFlatButtonWithIcon(iconCancel(), "Close discover dialog", func() {
+		c.closeDiscoveryDialog()
+	}, c.handleHoverHint)
+	closeBtn.iconSize = 14
+	closeBtn.padTop = 2
+	closeBtn.padBottom = 2
+	closeBtn.padLeft = 2
+	closeBtn.padRight = 2
+	headerRow := container.NewHBox(headerLeft, layout.NewSpacer(), closeBtn)
+	headerBg := canvas.NewRectangle(ctpMantle)
+	headerBg.SetMinSize(fyne.NewSize(1, 56))
+	header := container.NewStack(headerBg, container.New(layout.NewCustomPaddedLayout(8, 8, 12, 12), headerRow))
+
+	refreshBtn := newCompactFlatButtonWithIconAndLabel(iconRefresh(), "Refresh", "Refresh discovered peers", func() {
 		go c.refreshDiscovery()
 	}, c.handleHoverHint)
-	header := container.NewBorder(nil, nil, headerLeft, refreshBtn)
-	discoveryListPanel := newRoundedBg(ctpSurface0, 4, c.discoveryList)
-	content := container.NewBorder(
-		container.NewVBox(container.NewPadded(header), widget.NewSeparator()),
-		nil, nil, nil, container.NewPadded(discoveryListPanel),
-	)
+	refreshBtn.labelSize = 11
+	refreshBtn.iconSize = 13
+	refreshBtn.padTop = 2
+	refreshBtn.padBottom = 2
+	refreshBtn.padLeft = 8
+	refreshBtn.padRight = 8
+	refreshBtn.labelColor = ctpSubtext1
+	refreshBtn.hoverColor = ctpSurface1
+	refreshBg := canvas.NewRectangle(ctpSurface0)
+	refreshBg.CornerRadius = 4
+	refreshWrap := container.NewStack(refreshBg, refreshBtn)
 
-	c.discoveryDialog = dialog.NewCustom("Discover Peers", "Close", content, c.window)
-	c.discoveryDialog.SetOnClosed(func() {
-		c.discoveryDialog = nil
-		c.discoveryList = nil
-	})
+	c.discoveryAddBtn = newCompactFlatButtonWithIconAndLabel(iconAdd(), "Add Selected", "Add selected peer", func() {
+		peer := c.discoveryPeerByDeviceID(c.discoverySelect)
+		if !c.canAddDiscoveredPeer(peer) {
+			return
+		}
+		peerCopy := *peer
+		go c.addDiscoveredPeer(peerCopy)
+	}, c.handleHoverHint)
+	c.discoveryAddBtn.labelSize = 11
+	c.discoveryAddBtn.iconSize = 13
+	c.discoveryAddBtn.padTop = 2
+	c.discoveryAddBtn.padBottom = 2
+	c.discoveryAddBtn.padLeft = 8
+	c.discoveryAddBtn.padRight = 8
+	c.discoveryAddBg = canvas.NewRectangle(ctpSurface0)
+	c.discoveryAddBg.CornerRadius = 4
+	addWrap := container.NewStack(c.discoveryAddBg, c.discoveryAddBtn)
+
+	footerCloseBtn := newCompactFlatButtonWithIconAndLabel(iconCancel(), "Close", "Close discover dialog", func() {
+		c.closeDiscoveryDialog()
+	}, c.handleHoverHint)
+	footerCloseBtn.labelSize = 11
+	footerCloseBtn.iconSize = 13
+	footerCloseBtn.padTop = 2
+	footerCloseBtn.padBottom = 2
+	footerCloseBtn.padLeft = 8
+	footerCloseBtn.padRight = 8
+	footerCloseBtn.labelColor = ctpSubtext0
+	footerCloseBtn.hoverColor = ctpSurface1
+	footerCloseBg := canvas.NewRectangle(ctpSurface0)
+	footerCloseBg.CornerRadius = 4
+	footerCloseWrap := container.NewStack(footerCloseBg, footerCloseBtn)
+
+	footerRight := container.New(layout.NewCustomPaddedHBoxLayout(8), addWrap, footerCloseWrap)
+	footerRow := container.NewHBox(refreshWrap, layout.NewSpacer(), footerRight)
+	footerBg := canvas.NewRectangle(ctpMantle)
+	footerBg.SetMinSize(fyne.NewSize(1, 42))
+	footer := container.NewStack(footerBg, container.New(layout.NewCustomPaddedLayout(6, 6, 12, 12), footerRow))
+
+	content := newNoGapBorder(withBottomDivider(header), withTopDivider(footer), c.discoveryList)
+	panelBg := canvas.NewRectangle(ctpBase)
+	panelBg.CornerRadius = 6
+	panelBg.StrokeColor = ctpSurface1
+	panelBg.StrokeWidth = 1
+	panel := container.NewStack(panelBg, content)
+
+	popupContent := container.New(layout.NewCustomPaddedLayout(-4, -4, -4, -4), panel)
+	c.discoveryDialog = widget.NewModalPopUp(popupContent, c.window.Canvas())
 	c.refreshDiscoveryRows()
-	c.discoveryDialog.Resize(fyne.NewSize(760, 460))
+	c.syncDiscoveryAddButton()
+	c.discoveryDialog.Resize(fyne.NewSize(520, 460))
 	c.discoveryDialog.Show()
+}
+
+func (c *controller) closeDiscoveryDialog() {
+	if c.discoveryDialog != nil {
+		c.discoveryDialog.Hide()
+	}
+	c.discoveryDialog = nil
+	c.discoveryList = nil
+	c.discoverySelect = ""
+	c.discoveryAddBtn = nil
+	c.discoveryAddBg = nil
 }
 
 func (c *controller) refreshDiscoveryRows() {
@@ -453,10 +573,24 @@ func (c *controller) refreshDiscoveryRows() {
 	c.discoveryRows = rows
 	c.discoveredMu.Unlock()
 
+	if c.discoverySelect != "" && c.discoveryPeerByDeviceID(c.discoverySelect) == nil {
+		c.discoverySelect = ""
+	}
+
 	fyne.Do(func() {
 		if c.discoveryList != nil {
 			c.discoveryList.Refresh()
+			if c.discoverySelect != "" {
+				if idx := c.discoveryIndexByDeviceID(c.discoverySelect); idx >= 0 {
+					c.discoveryList.Select(idx)
+				} else {
+					c.discoveryList.UnselectAll()
+				}
+			} else {
+				c.discoveryList.UnselectAll()
+			}
 		}
+		c.syncDiscoveryAddButton()
 	})
 }
 
@@ -468,6 +602,100 @@ func (c *controller) discoveryPeerByIndex(index int) *discovery.DiscoveredPeer {
 	}
 	peer := c.discoveryRows[index]
 	return &peer
+}
+
+func (c *controller) discoveryPeerByDeviceID(deviceID string) *discovery.DiscoveredPeer {
+	deviceID = strings.TrimSpace(deviceID)
+	if deviceID == "" {
+		return nil
+	}
+
+	c.discoveredMu.RLock()
+	defer c.discoveredMu.RUnlock()
+	for i := range c.discoveryRows {
+		if c.discoveryRows[i].DeviceID == deviceID {
+			peer := c.discoveryRows[i]
+			return &peer
+		}
+	}
+	return nil
+}
+
+func (c *controller) discoveryIndexByDeviceID(deviceID string) int {
+	deviceID = strings.TrimSpace(deviceID)
+	if deviceID == "" {
+		return -1
+	}
+
+	c.discoveredMu.RLock()
+	defer c.discoveredMu.RUnlock()
+	for i := range c.discoveryRows {
+		if c.discoveryRows[i].DeviceID == deviceID {
+			return i
+		}
+	}
+	return -1
+}
+
+func (c *controller) canAddDiscoveredPeer(peer *discovery.DiscoveredPeer) bool {
+	if peer == nil {
+		return false
+	}
+	if c.isKnownPeer(peer.DeviceID) {
+		return false
+	}
+	return len(peer.Addresses) > 0
+}
+
+func (c *controller) discoveryDisplayName(peer *discovery.DiscoveredPeer) string {
+	if peer == nil {
+		return "Unknown peer"
+	}
+	name := strings.TrimSpace(peer.DeviceName)
+	if name != "" && name != "..." && !strings.EqualFold(name, "unknown peer") {
+		return name
+	}
+	if known := c.peerByID(peer.DeviceID); known != nil {
+		if knownName := strings.TrimSpace(c.peerDisplayName(known)); knownName != "" {
+			return knownName
+		}
+	}
+	if name != "" {
+		return name
+	}
+	peerID := strings.TrimSpace(peer.DeviceID)
+	if peerID == "" {
+		return "Unknown peer"
+	}
+	if len(peerID) > 18 {
+		return peerID[:8] + "..." + peerID[len(peerID)-4:]
+	}
+	return peerID
+}
+
+func (c *controller) syncDiscoveryAddButton() {
+	if c.discoveryAddBtn == nil || c.discoveryAddBg == nil {
+		return
+	}
+
+	canAdd := c.canAddDiscoveredPeer(c.discoveryPeerByDeviceID(c.discoverySelect))
+	c.discoveryAddBtn.enabled = canAdd
+	c.discoveryAddBtn.hovered = false
+	if canAdd {
+		c.discoveryAddBtn.labelColor = ctpBase
+		c.discoveryAddBtn.iconOn = theme.NewColoredResource(iconAdd(), theme.ColorNameBackground)
+		c.discoveryAddBtn.iconOff = theme.NewDisabledResource(iconAdd())
+		c.discoveryAddBtn.hoverColor = ctpLavender
+		c.discoveryAddBg.FillColor = ctpBlue
+	} else {
+		c.discoveryAddBtn.labelColor = ctpSurface2
+		c.discoveryAddBtn.iconOn = theme.NewColoredResource(iconAdd(), theme.ColorNameBackground)
+		c.discoveryAddBtn.iconOff = theme.NewDisabledResource(iconAdd())
+		c.discoveryAddBtn.hoverColor = ctpSurface0
+		c.discoveryAddBg.FillColor = ctpSurface0
+	}
+	c.discoveryAddBtn.Refresh()
+	c.discoveryAddBg.Refresh()
 }
 
 func (c *controller) addDiscoveredPeer(peer discovery.DiscoveredPeer) {
