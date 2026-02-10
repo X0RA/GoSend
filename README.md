@@ -1,8 +1,8 @@
 # GoSend — P2P Local Network Chat
 
-This README reflects the current repository state (module `gosend`) as of February 8, 2026.
+This README reflects the current repository state (module `gosend`) as of February 10, 2026.
 
-GoSend is a local-network peer-to-peer desktop app built in Go. It uses mDNS for discovery, TCP for transport, a signed handshake with ephemeral X25519 key exchange, encrypted framed traffic, SQLite persistence, and a Fyne GUI. It is designed for same-LAN usage with authenticated peers, encrypted transport, and durable local history.
+GoSend is a local-network peer-to-peer desktop app built in Go. It uses mDNS for discovery, TCP for transport, a signed handshake with ephemeral X25519 key exchange, encrypted framed traffic, SQLite persistence, and a Qt Widgets GUI. It is designed for same-LAN usage with authenticated peers, encrypted transport, and durable local history.
 
 **Runtime story:** Startup resolves data dir, loads/creates config, ensures Ed25519 identity keys, computes fingerprint, opens SQLite, then starts the GUI. The GUI starts the peer manager (TCP listener + protocol engine) and mDNS discovery (broadcast + scanner). The scanner discovers LAN peers and keeps a live cache. The user explicitly adds a discovered peer (TCP dial + signed handshake + add-request). After mutual acceptance, the peer is persisted and eligible for auto-reconnect. Messages and files are exchanged over encrypted sessions with signatures, replay checks, and persistence. If a peer goes offline, outbound messages/files are queued and resume on reconnect. On shutdown, the UI stops the manager and discovery, waits for loops, then closes the DB.
 
@@ -14,7 +14,7 @@ All roadmap phases in `PHASE-CHANGES.md` are implemented.
 - Phase 2: trust/key lifecycle cleanup (durable key-rotation decisions, structured security events, legacy X25519 config cleanup).
 - Phase 3: global + per-peer transfer policy and trust/profile settings.
 - Phase 4: network resilience and abuse protection (rate limits, jittered reconnect health scoring, mDNS privacy token, crash-resume checkpoints).
-- Phase 5: multi-file queueing, folder transfer manifests, drag-and-drop, and transfer queue management.
+- Phase 5: multi-file queueing, folder transfer manifests, and transfer queue management.
 - Phase 6: UX polish (inline transfer cards, notifications, fingerprint verification workflow, runtime state indicators, retention cleanup, chat search, hot-reload device name).
 
 ## What Is Implemented Today
@@ -37,16 +37,17 @@ All roadmap phases in `PHASE-CHANGES.md` are implemented.
 - Per-peer outbound file transfer queue (sequential send worker), queued-transfer cancel/retry, and multi-file picker enqueue flow.
 - Folder transfer envelope (`folder_transfer_request` / `folder_transfer_response`) with signed manifests, structure-preserving receive paths, and traversal-safe relative-path validation.
 - File transfer with request/accept/reject, signed chunk ack/nack + signed file completion, reconnect resume from chunk, end checksum verification, persistent transfer checkpoints for crash recovery, global receive limits/download location, and per-peer auto-accept/limit/directory overrides.
-- Chat drag-and-drop (single/multi file + folder) plus transfer queue panel with grouped active/pending visibility, speed/ETA display, cancel/retry controls, and short completed-item retention.
+- Chat file/folder enqueue via Qt file/folder pickers plus transfer queue panel with grouped active/pending visibility, speed/ETA display, cancel/retry controls, and completed-item cleanup.
 - Inline chat transfer cards are persisted from `files` metadata, show live speed/progress/status, support inline retry, and open the containing folder for completed received files.
 - Desktop notifications for incoming messages and file requests when the app is in background or another peer chat is active, with global enable/disable and per-peer mute (auto-accepted inbound transfers do not trigger file-request notifications).
-- Per-peer controls include custom names, trust level (`normal`/`trusted`), notification mute, fingerprint verification flag, trusted badge, and verified badge in the peer list.
-- Peer list state indicators include `Connecting...`, reconnect countdown (`Reconnecting in Ns...`), and inline `Transferring...` progress.
+- Per-peer controls include custom names, trust level (`normal`/`trusted`), notification mute, fingerprint verification flag, trusted badge, and verified badge in the peer list, with explicit in-dialog definitions for trust-level and out-of-band verification meaning.
+- Peer list state indicators include `Connecting...`, reconnect countdown (`Reconnecting in Ns...`), and text-only transfer state (no inline progress bar).
 - Chat search includes message `LIKE` search plus a files-only filter backed by `files` queries.
 - Configurable data retention and maintenance cleanup (messages/files/seen IDs) plus per-peer clear-history action.
 - Device-name settings hot-reload updates active protocol identity and restarts mDNS advertisement without full app restart (port changes still require restart).
 - Runtime state change callbacks refresh peer status indicators immediately while the regular 2-second poll keeps chat/history views synchronized.
-- Cross-platform GUI (Fyne) with peer list, chat pane, discovery dialog, device settings dialog, peer settings dialog, key-change prompt, file-transfer prompts/progress, and chat header color that reflects online status.
+- Cross-platform GUI (Qt Widgets via `therecipe/qt`) with peer list, chat pane, discovery dialog, transfer queue dialog, logs dialog, device settings dialog, peer settings dialog, key-change prompt, file-transfer prompts/progress, and searchable transcript.
+- Sender-side rejected transfers now emit explicit progress state updates so chat/queue rows do not remain stuck at `0%`.
 
 ## Quick Start
 
@@ -55,6 +56,9 @@ Build:
 ```bash
 make build
 ```
+
+Qt runtime note: GoSend now uses Qt Widgets via `therecipe/qt`; Qt 5/6 runtime libraries must be installed on the target system (`qmake --version` should succeed).
+At startup, GoSend resolves Qt plugin paths from `qmake -query QT_INSTALL_PLUGINS` and normalizes Linux platform selection to `xcb` when `QT_QPA_PLATFORM` is unset or requests Wayland (for example `wayland` or `wayland;xcb`), because `therecipe/qt`'s `qtbox` runtime commonly exposes `xcb` only.
 
 Run one client using default data directory:
 
@@ -99,15 +103,15 @@ go mod tidy
 
 Manual UI verification for transfer/search/notification UX:
 
-1. Drag one file into an active chat, verify a queued card appears as `Waiting...` then progresses to `complete`.
-2. Drag multiple files together, verify they preserve drop order and run sequentially.
-3. Drag a folder containing nested files + an empty subdirectory, verify receiver preserves structure.
-4. Drag mixed items (files + folders), verify all items enqueue in the original drop order.
-5. Open the transfer queue panel and verify cancel/retry actions and 30-second completed-item retention behavior.
-6. Toggle chat search, query a known message term, and verify transcript rows are filtered.
-7. Enable the files-only search filter and verify only transfer cards are shown for the selected peer.
-8. Background the app or switch to another peer chat, send a message/file request from another client, and verify desktop notifications fire (respecting per-peer mute/global toggle).
-9. In peer settings, toggle Verified and verify `[Verified]` badge appears in the peer list.
+1. In an active chat, click `Attach Files`, select one file, and verify a queued row appears as `Waiting` then progresses to `Complete`.
+2. Use `Attach Files` with multiple files and verify they preserve selection order and run sequentially.
+3. Use `Attach Folder` on a folder with nested files + an empty subdirectory and verify structure is preserved on receive.
+4. Reject an incoming file request and verify sender-side row transitions to `Rejected` (not stuck at `0%`).
+5. Open the transfer queue dialog and verify cancel/retry actions operate on selected entries.
+6. Toggle chat search, query a known term, and verify transcript rows are filtered.
+7. Enable the files-only search filter and verify only file-transfer rows are shown.
+8. Open the `Logs` button on the status bar and verify runtime + security-event entries are visible.
+9. In peer settings, confirm trust-level and verified out-of-band help text is visible and understandable.
 10. Change only device name in settings and verify no restart prompt appears and mDNS-discovered name updates on other clients.
 
 ## GitHub Release Automation
@@ -260,6 +264,7 @@ Filtering and events:
 - Known peers are resolved by verifying the rotating token against stored `(device_id, Ed25519 public key)` pairs (current hour ±1 hour skew).
 - Self entries are filtered by token verification.
 - Unknown peers are still discoverable and shown with synthetic IDs derived from instance/host/endpoint metadata.
+- mDNS instance-name escape sequences are normalized for display/storage (for example `my\\ name` is shown as `my name`).
 - Device name fallback order: mDNS instance name, hostname, then `Unknown Peer`. IPv4/IPv6 addresses are deduplicated and sorted. Events: `peer_upserted`, `peer_removed`.
 
 Integration with networking:
@@ -302,7 +307,7 @@ Outbound:
 - Each chunk retries up to `MaxChunkRetries` (default 3).
 - Outbound checkpoints are persisted to `transfer_checkpoints` every 50 chunks or 10 MB, whichever comes first.
 - Queued or active transfers can be canceled (`CancelTransfer`), and failed/rejected outbound transfers can be re-queued (`RetryTransfer`).
-- After all chunks are sent, sender sends signed `file_complete` and waits for the receiver’s signed `file_complete` (after checksum and rename). Wait uses `FileCompleteTimeout` (default 5 minutes); chunk acks use `FileResponseTimeout` (default 10s). Default chunk size 256 KiB. If the receiver’s completion arrives after the sender timed out, the sender still applies completion so the UI updates.
+- After all chunks are sent, sender sends signed `file_complete` and waits for the receiver’s signed `file_complete` (after checksum and rename). Wait uses `FileCompleteTimeout` (default 5 minutes); chunk acks and file-request accept/reject waits use `FileResponseTimeout` (default 45s). Default chunk size 256 KiB. The longer response timeout reduces duplicate incoming accept/reject prompts when users take time to decide.
 
 Inbound:
 
@@ -452,40 +457,48 @@ Indexes:
 
 ## UI Summary
 
-The GUI (Fyne) is a single-window desktop app that wires user intent to the networking, discovery, and storage layers.
+The GUI (Qt Widgets) is a single-window desktop app that wires user intent to networking, discovery, and storage.
 
 Layout:
 
-- Left pane: known peers list from DB (self filtered out), plus discovery dialog entry point. Rows use custom peer names when set, show the original device name as secondary text, append `[Trusted]` / `[Verified]` badges, and surface runtime states (`Connecting...`, reconnect countdown, transfer progress).
-- Right pane: selected peer chat transcript (messages + persisted file transfer rows), compose box, Send and Attach actions.
-- Top bar: app title, transfer queue panel, discovery refresh, settings. Bottom bar: global runtime feedback (errors, queue warnings, connect state).
-- Text messages show a copy button (clipboard icon); file/image messages do not. Chat composer is hidden until a peer is selected.
-- Chat header is clickable to show the selected peer fingerprint; its color reflects online/offline status; a peer-settings gear button appears when a peer is selected.
-- Chat header includes a search toggle; search supports content filtering and a files-only mode.
-- Composer: message box on the left, `Send` above `Attach` on the right. `Attach` supports multi-file enqueue; folders are supported via drag-and-drop. `Enter` sends; `Shift+Enter` newline.
-- Hovering key buttons (peer info, peer settings, app settings, refresh, discover, send, attach) shows a tooltip and status hint.
+- Left pane: known peers list from DB (self filtered out), plus discovery entry point. Rows use custom names, append `[Trusted]` / `[Verified]`, and show runtime state (`Connecting...`, reconnect countdown, online/offline).
+- Right pane: selected peer transcript (messages + persisted/live file transfer rows), search bar toggle (with files-only mode), transfer action row, and composer.
+- Top bar: app title, transfer queue, discovery refresh, discovery dialog, settings.
+- Bottom status bar: runtime status text plus a far-right `Logs` button that opens runtime + security-event history.
+- Composer: multiline message editor, `Send`, `Attach Files`, and `Attach Folder` actions (`Ctrl+Enter` sends).
 
 Runtime loops:
 
-- Discovery event loop: consumes mDNS scanner events and updates discovered peers.
-- Pending add-request loop: surfaces incoming add requests to the confirm dialog.
-- Manager error loop: streams async errors from the network manager to the status label.
-- Poll loop (every 2s): refreshes peer list and current chat transcript from SQLite.
+- Discovery event loop updates discovered peers and reconnect hints.
+- Pending add-request loop handles inbound peer approvals.
+- Manager error loop streams async network errors to status/logs.
+- Poll loop (every 2s) refreshes peers + current chat transcript from SQLite.
 
-Dialogs: discovery (peers + Add, dark panels), incoming peer add confirmation, incoming file accept/reject, key-change trust/deny, device settings, peer settings.
+Dialogs:
 
-Key flows: Add peer (discovery → select → dial → `peer_add_request`); incoming add (accept/reject). Message (Enter to send); files (multi-file picker → queued `SendFile`), folders (drag/drop directory → `SendFolder` manifest + queued files), transfer queue management (top-bar queue panel with cancel/retry), key change (trust/reject with fingerprints). Incoming file (auto-accept or accept/reject with name/size/type based on per-peer/global settings). Peer settings (chat-header gear → save custom name/trust/transfer policy).
+- Discovery list with `Add Selected`.
+- Incoming peer add confirmation.
+- Incoming file accept/reject.
+- Key-change trust/deny confirmation.
+- Device settings.
+- Peer settings.
+- Transfer queue.
+- Logs viewer.
+
+Key flows:
+
+- Add peer: discovery -> select -> dial -> `peer_add_request`.
+- Messaging: send text, refresh transcript, delivery marks.
+- Files/folders: multi-file picker and folder picker queue outbound transfers.
+- Queue controls: cancel/retry from chat action row and transfer queue dialog.
+- Incoming file policy: per-peer/global policy (auto-accept, size limits, directory override) with prompt fallback.
 
 Settings:
 
-- Device settings include name, port mode (`automatic`/`fixed`), fixed port, global download location, global max receive file size, notifications toggle, message retention dropdown, cleanup policy toggle, fingerprint display/copy, and key reset (regenerates Ed25519 key files and updates fingerprint).
-- Device name persists and hot-reloads at runtime (manager identity + mDNS broadcaster restart). Port changes persist immediately and require restart to rebind the listener.
-- Download location/max receive file size and retention/notification settings are persisted immediately and affect future behavior without restart.
-- Peer settings include read-only identity fields (device name/ID plus local+peer fingerprint copy), custom name, trust level, verified toggle, notifications mute, auto-accept files, max file size override, download directory override, and per-peer clear chat history.
-
-Theme:
-
-- Custom dark-leaning palette (online/offline colors, message bubbles, overlays). Tooltips use overlay management and delayed show.
+- Device settings include name, port mode/port, download location, max receive file size, notifications, retention, cleanup, fingerprint copy, key reset.
+- Peer settings include custom name, trust level, verified out-of-band toggle, notification mute, auto-accept, max file size override, download directory override, clear history.
+- Trust and verification fields include explanatory text in the dialog.
+- Max file-size semantics are explicit: global `0 = unlimited`; peer `0 = use global default`.
 
 ## Repository Layout
 
@@ -557,13 +570,14 @@ Theme:
 │   ├── testutil_test.go
 │   └── types.go
 └── ui/
-    ├── chat_window.go
-    ├── clickable_label.go
-    ├── file_handler.go
-    ├── main_window.go
-    ├── peers_list.go
-    ├── settings.go
-    └── theme.go
+    ├── qt_chat_transfers.go
+    ├── qt_chat_view.go
+    ├── qt_discovery.go
+    ├── qt_notifications_helpers.go
+    ├── qt_runtime.go
+    ├── qt_settings.go
+    ├── qt_types.go
+    └── qt_window.go
 ```
 
 ## File-by-File Reference
@@ -573,8 +587,8 @@ Theme:
 - `main.go`: Startup entrypoint. Loads/normalizes config, ensures Ed25519 key material, persists fingerprint updates, opens SQLite store, constructs local identity, and starts UI runtime.
 - `Makefile`: Convenience commands for build and non-UI test flows, plus two client run targets with isolated data dirs.
 - `.github/workflows/release-build.yml`: On release publish, builds release artifacts and uploads them to the created release as assets (Linux binary + macOS ARM `.app.zip`).
-- `tools.go`: Build-tagged dependency anchors for `fyne`, `zeroconf`, and `go-sqlite3`.
-- `go.mod`: Module `gosend`, Go version `1.25.6`, direct dependencies (Fyne, UUID, zeroconf, sqlite3, x/crypto).
+- `tools.go`: Build-tagged dependency anchors for Qt widgets, zeroconf, and sqlite3.
+- `go.mod`: Module `gosend`, Go version `1.25.6`, direct dependencies (Qt binding, UUID, zeroconf, sqlite3, x/crypto).
 - `go.sum`: Dependency checksum lockfile.
 - `AGENTS.md`: Local coding-agent instructions for this repository.
 - `README.md`: Project documentation.
@@ -648,10 +662,11 @@ Note: runtime logic currently uses `storage` structs directly; `models` package 
 
 ### `ui/`
 
-- `ui/main_window.go`: Application controller, service startup/shutdown, foreground/background lifecycle handling, event loops, status updates, dialogs, transfer queue panel, notification dispatch for incoming messages/file requests, runtime peer-state event handling, dynamic file/retention-policy wiring into `PeerManager`, and cross-layer wiring.
-- `ui/peers_list.go`: Peer list pane, discovery dialog rendering, discovered-peer add flow, peer selection, custom-name sorting/secondary labels, trusted/verified badges, and runtime state + transfer progress indicators.
-- `ui/chat_window.go`: Chat pane rendering, message send flow, multi-file/folder queueing flow, chat search (with files-only filter), transcript composition, persisted+live transfer row rendering/progress/actions (cancel/retry/speed/ETA), completed-received file folder links, custom peer-name header, and peer-settings entry point.
-- `ui/settings.go`: Device settings dialog (name, fingerprint copy, port mode/port, download location, max file size, notifications, retention, cleanup), per-peer settings dialog (custom name/trust/verified/mute/transfer overrides + clear history), hot-reload handling for name-only changes, and key reset workflow.
-- `ui/file_handler.go`: Picker/progress helper used by UI for multi-path selection and transfer progress state.
-- `ui/clickable_label.go`: Clickable label widget used by chat header for peer fingerprint interactions.
-- `ui/theme.go`: Theme/palette helpers, rounded UI primitives, and hover/tooltip button behavior.
+- `ui/qt_types.go`: Shared Qt UI constants, state structs (`RunOptions`, controller), and controller field layout.
+- `ui/qt_runtime.go`: GUI runtime bootstrap (`Run`), Qt environment setup, app/controller lifecycle, and UI event queue plumbing.
+- `ui/qt_window.go`: Main window composition (peer/chat panes), tray wiring, service startup, background loops, status/log display.
+- `ui/qt_chat_view.go`: Peer/chat interactions, transcript rendering/search, and send/attach flows.
+- `ui/qt_chat_transfers.go`: Transfer state merge/update logic, transfer actions, and transfer queue dialog.
+- `ui/qt_discovery.go`: Discovery dialog lifecycle, discovered-peer state sync, reconnect helpers, and inbound decision prompts.
+- `ui/qt_settings.go`: Global device settings and per-peer settings dialogs, key reset flow, peer history clear flow.
+- `ui/qt_notifications_helpers.go`: Runtime notifications and shared UI helpers (formatting, path open, address/fingerprint helpers, retention/size selectors).

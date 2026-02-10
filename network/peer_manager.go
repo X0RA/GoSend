@@ -41,7 +41,7 @@ const (
 	maxQueuedBytesPerPeer = 50 * 1024 * 1024
 
 	defaultFileChunkSize        = 256 * 1024
-	defaultFileResponseTimout   = 10 * time.Second
+	defaultFileResponseTimout   = 45 * time.Second
 	defaultFileCompleteTimeout  = 5 * time.Minute // receiver may need time to checksum/rename large files
 	defaultFileChunkRetries     = 3
 	defaultRekeyResponseTimeout = 15 * time.Second

@@ -324,7 +324,7 @@ func parseEntry(entry *zeroconf.ServiceEntry, cfg Config) (DiscoveredPeer, bool)
 	}
 	sort.Strings(addresses)
 
-	name := strings.TrimSpace(entry.Instance)
+	name := strings.TrimSpace(unescapeMDNSInstance(entry.Instance))
 	if name == "" {
 		name = strings.TrimSpace(entry.HostName)
 	}
@@ -361,6 +361,23 @@ func parseEntry(entry *zeroconf.ServiceEntry, cfg Config) (DiscoveredPeer, bool)
 		Port:           entry.Port,
 		Addresses:      addresses,
 	}, true
+}
+
+func unescapeMDNSInstance(instance string) string {
+	if strings.IndexByte(instance, '\\') < 0 {
+		return instance
+	}
+	out := make([]byte, 0, len(instance))
+	for i := 0; i < len(instance); i++ {
+		ch := instance[i]
+		if ch == '\\' && i+1 < len(instance) {
+			i++
+			out = append(out, instance[i])
+			continue
+		}
+		out = append(out, ch)
+	}
+	return string(out)
 }
 
 func resolveKnownPeerByToken(token string, cfg Config, now time.Time) (string, bool) {

@@ -734,9 +734,25 @@ func (m *PeerManager) runOutboundFileTransfer(runCtx context.Context, transfer *
 	if acceptResponse.Status == fileResponseStatusRejected {
 		transfer.mu.Lock()
 		transfer.Rejected = true
+		bytesSent := transfer.BytesSent
+		chunkIndex := transfer.NextChunk - 1
+		if chunkIndex < 0 {
+			chunkIndex = 0
+		}
 		transfer.mu.Unlock()
 		_ = m.options.Store.UpdateTransferStatus(transfer.FileID, "rejected")
 		m.removeTransferCheckpoint(transfer.FileID, storage.TransferDirectionSend)
+		m.emitFileProgress(FileProgress{
+			FileID:            transfer.FileID,
+			PeerDeviceID:      transfer.PeerDeviceID,
+			Direction:         fileTransferDirectionSend,
+			BytesTransferred:  bytesSent,
+			TotalBytes:        transfer.Filesize,
+			ChunkIndex:        chunkIndex,
+			TotalChunks:       transfer.TotalChunks,
+			Status:            fileResponseStatusRejected,
+			TransferCompleted: true,
+		})
 		return nil
 	}
 	if err := m.options.Store.UpdateTransferStatus(transfer.FileID, "accepted"); err != nil && !errors.Is(err, storage.ErrNotFound) {
@@ -829,9 +845,21 @@ func (m *PeerManager) runOutboundFileTransfer(runCtx context.Context, transfer *
 			if response.Status == fileResponseStatusRejected {
 				transfer.mu.Lock()
 				transfer.Rejected = true
+				bytesSent := transfer.BytesSent
 				transfer.mu.Unlock()
 				_ = m.options.Store.UpdateTransferStatus(transfer.FileID, "rejected")
 				m.removeTransferCheckpoint(transfer.FileID, storage.TransferDirectionSend)
+				m.emitFileProgress(FileProgress{
+					FileID:            transfer.FileID,
+					PeerDeviceID:      transfer.PeerDeviceID,
+					Direction:         fileTransferDirectionSend,
+					BytesTransferred:  bytesSent,
+					TotalBytes:        transfer.Filesize,
+					ChunkIndex:        chunkIndex,
+					TotalChunks:       transfer.TotalChunks,
+					Status:            fileResponseStatusRejected,
+					TransferCompleted: true,
+				})
 				return nil
 			}
 			if response.Status == fileResponseStatusChunkAck {
@@ -948,26 +976,52 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 		_ = m.sendErrorMessage(conn, "invalid_signature", "file request signature verification failed", request.FileID)
 		return
 	}
-	if !m.allowFileRequest(request.FromDeviceID, time.Now()) {
-		m.logSecurityEvent(securityEventTypeConnectionRateLimitTriggered, request.FromDeviceID, storage.SecuritySeverityWarning, map[string]any{
-			"limit_type":       "file_request_per_peer",
-			"limit_per_window": m.options.FileRequestRateLimit,
-			"window_seconds":   m.options.FileRequestWindow.Seconds(),
-		})
+
+	sendFileResponse := func(status string, resumeFrom int, message string) {
 		response := FileResponse{
 			Type:         TypeFileResponse,
 			FileID:       request.FileID,
-			Status:       fileResponseStatusRejected,
+			Status:       status,
 			FromDeviceID: m.options.Identity.DeviceID,
 			Timestamp:    time.Now().UnixMilli(),
-			Message:      "file request rate limit exceeded",
+			Message:      message,
+		}
+		if status == fileResponseStatusAccepted {
+			if resumeFrom < 0 {
+				resumeFrom = 0
+			}
+			response.ResumeFromChunk = resumeFrom
 		}
 		if err := m.signFileResponse(&response); err != nil {
 			m.reportError(err)
 			return
 		}
 		_ = conn.SendMessage(response)
+	}
+
+	if !m.allowFileRequest(request.FromDeviceID, time.Now()) {
+		m.logSecurityEvent(securityEventTypeConnectionRateLimitTriggered, request.FromDeviceID, storage.SecuritySeverityWarning, map[string]any{
+			"limit_type":       "file_request_per_peer",
+			"limit_per_window": m.options.FileRequestRateLimit,
+			"window_seconds":   m.options.FileRequestWindow.Seconds(),
+		})
+		sendFileResponse(fileResponseStatusRejected, 0, "file request rate limit exceeded")
 		return
+	}
+
+	if existingMeta, err := m.options.Store.GetFileByID(request.FileID); err == nil &&
+		existingMeta.FromDeviceID == request.FromDeviceID &&
+		existingMeta.ToDeviceID == request.ToDeviceID {
+		switch strings.ToLower(strings.TrimSpace(existingMeta.TransferStatus)) {
+		case "accepted", "pending":
+			if inbound := m.getInboundTransfer(request.FileID); inbound != nil {
+				inbound.mu.Lock()
+				resumeFrom := inbound.NextChunk
+				inbound.mu.Unlock()
+				sendFileResponse(fileResponseStatusAccepted, resumeFrom, "")
+				return
+			}
+		}
 	}
 
 	peerSettings := m.getPeerSettingsSnapshot(request.FromDeviceID)
@@ -977,19 +1031,7 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 	folderID := strings.TrimSpace(request.FolderID)
 
 	rejectWithMessage := func(message string) {
-		response := FileResponse{
-			Type:         TypeFileResponse,
-			FileID:       request.FileID,
-			Status:       fileResponseStatusRejected,
-			FromDeviceID: m.options.Identity.DeviceID,
-			Timestamp:    time.Now().UnixMilli(),
-			Message:      message,
-		}
-		if err := m.signFileResponse(&response); err != nil {
-			m.reportError(err)
-			return
-		}
-		_ = conn.SendMessage(response)
+		sendFileResponse(fileResponseStatusRejected, 0, message)
 	}
 
 	if folderID != "" {
