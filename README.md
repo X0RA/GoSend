@@ -457,7 +457,7 @@ Indexes:
 
 ## UI Summary
 
-The GUI (Qt Widgets) is a single-window desktop app that wires user intent to networking, discovery, and storage.
+The GUI (Qt Widgets) is a single-window desktop app that wires user intent to networking, discovery, and storage. The entire UI uses the **Catppuccin Mocha** dark colour theme, defined centrally in `ui/qt_theme.go`. Palette constants, semantic aliases, and a comprehensive QSS stylesheet are generated from that single file, so swapping to a different colour scheme (e.g. another Catppuccin flavour) requires editing only the colour constants.
 
 Layout:
 
@@ -576,6 +576,7 @@ Settings:
     ├── qt_notifications_helpers.go
     ├── qt_runtime.go
     ├── qt_settings.go
+    ├── qt_theme.go
     ├── qt_types.go
     └── qt_window.go
 ```
@@ -669,4 +670,5 @@ Note: runtime logic currently uses `storage` structs directly; `models` package 
 - `ui/qt_chat_transfers.go`: Transfer state merge/update logic, transfer actions, and transfer queue dialog.
 - `ui/qt_discovery.go`: Discovery dialog lifecycle, discovered-peer state sync, reconnect helpers, and inbound decision prompts.
 - `ui/qt_settings.go`: Global device settings and per-peer settings dialogs, key reset flow, peer history clear flow.
+- `ui/qt_theme.go`: Catppuccin Mocha colour palette constants, semantic colour aliases, and full QSS stylesheet generator (`themeStyleSheet`). Swap palette constants here to re-theme the entire app.
 - `ui/qt_notifications_helpers.go`: Runtime notifications and shared UI helpers (formatting, path open, address/fingerprint helpers, retention/size selectors).

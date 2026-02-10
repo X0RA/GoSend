@@ -166,15 +166,36 @@ func (c *controller) setupStyles() {
 		return
 	}
 	c.app.SetStyle2("Fusion")
-	c.app.SetStyleSheet(`
-QMainWindow { background: #10151d; }
-QWidget { color: #e7edf5; font-size: 13px; }
-QListWidget, QTextEdit, QLineEdit, QComboBox { background: #172130; border: 1px solid #2b3d56; border-radius: 6px; }
-QPushButton { background: #234161; border: 1px solid #355c88; border-radius: 6px; padding: 6px 10px; }
-QPushButton:hover { background: #2f5380; }
-QPushButton:disabled { background: #2b3544; color: #7f8a98; }
-QStatusBar { background: #0f1722; border-top: 1px solid #223246; }
-`)
+
+	// Apply the Catppuccin Mocha dark palette via a Fusion QPalette so
+	// native dialogs (QMessageBox, QFileDialog, etc.) that ignore QSS
+	// still render with dark colours.
+	palette := gui.NewQPalette()
+	palette.SetColor2(gui.QPalette__Window, gui.NewQColor3(30, 30, 46, 255))
+	palette.SetColor2(gui.QPalette__WindowText, gui.NewQColor3(205, 214, 244, 255))
+	palette.SetColor2(gui.QPalette__Base, gui.NewQColor3(49, 50, 68, 255))
+	palette.SetColor2(gui.QPalette__AlternateBase, gui.NewQColor3(69, 71, 90, 255))
+	palette.SetColor2(gui.QPalette__ToolTipBase, gui.NewQColor3(69, 71, 90, 255))
+	palette.SetColor2(gui.QPalette__ToolTipText, gui.NewQColor3(205, 214, 244, 255))
+	palette.SetColor2(gui.QPalette__Text, gui.NewQColor3(205, 214, 244, 255))
+	palette.SetColor2(gui.QPalette__Button, gui.NewQColor3(88, 91, 112, 255))
+	palette.SetColor2(gui.QPalette__ButtonText, gui.NewQColor3(205, 214, 244, 255))
+	palette.SetColor2(gui.QPalette__BrightText, gui.NewQColor3(243, 139, 168, 255))
+	palette.SetColor2(gui.QPalette__Highlight, gui.NewQColor3(137, 180, 250, 255))
+	palette.SetColor2(gui.QPalette__HighlightedText, gui.NewQColor3(17, 17, 27, 255))
+	palette.SetColor2(gui.QPalette__Link, gui.NewQColor3(137, 180, 250, 255))
+	palette.SetColor2(gui.QPalette__LinkVisited, gui.NewQColor3(180, 190, 254, 255))
+
+	// Disabled group
+	palette.SetColor(gui.QPalette__Disabled, gui.QPalette__WindowText, gui.NewQColor3(108, 112, 134, 255))
+	palette.SetColor(gui.QPalette__Disabled, gui.QPalette__Text, gui.NewQColor3(108, 112, 134, 255))
+	palette.SetColor(gui.QPalette__Disabled, gui.QPalette__ButtonText, gui.NewQColor3(108, 112, 134, 255))
+	palette.SetColor(gui.QPalette__Disabled, gui.QPalette__Button, gui.NewQColor3(69, 71, 90, 255))
+
+	c.app.SetPalette(palette, "")
+
+	// Layer detailed QSS on top for border-radius, padding, and fine control.
+	c.app.SetStyleSheet(themeStyleSheet())
 }
 
 func configureQtEnvironment() {
