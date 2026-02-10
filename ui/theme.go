@@ -55,6 +55,182 @@ func newRoundedBg(bgColor color.Color, radius float32, content fyne.CanvasObject
 	return container.NewStack(bg, container.NewPadded(content))
 }
 
+// newThinDivider renders a 1px horizontal divider line to match the mockup style.
+func newThinDivider() fyne.CanvasObject {
+	line := canvas.NewRectangle(ctpSurface0)
+	line.SetMinSize(fyne.NewSize(1, 1))
+	return line
+}
+
+// withBottomDivider docks a 1px divider directly under content with no extra spacing.
+func withBottomDivider(content fyne.CanvasObject) fyne.CanvasObject {
+	return container.New(&edgeDividerLayout{atTop: false}, content, newThinDivider())
+}
+
+// withTopDivider docks a 1px divider directly above content with no extra spacing.
+func withTopDivider(content fyne.CanvasObject) fyne.CanvasObject {
+	return container.New(&edgeDividerLayout{atTop: true}, content, newThinDivider())
+}
+
+// newVNoGap stacks children vertically with no inter-item spacing.
+func newVNoGap(objects ...fyne.CanvasObject) *fyne.Container {
+	return container.New(&vNoGapLayout{}, objects...)
+}
+
+// newNoGapBorder lays out top, center, bottom regions with zero inter-region padding.
+func newNoGapBorder(top, bottom, center fyne.CanvasObject) fyne.CanvasObject {
+	if top == nil {
+		top = canvas.NewRectangle(color.Transparent)
+	}
+	if bottom == nil {
+		bottom = canvas.NewRectangle(color.Transparent)
+	}
+	if center == nil {
+		center = canvas.NewRectangle(color.Transparent)
+	}
+	return container.New(&noGapBorderLayout{}, top, center, bottom)
+}
+
+type edgeDividerLayout struct {
+	atTop bool
+}
+
+func (l *edgeDividerLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	if len(objects) < 2 {
+		return
+	}
+	content := objects[0]
+	divider := objects[1]
+	dividerHeight := divider.MinSize().Height
+	if dividerHeight < 1 {
+		dividerHeight = 1
+	}
+	if dividerHeight > size.Height {
+		dividerHeight = size.Height
+	}
+
+	if l.atTop {
+		divider.Move(fyne.NewPos(0, 0))
+		divider.Resize(fyne.NewSize(size.Width, dividerHeight))
+		content.Move(fyne.NewPos(0, dividerHeight))
+		content.Resize(fyne.NewSize(size.Width, size.Height-dividerHeight))
+		return
+	}
+
+	content.Move(fyne.NewPos(0, 0))
+	content.Resize(fyne.NewSize(size.Width, size.Height-dividerHeight))
+	divider.Move(fyne.NewPos(0, size.Height-dividerHeight))
+	divider.Resize(fyne.NewSize(size.Width, dividerHeight))
+}
+
+func (l *edgeDividerLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	if len(objects) < 2 {
+		return fyne.NewSize(0, 0)
+	}
+	contentMin := objects[0].MinSize()
+	dividerMin := objects[1].MinSize()
+	width := contentMin.Width
+	if dividerMin.Width > width {
+		width = dividerMin.Width
+	}
+	return fyne.NewSize(width, contentMin.Height+dividerMin.Height)
+}
+
+type vNoGapLayout struct{}
+
+func (l *vNoGapLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	y := float32(0)
+	for _, obj := range objects {
+		if obj == nil || !obj.Visible() {
+			continue
+		}
+		h := obj.MinSize().Height
+		obj.Move(fyne.NewPos(0, y))
+		obj.Resize(fyne.NewSize(size.Width, h))
+		y += h
+	}
+}
+
+func (l *vNoGapLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	width := float32(0)
+	height := float32(0)
+	for _, obj := range objects {
+		if obj == nil || !obj.Visible() {
+			continue
+		}
+		min := obj.MinSize()
+		if min.Width > width {
+			width = min.Width
+		}
+		height += min.Height
+	}
+	return fyne.NewSize(width, height)
+}
+
+type noGapBorderLayout struct{}
+
+func (l *noGapBorderLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	if len(objects) < 3 {
+		return
+	}
+	top := objects[0]
+	center := objects[1]
+	bottom := objects[2]
+
+	topHeight := objectVisibleMinHeight(top)
+	bottomHeight := objectVisibleMinHeight(bottom)
+
+	if topHeight+bottomHeight > size.Height {
+		scale := size.Height / (topHeight + bottomHeight)
+		topHeight *= scale
+		bottomHeight *= scale
+	}
+	centerHeight := size.Height - topHeight - bottomHeight
+	if centerHeight < 0 {
+		centerHeight = 0
+	}
+
+	top.Move(fyne.NewPos(0, 0))
+	top.Resize(fyne.NewSize(size.Width, topHeight))
+
+	center.Move(fyne.NewPos(0, topHeight))
+	center.Resize(fyne.NewSize(size.Width, centerHeight))
+
+	bottom.Move(fyne.NewPos(0, topHeight+centerHeight))
+	bottom.Resize(fyne.NewSize(size.Width, bottomHeight))
+}
+
+func (l *noGapBorderLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	if len(objects) < 3 {
+		return fyne.NewSize(0, 0)
+	}
+	top := objects[0]
+	center := objects[1]
+	bottom := objects[2]
+
+	topMin := top.MinSize()
+	centerMin := center.MinSize()
+	bottomMin := bottom.MinSize()
+
+	width := topMin.Width
+	if centerMin.Width > width {
+		width = centerMin.Width
+	}
+	if bottomMin.Width > width {
+		width = bottomMin.Width
+	}
+
+	height := objectVisibleMinHeight(top) + objectVisibleMinHeight(center) + objectVisibleMinHeight(bottom)
+	return fyne.NewSize(width, height)
+}
+
+func objectVisibleMinHeight(obj fyne.CanvasObject) float32 {
+	if obj == nil || !obj.Visible() {
+		return 0
+	}
+	return obj.MinSize().Height
+}
+
 type roundedButton struct {
 	*fyne.Container
 	button        *widget.Button

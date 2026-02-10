@@ -451,11 +451,7 @@ func (c *controller) buildMainWindow() {
 	// Use custom insets (2px vertical, 12px horizontal) to keep the bar thin
 	statusInner := container.New(layout.NewCustomPaddedLayout(2, 2, 12, 12), statusRow)
 	statusBar := container.NewStack(statusBg, statusInner)
-	content := container.NewBorder(
-		container.NewVBox(toolbar, widget.NewSeparator()),
-		container.NewVBox(widget.NewSeparator(), statusBar),
-		nil, nil, split,
-	)
+	content := newNoGapBorder(withBottomDivider(toolbar), withTopDivider(statusBar), split)
 	c.window.SetContent(content)
 }
 

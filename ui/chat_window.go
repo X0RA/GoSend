@@ -162,11 +162,10 @@ func (c *controller) buildChatPane() fyne.CanvasObject {
 	c.chatComposer = container.NewStack(composerBg, composerInner)
 	c.chatComposer.Hide()
 
-	base := container.NewBorder(
-		container.NewVBox(header, c.chatSearchBar, widget.NewSeparator()),
-		container.NewVBox(widget.NewSeparator(), c.chatComposer),
-		nil, nil, scrollWithBg,
-	)
+	topArea := withBottomDivider(newVNoGap(header, c.chatSearchBar))
+	bottomArea := withTopDivider(c.chatComposer)
+
+	base := newNoGapBorder(topArea, bottomArea, scrollWithBg)
 
 	dropBg := canvas.NewRectangle(color.NRGBA{R: 76, G: 175, B: 80, A: 36})
 	dropBg.StrokeColor = colorOnline
