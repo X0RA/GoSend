@@ -14,12 +14,23 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"gosend/discovery"
 	"gosend/network"
 	"gosend/storage"
 )
+
+func newPeerBadge(label string, textColor, bgColor color.Color) *fyne.Container {
+	text := canvas.NewText(label, textColor)
+	text.TextSize = 9
+	bg := canvas.NewRectangle(bgColor)
+	bg.CornerRadius = 2
+	inner := container.New(layout.NewCustomPaddedLayout(0, 0, 4, 4), text)
+	chip := container.NewStack(bg, container.NewCenter(inner))
+	return container.NewGridWrap(chip.MinSize(), chip)
+}
 
 func (c *controller) buildPeersListPane() fyne.CanvasObject {
 	c.peerList = widget.NewList(
@@ -29,54 +40,61 @@ func (c *controller) buildPeersListPane() fyne.CanvasObject {
 			return len(c.peers)
 		},
 		func() fyne.CanvasObject {
+			const dotSize = float32(8)
+			const dotLeftInset = float32(6)
+			nameIndent := dotLeftInset + dotSize + float32(theme.Padding())
+
 			leftBar := canvas.NewRectangle(ctpSurface0)
 			leftBar.SetMinSize(fyne.NewSize(2, 1))
+
 			dot := canvas.NewCircle(colorOffline)
-			dotBox := container.NewGridWrap(fyne.NewSize(8, 8), dot)
+			dotBox := container.NewGridWrap(fyne.NewSize(dotSize, dotSize), dot)
+			dotSlot := container.New(layout.NewCustomPaddedLayout(0, 0, dotLeftInset, 0), dotBox)
+			dotAligned := container.NewCenter(dotSlot)
+
 			name := widget.NewLabel("")
 			name.Truncation = fyne.TextTruncateEllipsis
+
 			// Mockup: device names non-bold; Trusted/Verified as separate colored badges
-			trustedBg := canvas.NewRectangle(color.NRGBA{R: 148, G: 226, B: 213, A: 26})
-			trustedBg.CornerRadius = 2
-			trustedLbl := canvas.NewText("Trusted", ctpTeal)
-			trustedLbl.TextSize = 10
-			trustedBadge := container.NewStack(trustedBg, container.NewCenter(trustedLbl))
-			verifiedBg := canvas.NewRectangle(color.NRGBA{R: 166, G: 227, B: 161, A: 26})
-			verifiedBg.CornerRadius = 2
-			verifiedLbl := canvas.NewText("Verified", ctpGreen)
-			verifiedLbl.TextSize = 10
-			verifiedBadge := container.NewStack(verifiedBg, container.NewCenter(verifiedLbl))
-			// Use Border so name (center) gets remaining space; badges on the right
+			trustedBadge := newPeerBadge("Trusted", ctpTeal, color.NRGBA{R: 148, G: 226, B: 213, A: 26})
+			verifiedBadge := newPeerBadge("Verified", ctpGreen, color.NRGBA{R: 166, G: 227, B: 161, A: 26})
 			badges := container.NewHBox(trustedBadge, verifiedBadge)
-			row1 := container.NewBorder(nil, nil, nil, badges, name)
+			badgesAligned := container.NewCenter(badges)
+			row1 := container.NewBorder(nil, nil, dotAligned, badgesAligned, name)
+
 			status := canvas.NewText("Offline", colorMuted)
 			status.TextSize = 11
-			info := container.NewVBox(row1, status)
-			rightPart := container.NewBorder(nil, nil, container.NewCenter(dotBox), nil, info)
-			return container.NewBorder(nil, nil, leftBar, nil, rightPart)
+			statusIndent := canvas.NewRectangle(color.Transparent)
+			statusIndent.SetMinSize(fyne.NewSize(nameIndent, 1))
+			statusRow := container.NewHBox(statusIndent, status)
+			info := container.NewVBox(row1, statusRow)
+
+			return container.NewBorder(nil, nil, leftBar, nil, info)
 		},
 		func(id widget.ListItemID, object fyne.CanvasObject) {
 			row := object.(*fyne.Container)
-			// Border stores only non-nil children; row = Border(nil, nil, leftBar, nil, rightPart) -> 2 objects
-			rightPart := row.Objects[0].(*fyne.Container)
+			// Border stores only non-nil children; row = Border(nil, nil, leftBar, nil, info) -> 2 objects
+			info := row.Objects[0].(*fyne.Container)
 			leftBar := row.Objects[1].(*canvas.Rectangle)
-			// rightPart = Border(nil, nil, dotCenter, nil, info)
-			// Fyne stores: Objects[0]=center (info), Objects[1]=left (dotCenter)
-			// rightPart = Border(nil, nil, dotCenter, nil, info)
-			// Fyne stores: Objects[0]=center(info), Objects[1]=left(dotCenter)
-			info := rightPart.Objects[0].(*fyne.Container)
-			dotCenter := rightPart.Objects[1].(*fyne.Container)
-			dotBox := dotCenter.Objects[0].(*fyne.Container)
-			dot := dotBox.Objects[0].(*canvas.Circle)
-			// info = VBox(row1, status)
-			// row1 = Border(nil, nil, nil, badges, name)
-			// Fyne stores: Objects[0]=center(name), Objects[1]=right(badges)
+
+			// info = VBox(row1, statusRow)
 			row1 := info.Objects[0].(*fyne.Container)
+			statusRow := info.Objects[1].(*fyne.Container)
+
+			// row1 = Border(nil, nil, dotAligned, badgesAligned, name)
+			// Fyne stores: center(name), left(dotAligned), right(badgesAligned)
 			name := row1.Objects[0].(*widget.Label)
-			badges := row1.Objects[1].(*fyne.Container)
+			dotAligned := row1.Objects[1].(*fyne.Container)
+			badgesAligned := row1.Objects[2].(*fyne.Container)
+			dotSlot := dotAligned.Objects[0].(*fyne.Container)
+			badges := badgesAligned.Objects[0].(*fyne.Container)
+			dotBox := dotSlot.Objects[0].(*fyne.Container)
+			dot := dotBox.Objects[0].(*canvas.Circle)
 			trustedBadge := badges.Objects[0].(*fyne.Container)
 			verifiedBadge := badges.Objects[1].(*fyne.Container)
-			status := info.Objects[1].(*canvas.Text)
+
+			// statusRow = HBox(statusIndent, status)
+			status := statusRow.Objects[1].(*canvas.Text)
 
 			peer := c.peerByIndex(int(id))
 			if peer == nil {
@@ -157,7 +175,12 @@ func (c *controller) buildPeersListPane() fyne.CanvasObject {
 	countBadge := canvas.NewText(fmt.Sprintf("%d", onlineCount), ctpOverlay1)
 	countBadge.TextSize = 12
 	c.peersOnlineCountText = countBadge
-	countWrap := container.NewPadded(container.NewStack(canvas.NewRectangle(ctpSurface0), container.NewCenter(countBadge)))
+	countBg := canvas.NewRectangle(ctpSurface0)
+	countBg.CornerRadius = 3
+	countWrap := container.NewGridWrap(
+		fyne.NewSize(20, 20),
+		container.NewStack(countBg, container.NewCenter(countBadge)),
+	)
 	topBar := container.NewBorder(nil, nil, container.NewCenter(heading), countWrap)
 	headerBar := container.NewVBox(container.NewPadded(topBar), widget.NewSeparator())
 
