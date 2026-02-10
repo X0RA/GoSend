@@ -417,7 +417,7 @@ func (c *controller) buildMainWindow() {
 	split.Offset = 0.28
 
 	appTitle := canvas.NewText("GoSend", ctpBlue)
-	appTitle.TextStyle = fyne.TextStyle{Bold: true}
+	appTitle.TextStyle = fyne.TextStyle{}
 	appTitle.TextSize = 14
 	sep := canvas.NewRectangle(ctpSurface2)
 	sep.SetMinSize(fyne.NewSize(1, 20))
