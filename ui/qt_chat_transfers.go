@@ -428,11 +428,30 @@ func (c *controller) showTransferQueuePanel() {
 	c.enqueueUI(func() {
 		dlg := widgets.NewQDialog(c.window, 0)
 		dlg.SetWindowTitle("Transfer Queue")
-		dlg.Resize2(860, 540)
+		dlg.Resize2(760, 520)
 
 		layout := widgets.NewQVBoxLayout()
+		layout.SetContentsMargins(0, 0, 0, 0)
+		layout.SetSpacing(0)
+
+		// ── Header (mockup: mantle bg, title + subtitle) ────
+		header := widgets.NewQWidget(nil, 0)
+		header.SetObjectName("dialogHeader")
+		headerLayout := widgets.NewQHBoxLayout()
+		headerLayout.SetContentsMargins(16, 10, 16, 10)
+		headerLayout.SetSpacing(0)
+		headerInfo := widgets.NewQVBoxLayout()
+		headerInfo.SetContentsMargins(0, 0, 0, 0)
+		headerInfo.SetSpacing(2)
+		titleLbl := widgets.NewQLabel2("Transfer Queue", nil, 0)
+		titleLbl.SetStyleSheet(fmt.Sprintf("color: %s; font-size: 13px; font-weight: bold; background: transparent;", colorText))
+		headerInfo.AddWidget(titleLbl, 0, 0)
+		headerLayout.AddLayout(headerInfo, 1)
+		header.SetLayout(headerLayout)
+
+		// ── List ────────────────────────────────────────────
 		list := widgets.NewQListWidget(nil)
-		list.SetObjectName("chatList") // reuse chat-list styling
+		list.SetObjectName("chatList")
 		entries := c.transferQueueEntriesSnapshot()
 		render := func() {
 			entries = c.transferQueueEntriesSnapshot()
@@ -448,14 +467,21 @@ func (c *controller) showTransferQueuePanel() {
 		}
 		render()
 
-		btnRow := widgets.NewQWidget(nil, 0)
+		// ── Footer (mockup: mantle bg, action buttons) ──────
+		footer := widgets.NewQWidget(nil, 0)
+		footer.SetObjectName("dialogFooter")
 		btnLayout := widgets.NewQHBoxLayout()
-		btnLayout.SetContentsMargins(0, 0, 0, 0)
-		btnLayout.SetSpacing(6)
+		btnLayout.SetContentsMargins(16, 10, 16, 10)
+		btnLayout.SetSpacing(8)
+
 		cancelBtn := widgets.NewQPushButton2("Cancel Selected", nil)
+		cancelBtn.SetObjectName("secondaryBtn")
 		retryBtn := widgets.NewQPushButton2("Retry Selected", nil)
+		retryBtn.SetObjectName("secondaryBtn")
 		clearBtn := widgets.NewQPushButton2("Clear Completed", nil)
+		clearBtn.SetObjectName("secondaryBtn")
 		closeBtn := widgets.NewQPushButton2("Close", nil)
+		closeBtn.SetObjectName("primaryBtn")
 
 		cancelBtn.ConnectClicked(func(bool) {
 			idx := list.CurrentRow()
@@ -484,10 +510,11 @@ func (c *controller) showTransferQueuePanel() {
 		btnLayout.AddWidget(clearBtn, 0, 0)
 		btnLayout.AddStretch(1)
 		btnLayout.AddWidget(closeBtn, 0, 0)
-		btnRow.SetLayout(btnLayout)
+		footer.SetLayout(btnLayout)
 
+		layout.AddWidget(header, 0, 0)
 		layout.AddWidget(list, 1, 0)
-		layout.AddWidget(btnRow, 0, 0)
+		layout.AddWidget(footer, 0, 0)
 		dlg.SetLayout(layout)
 		dlg.Exec()
 		runtime.KeepAlive(cancelBtn)

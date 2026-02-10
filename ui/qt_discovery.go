@@ -23,14 +23,38 @@ func (c *controller) showDiscoveryDialog() {
 		}
 		dlg := widgets.NewQDialog(c.window, 0)
 		dlg.SetWindowTitle("Discover Peers")
-		dlg.Resize2(760, 460)
+		dlg.Resize2(520, 460)
 
 		layout := widgets.NewQVBoxLayout()
-		subtitle := widgets.NewQLabel2("Peers discovered on your local network", nil, 0)
+		layout.SetContentsMargins(0, 0, 0, 0)
+		layout.SetSpacing(0)
+
+		// ── Header bar ──────────────────────────────────────
+		discHeader := widgets.NewQWidget(nil, 0)
+		discHeader.SetObjectName("dialogHeader")
+		discHdrLayout := widgets.NewQHBoxLayout()
+		discHdrLayout.SetContentsMargins(16, 10, 16, 10)
+		discHdrInfo := widgets.NewQVBoxLayout()
+		discHdrInfo.SetContentsMargins(0, 0, 0, 0)
+		discHdrInfo.SetSpacing(2)
+		discTitle := widgets.NewQLabel2("Discover Peers", nil, 0)
+		discTitle.SetStyleSheet(fmt.Sprintf("color: %s; font-size: 13px; font-weight: bold; background: transparent;", colorText))
+		discSubtitle := widgets.NewQLabel2("Peers discovered on your local network", nil, 0)
+		discSubtitle.SetStyleSheet(fmt.Sprintf("color: %s; font-size: 11px; background: transparent;", colorOverlay1))
+		discHdrInfo.AddWidget(discTitle, 0, 0)
+		discHdrInfo.AddWidget(discSubtitle, 0, 0)
+		discHdrLayout.AddLayout(discHdrInfo, 1)
+		discHeader.SetLayout(discHdrLayout)
+		layout.AddWidget(discHeader, 0, 0)
+
 		list := widgets.NewQListWidget(nil)
-		refreshBtn := widgets.NewQPushButton2("Refresh", nil)
-		addBtn := widgets.NewQPushButton2("Add Selected", nil)
+		list.SetObjectName("chatList")
+		refreshBtn := widgets.NewQPushButton2("↻ Refresh", nil)
+		refreshBtn.SetObjectName("secondaryBtn")
+		addBtn := widgets.NewQPushButton2("+ Add Selected", nil)
+		addBtn.SetObjectName("primaryBtn")
 		closeBtn := widgets.NewQPushButton2("Close", nil)
+		closeBtn.SetObjectName("secondaryBtn")
 
 		render := func() {
 			list.Clear()
@@ -70,19 +94,20 @@ func (c *controller) showDiscoveryDialog() {
 		closeBtn.ConnectClicked(func(bool) { dlg.Accept() })
 		c.hold(refreshBtn, addBtn, closeBtn)
 
-		btnRow := widgets.NewQWidget(nil, 0)
+		// ── Footer bar ──────────────────────────────────────
+		discFooter := widgets.NewQWidget(nil, 0)
+		discFooter.SetObjectName("dialogFooter")
 		btnLayout := widgets.NewQHBoxLayout()
-		btnLayout.SetContentsMargins(0, 0, 0, 0)
-		btnLayout.SetSpacing(6)
+		btnLayout.SetContentsMargins(16, 10, 16, 10)
+		btnLayout.SetSpacing(8)
 		btnLayout.AddWidget(refreshBtn, 0, 0)
-		btnLayout.AddWidget(addBtn, 0, 0)
 		btnLayout.AddStretch(1)
+		btnLayout.AddWidget(addBtn, 0, 0)
 		btnLayout.AddWidget(closeBtn, 0, 0)
-		btnRow.SetLayout(btnLayout)
+		discFooter.SetLayout(btnLayout)
 
-		layout.AddWidget(subtitle, 0, 0)
 		layout.AddWidget(list, 1, 0)
-		layout.AddWidget(btnRow, 0, 0)
+		layout.AddWidget(discFooter, 0, 0)
 		dlg.SetLayout(layout)
 
 		dlg.ConnectFinished(func(int) {

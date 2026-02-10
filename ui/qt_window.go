@@ -24,15 +24,22 @@ func (c *controller) buildMainWindow() {
 	mainLayout.SetContentsMargins(0, 0, 0, 0)
 	mainLayout.SetSpacing(0)
 
-	// ── Toolbar ──────────────────────────────────────────────
+	// ── Toolbar (mockup: mantle bg, blue title, separator, transparent buttons) ─
 	toolbar := widgets.NewQWidget(nil, 0)
 	toolbar.SetObjectName("toolbar")
+	toolbar.SetFixedHeight(40)
 	toolbarLayout := widgets.NewQHBoxLayout()
-	toolbarLayout.SetContentsMargins(12, 6, 12, 6)
-	toolbarLayout.SetSpacing(8)
+	toolbarLayout.SetContentsMargins(12, 0, 12, 0)
+	toolbarLayout.SetSpacing(6)
 
 	title := widgets.NewQLabel2("GoSend", nil, 0)
 	title.SetObjectName("toolbarTitle")
+
+	// Vertical separator between title and buttons.
+	sep := widgets.NewQFrame(nil, 0)
+	sep.SetObjectName("toolbarSep")
+	sep.SetFrameShape(widgets.QFrame__VLine)
+	sep.SetFixedSize2(1, 20)
 
 	queueBtn := widgets.NewQPushButton2("⇄  Transfer Queue", nil)
 	queueBtn.SetObjectName("toolbarBtn")
@@ -46,13 +53,14 @@ func (c *controller) buildMainWindow() {
 	settingsBtn := widgets.NewQPushButton2("⚙  Settings", nil)
 	settingsBtn.SetObjectName("toolbarBtn")
 	settingsBtn.ConnectClicked(func(bool) { c.showSettingsDialog() })
-	c.hold(queueBtn, refreshBtn, discoverBtn, settingsBtn)
+	c.hold(queueBtn, refreshBtn, discoverBtn, settingsBtn, sep)
 
 	toolbarLayout.AddWidget(title, 0, 0)
-	toolbarLayout.AddStretch(1)
+	toolbarLayout.AddWidget(sep, 0, core.Qt__AlignVCenter)
 	toolbarLayout.AddWidget(queueBtn, 0, 0)
 	toolbarLayout.AddWidget(refreshBtn, 0, 0)
 	toolbarLayout.AddWidget(discoverBtn, 0, 0)
+	toolbarLayout.AddStretch(1)
 	toolbarLayout.AddWidget(settingsBtn, 0, 0)
 	toolbar.SetLayout(toolbarLayout)
 
@@ -70,10 +78,11 @@ func (c *controller) buildMainWindow() {
 	central.SetLayout(mainLayout)
 	c.window.SetCentralWidget(central)
 
-	// ── Status bar ───────────────────────────────────────────
+	// ── Status bar (mockup: crust bg, 11px overlay1 text) ───
 	c.statusBar = widgets.NewQStatusBar(c.window)
+	c.statusBar.SetFixedHeight(28)
 	c.statusLabel = widgets.NewQLabel2("Starting...", nil, 0)
-	logsBtn := widgets.NewQPushButton2("⊟  Logs", nil)
+	logsBtn := widgets.NewQPushButton2("📜 Logs", nil)
 	logsBtn.ConnectClicked(func(bool) { c.showLogsDialog() })
 	c.hold(logsBtn)
 	c.statusBar.AddWidget(c.statusLabel, 1)
@@ -102,22 +111,23 @@ func (c *controller) initTrayIcon() {
 
 func (c *controller) buildPeersPane() *widgets.QWidget {
 	pane := widgets.NewQWidget(nil, 0)
+	pane.SetObjectName("peersPane")
 	layout := widgets.NewQVBoxLayout()
-	layout.SetContentsMargins(0, 4, 0, 0)
-	layout.SetSpacing(4)
+	layout.SetContentsMargins(0, 0, 0, 0)
+	layout.SetSpacing(0)
 
-	// Header row: "PEERS" label + count badge.
+	// Header row: "PEERS" label + online count (mockup: uppercase, overlay2).
 	headerRow := widgets.NewQWidget(nil, 0)
 	headerLayout := widgets.NewQHBoxLayout()
-	headerLayout.SetContentsMargins(10, 4, 10, 0)
-	headerLayout.SetSpacing(6)
+	headerLayout.SetContentsMargins(12, 8, 12, 4)
+	headerLayout.SetSpacing(0)
 
 	header := widgets.NewQLabel2("PEERS", nil, 0)
 	header.SetObjectName("peersHeaderLabel")
 	c.peerCountBadge = newCountBadge(0)
 	headerLayout.AddWidget(header, 0, 0)
-	headerLayout.AddWidget(c.peerCountBadge, 0, 0)
 	headerLayout.AddStretch(1)
+	headerLayout.AddWidget(c.peerCountBadge, 0, 0)
 	headerRow.SetLayout(headerLayout)
 
 	c.peerList = widgets.NewQListWidget(nil)
@@ -133,19 +143,21 @@ func (c *controller) buildPeersPane() *widgets.QWidget {
 func (c *controller) buildChatPane() *widgets.QWidget {
 	pane := widgets.NewQWidget(nil, 0)
 	layout := widgets.NewQVBoxLayout()
-	layout.SetContentsMargins(4, 4, 4, 4)
-	layout.SetSpacing(4)
+	layout.SetContentsMargins(0, 0, 0, 0)
+	layout.SetSpacing(0)
 
-	// ── Chat header ──────────────────────────────────────────
+	// ── Chat header (mockup: mantle bg, bottom border) ──────
 	headerRow := widgets.NewQWidget(nil, 0)
+	headerRow.SetObjectName("chatHeader")
+	headerRow.SetFixedHeight(44)
 	headerLayout := widgets.NewQHBoxLayout()
-	headerLayout.SetContentsMargins(8, 4, 4, 4)
-	headerLayout.SetSpacing(8)
+	headerLayout.SetContentsMargins(16, 0, 8, 0)
+	headerLayout.SetSpacing(12)
 
 	c.chatHeader = widgets.NewQLabel2("Select a peer to start chatting", nil, 0)
-	c.chatHeader.SetStyleSheet(fmt.Sprintf("color: %s; font-size: 14px; font-weight: bold; background: transparent;", colorText))
+	c.chatHeader.SetStyleSheet(fmt.Sprintf("color: %s; font-size: 13px; background: transparent;", colorText))
 	c.chatFingerprint = widgets.NewQLabel2("", nil, 0)
-	c.chatFingerprint.SetStyleSheet(fmt.Sprintf("color: %s; font-size: 12px; background: transparent;", colorSubtext0))
+	c.chatFingerprint.SetStyleSheet(fmt.Sprintf("color: %s; font-size: 11px; background: transparent;", colorOverlay1))
 
 	c.searchBtn = newIconButton("⌕", "Search messages")
 	c.searchBtn.ConnectClicked(func(bool) { c.toggleChatSearch() })
@@ -161,11 +173,12 @@ func (c *controller) buildChatPane() *widgets.QWidget {
 	headerLayout.AddWidget(c.peerSettingsBtn, 0, 0)
 	headerRow.SetLayout(headerLayout)
 
-	// ── Search row ───────────────────────────────────────────
+	// ── Search row (mockup: surface0 bg, border-bottom) ─────
 	c.chatSearchRow = widgets.NewQWidget(nil, 0)
+	c.chatSearchRow.SetStyleSheet(fmt.Sprintf("background: %s; border-bottom: 1px solid %s;", colorSurface0, colorSurface1))
 	searchLayout := widgets.NewQHBoxLayout()
-	searchLayout.SetContentsMargins(0, 0, 0, 0)
-	searchLayout.SetSpacing(6)
+	searchLayout.SetContentsMargins(16, 6, 16, 6)
+	searchLayout.SetSpacing(8)
 	c.chatSearchInput = widgets.NewQLineEdit(nil)
 	c.chatSearchInput.SetPlaceholderText("Search messages and files")
 	c.chatSearchInput.ConnectTextChanged(func(text string) {
@@ -254,7 +267,7 @@ func (c *controller) buildChatPane() *widgets.QWidget {
 	actionLayout.AddStretch(1)
 	actionRow.SetLayout(actionLayout)
 
-	// ── Composer row: [attach] [folder] [input] [send] ──────
+	// ── Composer row (mockup: mantle bg, attach icons, input, send icon) ──
 	c.messageInput = widgets.NewQTextEdit(nil)
 	c.messageInput.SetPlaceholderText("Type a message...")
 	c.messageInput.SetAcceptRichText(false)
@@ -262,20 +275,20 @@ func (c *controller) buildChatPane() *widgets.QWidget {
 
 	attachBtn := widgets.NewQPushButton2("📎", nil)
 	attachBtn.SetObjectName("composerAttachBtn")
-	attachBtn.SetToolTip("Attach files")
-	attachBtn.SetFixedSize2(36, 36)
+	attachBtn.SetToolTip("Attach Files")
+	attachBtn.SetFixedSize2(30, 30)
 	attachBtn.ConnectClicked(func(bool) { c.attachFileToCurrentPeer() })
 
 	attachFolderBtn := widgets.NewQPushButton2("📁", nil)
 	attachFolderBtn.SetObjectName("composerAttachBtn")
-	attachFolderBtn.SetToolTip("Attach folder")
-	attachFolderBtn.SetFixedSize2(36, 36)
+	attachFolderBtn.SetToolTip("Attach Folder")
+	attachFolderBtn.SetFixedSize2(30, 30)
 	attachFolderBtn.ConnectClicked(func(bool) { c.attachFolderToCurrentPeer() })
 
 	sendBtn := widgets.NewQPushButton2("➤", nil)
 	sendBtn.SetObjectName("composerBtn")
-	sendBtn.SetToolTip("Send message (Ctrl+Enter)")
-	sendBtn.SetFixedSize2(36, 36)
+	sendBtn.SetToolTip("Send (Ctrl+Enter)")
+	sendBtn.SetFixedSize2(30, 30)
 	sendBtn.ConnectClicked(func(bool) { c.sendCurrentMessage() })
 	c.hold(sendBtn, attachBtn, attachFolderBtn)
 
@@ -286,14 +299,18 @@ func (c *controller) buildChatPane() *widgets.QWidget {
 	c.chatComposer = widgets.NewQWidget(nil, 0)
 	c.chatComposer.SetObjectName("composerRow")
 	composerLayout := widgets.NewQHBoxLayout()
-	composerLayout.SetContentsMargins(0, 4, 0, 0)
-	composerLayout.SetSpacing(6)
+	composerLayout.SetContentsMargins(12, 8, 12, 8)
+	composerLayout.SetSpacing(8)
 	composerLayout.AddWidget(attachBtn, 0, core.Qt__AlignBottom)
 	composerLayout.AddWidget(attachFolderBtn, 0, core.Qt__AlignBottom)
 	composerLayout.AddWidget(c.messageInput, 1, 0)
 	composerLayout.AddWidget(sendBtn, 0, core.Qt__AlignBottom)
 	c.chatComposer.SetLayout(composerLayout)
 	c.chatComposer.Hide()
+
+	// Keep action row hidden by default – inline buttons on file cards
+	// handle most actions now, but the row remains available as fallback.
+	actionRow.Hide()
 
 	layout.AddWidget(headerRow, 0, 0)
 	layout.AddWidget(c.chatSearchRow, 0, 0)

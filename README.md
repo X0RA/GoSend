@@ -457,14 +457,17 @@ Indexes:
 
 ## UI Summary
 
-The GUI (Qt Widgets) is a single-window desktop app that wires user intent to networking, discovery, and storage. The entire UI uses the **Catppuccin Mocha** dark colour theme, defined centrally in `ui/qt_theme.go`. Palette constants, semantic aliases, and a comprehensive QSS stylesheet are generated from that single file, so swapping to a different colour scheme (e.g. another Catppuccin flavour) requires editing only the colour constants.
+The GUI (Qt Widgets) is a single-window desktop app that wires user intent to networking, discovery, and storage. The visual design closely follows a React-based mockup (`mockup_design/`) and uses the **Catppuccin Mocha** dark colour theme, defined centrally in `ui/qt_theme.go`. Palette constants, semantic aliases, and a comprehensive QSS stylesheet are generated from that single file, so swapping to a different colour scheme (e.g. another Catppuccin flavour) requires editing only the colour constants.
 
 Layout:
 
-- Left pane: known peers list from DB (self filtered out), plus discovery entry point. Each peer row is a custom styled widget with a coloured status dot (green=online, gray=offline, yellow=reconnecting), bold name, coloured pill badges (`Trusted` green, `Verified` lavender), and a secondary info line. The "PEERS" header shows an online-count badge.
-- Right pane: selected peer transcript where messages and file transfers render as styled card widgets. Message cards show a coloured sender name, timestamp, delivery marks, and word-wrapped content. File transfer cards include a direction badge (`Send File` peach, `Receive File` teal), filename, timestamp, size, colour-coded status label, an inline progress bar for active transfers, and the stored path.
-- Top bar (Mantle background): bold "GoSend" title label, icon+text toolbar buttons (Transfer Queue, Refresh Discovery, Discover, Settings).
-- Bottom status bar: runtime status text plus a far-right `Logs` button that opens runtime + security-event history.
+- Left pane (Mantle background): known peers list from DB (self filtered out). Each peer row uses a left-border selection indicator (2px blue), a coloured status dot, truncated name, semi-transparent badges (`Trusted` teal on rgba, `Verified` green on rgba), and coloured status text. The "PEERS" header shows a compact online-count badge.
+- Right pane (Base background): selected peer transcript. Messages render without card backgrounds (transparent), with coloured sender names (blue=You, mauve=Peer), subtext1 content, and delivery marks (blue ✓✓ for delivered). File transfers render on a Surface0 card with inline action buttons (Cancel, Retry, Show Path, Copy Path) wired per-card, a `[Send File]`/`[Receive File]` direction label, progress bars, and file paths.
+- Top bar (Mantle background, 40px): "GoSend" title in blue, vertical separator, transparent borderless toolbar buttons (Transfer Queue, Refresh Discovery, Discover), right-aligned Settings button.
+- Chat header (Mantle background, 44px): peer name, mono fingerprint, icon-only Search and Peer Settings buttons.
+- Composer (Mantle background): attach files/folder icon buttons, text input with surface0 background and surface2 border, blue send icon button.
+- Bottom status bar (Crust background, 28px): 11px overlay1 status text plus a Logs button.
+- All dialogs (Settings, Peer Settings, Discover, Transfer Queue, Logs) use a consistent header bar (Mantle, title) and footer bar (Mantle, action buttons) with primary/secondary/danger button styles.
 - Composer: icon attach buttons (paperclip/folder), multiline message input, and a send arrow button (`Ctrl+Enter` sends). Transfer action buttons are styled as flat text buttons with icon prefixes (✕ Cancel, ↻ Retry, ↗ Show Path, ⎘ Copy Path).
 
 Runtime loops:
@@ -671,6 +674,6 @@ Note: runtime logic currently uses `storage` structs directly; `models` package 
 - `ui/qt_chat_transfers.go`: Transfer state merge/update logic, transfer actions, and transfer queue dialog.
 - `ui/qt_discovery.go`: Discovery dialog lifecycle, discovered-peer state sync, reconnect helpers, and inbound decision prompts.
 - `ui/qt_settings.go`: Global device settings and per-peer settings dialogs, key reset flow, peer history clear flow.
-- `ui/qt_styled_widgets.go`: Reusable widget builders for styled peer list items (status dot + badges), message cards, file transfer cards (with progress bars), and transfer queue items. Also provides helpers for icon buttons, badge labels, and count badges.
-- `ui/qt_theme.go`: Catppuccin Mocha colour palette constants, semantic colour aliases, and full QSS stylesheet generator (`themeStyleSheet`). Includes object-name-scoped styles for toolbar, peer list, chat list, composer, action buttons, and icon buttons. Swap palette constants here to re-theme the entire app.
+- `ui/qt_styled_widgets.go`: Reusable widget builders for styled peer list items (status dot, semi-transparent badges, coloured status text), message widgets (transparent bg, subtext1 content, coloured delivery marks), file transfer cards (surface0 bg, inline action buttons with per-card callbacks, progress bars), and transfer queue items. Also provides helpers for icon buttons, count badges, and file action buttons.
+- `ui/qt_theme.go`: Catppuccin Mocha colour palette constants, semantic colour aliases, and full QSS stylesheet generator (`themeStyleSheet`). The QSS closely follows the React mockup design, with object-name-scoped styles for toolbar, peer list (left-border selection), chat list, composer (mantle bg), status bar (crust bg), dialog headers/footers, primary/secondary/danger buttons, file action buttons, and icon buttons. Swap palette constants here to re-theme the entire app.
 - `ui/qt_notifications_helpers.go`: Runtime notifications and shared UI helpers (formatting, path open, address/fingerprint helpers, retention/size selectors).

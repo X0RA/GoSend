@@ -545,14 +545,40 @@ func (c *controller) renderTranscript() {
 		if row.isMessage {
 			w := c.buildMessageWidget(row.message)
 			item := widgets.NewQListWidgetItem(c.chatList, 0)
-			h := itemHeightForWidget(w, 52)
+			h := itemHeightForWidget(w, 48)
 			item.SetSizeHint(core.NewQSize2(0, h))
 			c.chatList.SetItemWidget(item, w)
 			continue
 		}
-		w := createFileTransferCardWidget(row.file)
+		// Build per-card callbacks so the inline action buttons work.
+		file := row.file
+		cbs := fileCardCallbacks{
+			onCancel: func() {
+				c.cancelTransferFromUI(file.FileID)
+			},
+			onRetry: func() {
+				c.retryTransferFromUI(file.FileID)
+			},
+			onShowPath: func() {
+				if strings.TrimSpace(file.StoredPath) != "" {
+					if err := openContainingFolder(file.StoredPath); err != nil {
+						c.setStatus(fmt.Sprintf("Open path failed: %v", err))
+					}
+				}
+			},
+			onCopyPath: func() {
+				if strings.TrimSpace(file.StoredPath) != "" {
+					clipboard := gui.QGuiApplication_Clipboard()
+					if clipboard != nil {
+						clipboard.SetText(file.StoredPath, gui.QClipboard__Clipboard)
+						c.setStatus("Path copied")
+					}
+				}
+			},
+		}
+		w := createFileTransferCardWidget(file, cbs)
 		item := widgets.NewQListWidgetItem(c.chatList, 0)
-		h := itemHeightForWidget(w, 64)
+		h := itemHeightForWidget(w, 80)
 		item.SetSizeHint(core.NewQSize2(0, h))
 		c.chatList.SetItemWidget(item, w)
 	}

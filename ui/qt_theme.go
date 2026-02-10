@@ -79,7 +79,8 @@ const (
 
 // themeStyleSheet returns the full Qt Style Sheet (QSS) for the application.
 // Every widget type that appears in the app is explicitly styled so that no
-// platform-default light colours leak through.
+// platform-default light colours leak through.  The styles closely follow the
+// React mockup design that uses Catppuccin Mocha.
 func themeStyleSheet() string {
 	return fmt.Sprintf(`
 /* =========================================================
@@ -123,7 +124,7 @@ QLineEdit {
     background: %[3]s;
     color: %[1]s;
     border: 1px solid %[4]s;
-    border-radius: 6px;
+    border-radius: 4px;
     padding: 5px 8px;
     selection-background-color: %[5]s;
     selection-color: %[6]s;
@@ -142,7 +143,7 @@ QTextEdit {
     background: %[3]s;
     color: %[1]s;
     border: 1px solid %[4]s;
-    border-radius: 6px;
+    border-radius: 4px;
     padding: 4px;
     selection-background-color: %[5]s;
     selection-color: %[6]s;
@@ -153,13 +154,13 @@ QTextEdit:focus {
 }
 
 /* =========================================================
-   List widgets
+   List widgets (generic)
    ========================================================= */
 QListWidget {
     background: %[3]s;
     color: %[1]s;
     border: 1px solid %[4]s;
-    border-radius: 6px;
+    border-radius: 4px;
     padding: 2px;
     outline: none;
 }
@@ -182,13 +183,13 @@ QListWidget::item:hover:!selected {
 }
 
 /* =========================================================
-   Buttons
+   Buttons (generic)
    ========================================================= */
 QPushButton {
     background: %[11]s;
     color: %[1]s;
     border: 1px solid %[4]s;
-    border-radius: 6px;
+    border-radius: 4px;
     padding: 6px 14px;
     min-height: 20px;
 }
@@ -216,7 +217,7 @@ QComboBox {
     background: %[3]s;
     color: %[1]s;
     border: 1px solid %[4]s;
-    border-radius: 6px;
+    border-radius: 4px;
     padding: 5px 10px;
     min-height: 20px;
 }
@@ -230,8 +231,8 @@ QComboBox::drop-down {
     subcontrol-position: top right;
     width: 24px;
     border-left: 1px solid %[4]s;
-    border-top-right-radius: 6px;
-    border-bottom-right-radius: 6px;
+    border-top-right-radius: 4px;
+    border-bottom-right-radius: 4px;
     background: %[11]s;
 }
 
@@ -270,10 +271,10 @@ QCheckBox {
 }
 
 QCheckBox::indicator {
-    width: 18px;
-    height: 18px;
+    width: 14px;
+    height: 14px;
     border: 2px solid %[4]s;
-    border-radius: 4px;
+    border-radius: 3px;
     background: %[3]s;
 }
 
@@ -292,7 +293,7 @@ QCheckBox::indicator:disabled {
 }
 
 /* =========================================================
-   Form layouts (row labels)
+   Form layouts
    ========================================================= */
 QFormLayout {
     background: transparent;
@@ -309,9 +310,9 @@ QDialogButtonBox {
    Splitter
    ========================================================= */
 QSplitter::handle {
-    background: %[4]s;
-    width: 2px;
-    margin: 2px 4px;
+    background: %[3]s;
+    width: 1px;
+    margin: 0;
 }
 
 QSplitter::handle:hover {
@@ -319,39 +320,49 @@ QSplitter::handle:hover {
 }
 
 /* =========================================================
-   Status bar
+   Status bar  (mockup: crust bg, 11px overlay1 text)
    ========================================================= */
 QStatusBar {
-    background: %[13]s;
-    color: %[14]s;
-    border-top: 1px solid %[4]s;
-    padding: 2px 6px;
+    background: %[16]s;
+    color: %[18]s;
+    border-top: 1px solid %[3]s;
+    padding: 2px 8px;
+    font-size: 11px;
 }
 
 QStatusBar QLabel {
     background: transparent;
-    color: %[14]s;
+    color: %[18]s;
+    font-size: 11px;
 }
 
 QStatusBar QPushButton {
-    padding: 3px 8px;
-    font-size: 12px;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 11px;
+    color: %[18]s;
+}
+
+QStatusBar QPushButton:hover {
+    background: %[3]s;
 }
 
 /* =========================================================
-   Scroll bars
+   Scroll bars (thin, subtle)
    ========================================================= */
 QScrollBar:vertical {
-    background: %[3]s;
-    width: 12px;
+    background: transparent;
+    width: 8px;
     margin: 0;
-    border-radius: 6px;
+    border-radius: 4px;
 }
 
 QScrollBar::handle:vertical {
     background: %[11]s;
     min-height: 30px;
-    border-radius: 6px;
+    border-radius: 4px;
 }
 
 QScrollBar::handle:vertical:hover {
@@ -370,16 +381,16 @@ QScrollBar::sub-page:vertical {
 }
 
 QScrollBar:horizontal {
-    background: %[3]s;
-    height: 12px;
+    background: transparent;
+    height: 8px;
     margin: 0;
-    border-radius: 6px;
+    border-radius: 4px;
 }
 
 QScrollBar::handle:horizontal {
     background: %[11]s;
     min-width: 30px;
-    border-radius: 6px;
+    border-radius: 4px;
 }
 
 QScrollBar::handle:horizontal:hover {
@@ -435,8 +446,8 @@ QTabBar::tab {
     border: 1px solid %[4]s;
     padding: 6px 16px;
     margin-right: 2px;
-    border-top-left-radius: 6px;
-    border-top-right-radius: 6px;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
 }
 
 QTabBar::tab:selected {
@@ -455,7 +466,7 @@ QGroupBox {
     background: transparent;
     color: %[1]s;
     border: 1px solid %[4]s;
-    border-radius: 6px;
+    border-radius: 4px;
     margin-top: 14px;
     padding-top: 14px;
 }
@@ -499,7 +510,7 @@ QMenu::separator {
 }
 
 /* =========================================================
-   Header view (table/tree header – future-proofing)
+   Header view (table/tree header)
    ========================================================= */
 QHeaderView::section {
     background: %[11]s;
@@ -509,59 +520,88 @@ QHeaderView::section {
 }
 
 /* =========================================================
-   Toolbar
+   Toolbar  (mockup: mantle bg, transparent buttons)
    ========================================================= */
 QWidget#toolbar {
     background: %[13]s;
-    border-bottom: 1px solid %[4]s;
+    border-bottom: 1px solid %[3]s;
     border-radius: 0;
 }
 
 QWidget#toolbar QLabel#toolbarTitle {
-    color: %[1]s;
-    font-size: 15px;
+    color: %[7]s;
+    font-size: 14px;
     font-weight: bold;
     background: transparent;
 }
 
 QPushButton#toolbarBtn {
-    background: %[3]s;
-    border: 1px solid %[4]s;
-    border-radius: 6px;
-    padding: 5px 12px;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 10px;
     font-size: 12px;
+    color: %[14]s;
 }
 
 QPushButton#toolbarBtn:hover {
-    background: %[10]s;
-    border: 1px solid %[7]s;
+    background: %[3]s;
 }
 
 /* =========================================================
-   Icon buttons (search, peer settings, send, etc.)
+   Toolbar separator
+   ========================================================= */
+QFrame#toolbarSep {
+    background: %[4]s;
+}
+
+/* =========================================================
+   Icon buttons (search, peer settings in chat header)
+   Mockup: overlay2 colour, transparent bg, hover surface0
    ========================================================= */
 QPushButton#iconBtn {
     background: transparent;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    padding: 0;
+    border: none;
+    border-radius: 4px;
+    padding: 6px;
     font-size: 15px;
-    color: %[14]s;
+    color: %[17]s;
     min-height: 28px;
     min-width: 28px;
 }
 
 QPushButton#iconBtn:hover {
     background: %[3]s;
-    border: 1px solid %[4]s;
 }
 
 /* =========================================================
-   Action row buttons (Cancel, Retry, Show Path, Copy Path)
+   Inline file-action buttons  (mockup: per-card controls)
+   ========================================================= */
+QPushButton#fileActionBtn {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 11px;
+    color: %[14]s;
+}
+
+QPushButton#fileActionBtn:hover {
+    background: %[13]s;
+    color: %[1]s;
+}
+
+QPushButton#fileActionBtn:disabled {
+    color: %[4]s;
+    background: transparent;
+}
+
+/* =========================================================
+   Global action row buttons  (fallback for global action row)
    ========================================================= */
 QPushButton#actionBtn {
     background: transparent;
-    border: 1px solid transparent;
+    border: none;
     border-radius: 4px;
     padding: 4px 10px;
     font-size: 12px;
@@ -570,21 +610,19 @@ QPushButton#actionBtn {
 
 QPushButton#actionBtn:hover {
     background: %[3]s;
-    border: 1px solid %[4]s;
     color: %[1]s;
 }
 
 QPushButton#actionBtn:disabled {
     color: %[9]s;
     background: transparent;
-    border: 1px solid transparent;
 }
 
 /* =========================================================
-   Peer list: object-name scoped overrides
+   Peer list  (mockup: mantle bg, left-border selection)
    ========================================================= */
 QListWidget#peerList {
-    background: %[2]s;
+    background: %[13]s;
     border: none;
     border-radius: 0;
     padding: 0;
@@ -592,39 +630,40 @@ QListWidget#peerList {
 
 QListWidget#peerList::item {
     background: transparent;
-    border-radius: 6px;
+    border-radius: 0;
+    border-left: 2px solid transparent;
     padding: 0;
-    margin: 2px 4px;
+    margin: 0;
 }
 
 QListWidget#peerList::item:selected {
     background: %[3]s;
+    border-left: 2px solid %[7]s;
 }
 
 QListWidget#peerList::item:hover:!selected {
-    background: %[10]s;
+    background: %[3]s;
 }
 
 /* =========================================================
-   Chat list: object-name scoped overrides
+   Chat list  (mockup: base bg, no border, transparent items)
    ========================================================= */
 QListWidget#chatList {
     background: %[2]s;
-    border: 1px solid %[4]s;
-    border-radius: 6px;
-    padding: 4px;
+    border: none;
+    border-radius: 0;
+    padding: 8px;
 }
 
 QListWidget#chatList::item {
     background: transparent;
-    border-radius: 0;
-    padding: 2px 4px;
+    border-radius: 4px;
+    padding: 0;
     margin: 2px 0;
 }
 
 QListWidget#chatList::item:selected {
     background: transparent;
-    border-left: 3px solid %[7]s;
 }
 
 QListWidget#chatList::item:hover:!selected {
@@ -632,74 +671,178 @@ QListWidget#chatList::item:hover:!selected {
 }
 
 /* =========================================================
-   Composer area
+   Composer area  (mockup: mantle bg, top border)
    ========================================================= */
 QWidget#composerRow {
-    background: transparent;
+    background: %[13]s;
+    border-top: 1px solid %[3]s;
 }
 
 QWidget#composerRow QTextEdit {
-    border-radius: 8px;
-    padding: 6px 10px;
+    background: %[3]s;
+    border: 1px solid %[4]s;
+    border-radius: 4px;
+    padding: 4px 10px;
     font-size: 13px;
 }
 
 QPushButton#composerBtn {
-    background: %[7]s;
-    color: %[6]s;
+    background: transparent;
+    color: %[7]s;
     border: none;
-    border-radius: 8px;
-    padding: 8px;
-    font-size: 14px;
-    min-width: 36px;
-    min-height: 36px;
+    border-radius: 4px;
+    padding: 6px;
+    font-size: 16px;
+    min-width: 30px;
+    min-height: 30px;
 }
 
 QPushButton#composerBtn:hover {
-    background: %[15]s;
+    background: %[3]s;
 }
 
 QPushButton#composerAttachBtn {
     background: transparent;
-    border: 1px solid transparent;
-    border-radius: 8px;
+    border: none;
+    border-radius: 4px;
     padding: 6px;
     font-size: 15px;
-    color: %[14]s;
-    min-width: 36px;
-    min-height: 36px;
+    color: %[17]s;
+    min-width: 30px;
+    min-height: 30px;
 }
 
 QPushButton#composerAttachBtn:hover {
     background: %[3]s;
-    border: 1px solid %[4]s;
 }
 
 /* =========================================================
-   PEERS header label
+   Chat header  (mockup: mantle bg, bottom border)
+   ========================================================= */
+QWidget#chatHeader {
+    background: %[13]s;
+    border-bottom: 1px solid %[3]s;
+}
+
+/* =========================================================
+   Peers pane container  (mockup: mantle bg)
+   ========================================================= */
+QWidget#peersPane {
+    background: %[13]s;
+}
+
+/* =========================================================
+   PEERS header label (mockup: overlay2, uppercase)
    ========================================================= */
 QLabel#peersHeaderLabel {
-    color: %[14]s;
+    color: %[17]s;
     font-size: 11px;
     font-weight: bold;
     background: transparent;
-    padding: 4px 10px;
+    padding: 4px 12px;
+}
+
+/* =========================================================
+   Settings dialog sections  (mockup: mantle card bg)
+   ========================================================= */
+QWidget#settingsSection {
+    background: %[13]s;
+    border: 1px solid %[3]s;
+    border-radius: 6px;
+}
+
+QLabel#sectionTitle {
+    color: %[17]s;
+    font-size: 11px;
+    font-weight: bold;
+    background: transparent;
+}
+
+QLabel#sectionHint {
+    color: %[12]s;
+    font-size: 10px;
+    background: transparent;
+}
+
+/* =========================================================
+   Dialog header & footer bars
+   ========================================================= */
+QWidget#dialogHeader {
+    background: %[13]s;
+    border-bottom: 1px solid %[3]s;
+}
+
+QWidget#dialogFooter {
+    background: %[13]s;
+    border-top: 1px solid %[3]s;
+}
+
+/* =========================================================
+   Primary button  (mockup: blue bg, base text)
+   ========================================================= */
+QPushButton#primaryBtn {
+    background: %[7]s;
+    color: %[6]s;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 16px;
+    font-size: 12px;
+}
+
+QPushButton#primaryBtn:hover {
+    background: %[15]s;
+}
+
+/* =========================================================
+   Secondary button  (mockup: surface0 bg, subtext0 text)
+   ========================================================= */
+QPushButton#secondaryBtn {
+    background: %[3]s;
+    color: %[14]s;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 12px;
+    font-size: 12px;
+}
+
+QPushButton#secondaryBtn:hover {
+    background: %[10]s;
+}
+
+/* =========================================================
+   Danger button  (mockup: red-tinted bg)
+   ========================================================= */
+QPushButton#dangerBtn {
+    background: rgba(243, 139, 168, 0.1);
+    color: %[19]s;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 12px;
+    font-size: 12px;
+}
+
+QPushButton#dangerBtn:hover {
+    background: rgba(243, 139, 168, 0.2);
 }
 `,
 		themeText,                // [1]  primary text
-		themeBackground,          // [2]  main background
-		themeSurface,             // [3]  input/list background
-		themeBorder,              // [4]  border
-		themeAccent,              // [5]  selection / active bg
-		themeAccentText,          // [6]  text on accent
-		themeAccent,              // [7]  focus / checked accent (reuse blue)
-		themeBorderSubtle,        // [8]  disabled background
-		themeTextDisabled,        // [9]  disabled text
-		themeSurfaceSecondary,    // [10] hover / tooltip bg
-		themeSurfaceTertiary,     // [11] button / control bg
-		colorOverlay0,            // [12] button hover
-		themeBackgroundSecondary, // [13] status bar / menu bar bg
-		themeTextSecondary,       // [14] status bar / secondary text
-		themeAccentHover,         // [15] accent hover (sapphire)
+		themeBackground,          // [2]  main background (base)
+		themeSurface,             // [3]  surface0 (input/list bg, also hover)
+		themeBorder,              // [4]  border (surface2)
+		themeAccent,              // [5]  selection / active bg (blue)
+		themeAccentText,          // [6]  text on accent (crust)
+		themeAccent,              // [7]  focus / checked accent (blue)
+		themeBorderSubtle,        // [8]  disabled background (surface1)
+		themeTextDisabled,        // [9]  disabled text (overlay0)
+		themeSurfaceSecondary,    // [10] surface1 (hover / tooltip bg)
+		themeSurfaceTertiary,     // [11] surface2 (button / control bg)
+		colorOverlay0,            // [12] overlay0 (button hover, hints)
+		themeBackgroundSecondary, // [13] mantle (toolbar, panels, header)
+		themeTextSecondary,       // [14] subtext1 (secondary text)
+		themeAccentHover,         // [15] sapphire (accent hover)
+		themeBackgroundTertiary,  // [16] crust (status bar)
+		colorOverlay2,            // [17] overlay2 (icon btn colour)
+		colorOverlay1,            // [18] overlay1 (muted status text)
+		themeError,               // [19] red (danger)
 	)
 }

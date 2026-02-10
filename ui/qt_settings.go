@@ -21,9 +21,32 @@ func (c *controller) showSettingsDialog() {
 	c.enqueueUI(func() {
 		dlg := widgets.NewQDialog(c.window, 0)
 		dlg.SetWindowTitle("Device Settings")
-		dlg.Resize2(700, 560)
+		dlg.Resize2(540, 600)
 
 		layout := widgets.NewQVBoxLayout()
+		layout.SetContentsMargins(0, 0, 0, 0)
+		layout.SetSpacing(0)
+
+		// ── Header bar ──────────────────────────────────────
+		headerBar := widgets.NewQWidget(nil, 0)
+		headerBar.SetObjectName("dialogHeader")
+		headerBarLayout := widgets.NewQHBoxLayout()
+		headerBarLayout.SetContentsMargins(16, 10, 16, 10)
+		dlgTitle := widgets.NewQLabel2("Device Settings", nil, 0)
+		dlgTitle.SetStyleSheet(fmt.Sprintf("color: %s; font-size: 13px; font-weight: bold; background: transparent;", colorText))
+		headerBarLayout.AddWidget(dlgTitle, 1, 0)
+		headerBar.SetLayout(headerBarLayout)
+		layout.AddWidget(headerBar, 0, 0)
+
+		// ── Scrollable content area ─────────────────────────
+		scroll := widgets.NewQScrollArea(nil)
+		scroll.SetWidgetResizable(true)
+		scroll.SetFrameShape(widgets.QFrame__NoFrame)
+		contentWidget := widgets.NewQWidget(nil, 0)
+		contentLayout := widgets.NewQVBoxLayout()
+		contentLayout.SetContentsMargins(16, 16, 16, 16)
+		contentLayout.SetSpacing(12)
+
 		form := widgets.NewQFormLayout(nil)
 
 		nameEntry := widgets.NewQLineEdit(nil)
@@ -140,7 +163,8 @@ func (c *controller) showSettingsDialog() {
 		form.AddRow3("Message Retention", retentionSelect)
 		form.AddRow3("File Cleanup", cleanupChk)
 
-		resetKeysBtn := widgets.NewQPushButton2("Reset Keys", nil)
+		resetKeysBtn := widgets.NewQPushButton2("⚠ Reset Identity Keys", nil)
+		resetKeysBtn.SetObjectName("dangerBtn")
 		resetKeysBtn.ConnectClicked(func(bool) {
 			c.confirmResetKeys(func(newFingerprint string) {
 				fingerprintLabel.SetText(newFingerprint)
@@ -248,9 +272,34 @@ func (c *controller) showSettingsDialog() {
 		})
 		buttons.ConnectRejected(func() { dlg.Reject() })
 
-		layout.AddLayout(form, 1)
-		layout.AddWidget(resetKeysBtn, 0, 0)
-		layout.AddWidget(buttons, 0, 0)
+		contentLayout.AddLayout(form, 0)
+		contentLayout.AddWidget(resetKeysBtn, 0, 0)
+		contentLayout.AddStretch(1)
+		contentWidget.SetLayout(contentLayout)
+		scroll.SetWidget(contentWidget)
+		layout.AddWidget(scroll, 1, 0)
+
+		// ── Footer bar ──────────────────────────────────────
+		footerBar := widgets.NewQWidget(nil, 0)
+		footerBar.SetObjectName("dialogFooter")
+		footerBarLayout := widgets.NewQHBoxLayout()
+		footerBarLayout.SetContentsMargins(16, 10, 16, 10)
+		footerBarLayout.SetSpacing(8)
+		footerBarLayout.AddStretch(1)
+		cancelBtn := widgets.NewQPushButton2("Cancel", nil)
+		cancelBtn.SetObjectName("secondaryBtn")
+		cancelBtn.ConnectClicked(func(bool) { dlg.Reject() })
+		saveBtn := widgets.NewQPushButton2("Save", nil)
+		saveBtn.SetObjectName("primaryBtn")
+		footerBarLayout.AddWidget(cancelBtn, 0, 0)
+		footerBarLayout.AddWidget(saveBtn, 0, 0)
+		footerBar.SetLayout(footerBarLayout)
+		layout.AddWidget(footerBar, 0, 0)
+
+		// Wire up the old button box accept to the new Save button.
+		saveBtn.ConnectClicked(func(bool) { buttons.Accepted() })
+		buttons.ConnectRejected(func() { dlg.Reject() })
+
 		dlg.SetLayout(layout)
 		dlg.Exec()
 		runtime.KeepAlive(copyFingerprintBtn)
@@ -258,6 +307,8 @@ func (c *controller) showSettingsDialog() {
 		runtime.KeepAlive(browseDownloadBtn)
 		runtime.KeepAlive(maxSizeSelect)
 		runtime.KeepAlive(resetKeysBtn)
+		runtime.KeepAlive(cancelBtn)
+		runtime.KeepAlive(saveBtn)
 		runtime.KeepAlive(buttons)
 		runtime.KeepAlive(dlg)
 	})
@@ -287,9 +338,39 @@ func (c *controller) showSelectedPeerSettingsDialog() {
 	c.enqueueUI(func() {
 		dlg := widgets.NewQDialog(c.window, 0)
 		dlg.SetWindowTitle("Peer Settings")
-		dlg.Resize2(760, 620)
+		dlg.Resize2(520, 620)
 
 		layout := widgets.NewQVBoxLayout()
+		layout.SetContentsMargins(0, 0, 0, 0)
+		layout.SetSpacing(0)
+
+		// ── Header bar ──────────────────────────────────────
+		peerHeaderBar := widgets.NewQWidget(nil, 0)
+		peerHeaderBar.SetObjectName("dialogHeader")
+		peerHdrLayout := widgets.NewQHBoxLayout()
+		peerHdrLayout.SetContentsMargins(16, 10, 16, 10)
+		peerHdrInfo := widgets.NewQVBoxLayout()
+		peerHdrInfo.SetContentsMargins(0, 0, 0, 0)
+		peerHdrInfo.SetSpacing(2)
+		peerDlgTitle := widgets.NewQLabel2("Peer Settings", nil, 0)
+		peerDlgTitle.SetStyleSheet(fmt.Sprintf("color: %s; font-size: 13px; font-weight: bold; background: transparent;", colorText))
+		peerDlgSub := widgets.NewQLabel2(c.peerDisplayName(peer), nil, 0)
+		peerDlgSub.SetStyleSheet(fmt.Sprintf("color: %s; font-size: 11px; background: transparent;", colorOverlay1))
+		peerHdrInfo.AddWidget(peerDlgTitle, 0, 0)
+		peerHdrInfo.AddWidget(peerDlgSub, 0, 0)
+		peerHdrLayout.AddLayout(peerHdrInfo, 1)
+		peerHeaderBar.SetLayout(peerHdrLayout)
+		layout.AddWidget(peerHeaderBar, 0, 0)
+
+		// ── Scrollable content ──────────────────────────────
+		peerScroll := widgets.NewQScrollArea(nil)
+		peerScroll.SetWidgetResizable(true)
+		peerScroll.SetFrameShape(widgets.QFrame__NoFrame)
+		peerContent := widgets.NewQWidget(nil, 0)
+		peerContentLayout := widgets.NewQVBoxLayout()
+		peerContentLayout.SetContentsMargins(16, 16, 16, 16)
+		peerContentLayout.SetSpacing(12)
+
 		form := widgets.NewQFormLayout(nil)
 
 		deviceNameLabel := widgets.NewQLabel2(valueOrDefault(peer.DeviceName, peer.DeviceID), nil, 0)
@@ -455,7 +536,8 @@ func (c *controller) showSelectedPeerSettingsDialog() {
 		form.AddRow3("Max File Size", maxRow)
 		form.AddRow3("Download Directory", downloadRow)
 
-		clearHistoryBtn := widgets.NewQPushButton2("Clear Chat History", nil)
+		clearHistoryBtn := widgets.NewQPushButton2("🗑 Clear Chat History", nil)
+		clearHistoryBtn.SetObjectName("dangerBtn")
 		clearHistoryBtn.ConnectClicked(func(bool) { c.confirmClearPeerHistory(peer.DeviceID) })
 
 		buttons := widgets.NewQDialogButtonBox3(widgets.QDialogButtonBox__Save|widgets.QDialogButtonBox__Cancel, nil)
@@ -503,9 +585,33 @@ func (c *controller) showSelectedPeerSettingsDialog() {
 		})
 		buttons.ConnectRejected(func() { dlg.Reject() })
 
-		layout.AddLayout(form, 1)
-		layout.AddWidget(clearHistoryBtn, 0, 0)
-		layout.AddWidget(buttons, 0, 0)
+		peerContentLayout.AddLayout(form, 0)
+		peerContentLayout.AddWidget(clearHistoryBtn, 0, 0)
+		peerContentLayout.AddStretch(1)
+		peerContent.SetLayout(peerContentLayout)
+		peerScroll.SetWidget(peerContent)
+		layout.AddWidget(peerScroll, 1, 0)
+
+		// ── Footer bar ──────────────────────────────────────
+		peerFooterBar := widgets.NewQWidget(nil, 0)
+		peerFooterBar.SetObjectName("dialogFooter")
+		peerFooterLayout := widgets.NewQHBoxLayout()
+		peerFooterLayout.SetContentsMargins(16, 10, 16, 10)
+		peerFooterLayout.SetSpacing(8)
+		peerFooterLayout.AddStretch(1)
+		peerCancelBtn := widgets.NewQPushButton2("Cancel", nil)
+		peerCancelBtn.SetObjectName("secondaryBtn")
+		peerCancelBtn.ConnectClicked(func(bool) { dlg.Reject() })
+		peerSaveBtn := widgets.NewQPushButton2("Save", nil)
+		peerSaveBtn.SetObjectName("primaryBtn")
+		peerFooterLayout.AddWidget(peerCancelBtn, 0, 0)
+		peerFooterLayout.AddWidget(peerSaveBtn, 0, 0)
+		peerFooterBar.SetLayout(peerFooterLayout)
+		layout.AddWidget(peerFooterBar, 0, 0)
+
+		peerSaveBtn.ConnectClicked(func(bool) { buttons.Accepted() })
+		buttons.ConnectRejected(func() { dlg.Reject() })
+
 		dlg.SetLayout(layout)
 		dlg.Exec()
 		runtime.KeepAlive(copyPeerBtn)
@@ -514,6 +620,8 @@ func (c *controller) showSelectedPeerSettingsDialog() {
 		runtime.KeepAlive(browseDownload)
 		runtime.KeepAlive(useGlobalDownload)
 		runtime.KeepAlive(clearHistoryBtn)
+		runtime.KeepAlive(peerCancelBtn)
+		runtime.KeepAlive(peerSaveBtn)
 		runtime.KeepAlive(buttons)
 		runtime.KeepAlive(dlg)
 	})
