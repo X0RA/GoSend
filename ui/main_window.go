@@ -104,7 +104,7 @@ type controller struct {
 	chatDropOverlay      *fyne.Container
 	messageInput         *messageEntry
 	chatComposer         fyne.CanvasObject
-	statusLabel          *widget.Label
+	statusLabel          *canvas.Text
 	runtimeLogMu         sync.Mutex
 	runtimeLogLines      []string
 
@@ -440,17 +440,15 @@ func (c *controller) buildMainWindow() {
 	toolbarBg.SetMinSize(fyne.NewSize(1, 40))
 	toolbar := container.NewStack(toolbarBg, container.NewPadded(toolbarInner))
 
-	c.statusLabel = widget.NewLabel("Starting...")
-	c.statusLabel.Importance = widget.LowImportance
+	c.statusLabel = canvas.NewText("Starting...", ctpOverlay1)
+	c.statusLabel.TextSize = 10
 	c.statusMessage = "Starting..."
-	// Mockup: status bar very thin (h-7 = 28px), minimal padding; Logs = text-like button
-	logsBtn := newFlatButtonWithIconAndLabel(iconDocument(), "Logs", "View application logs", c.showLogsDialog, c.handleHoverHint)
-	c.statusLabel.TextStyle = fyne.TextStyle{}
+	// Footer: compact status text and compact Logs action.
+	logsBtn := newCompactFlatButtonWithIconAndLabel(iconDocument(), "Logs", "View application logs", c.showLogsDialog, c.handleHoverHint)
 	statusRow := container.NewBorder(nil, nil, c.statusLabel, logsBtn)
 	statusBg := canvas.NewRectangle(ctpCrust)
-	statusBg.SetMinSize(fyne.NewSize(1, 28))
-	// Use custom insets (2px vertical, 12px horizontal) to keep the bar thin
-	statusInner := container.New(layout.NewCustomPaddedLayout(2, 2, 12, 12), statusRow)
+	statusBg.SetMinSize(fyne.NewSize(1, 24))
+	statusInner := container.New(layout.NewCustomPaddedLayout(1, 1, 10, 10), statusRow)
 	statusBar := container.NewStack(statusBg, statusInner)
 	content := newNoGapBorder(withBottomDivider(toolbar), withTopDivider(statusBar), split)
 	c.window.SetContent(content)
@@ -1155,7 +1153,8 @@ func (c *controller) applyStatusLabel(message string) {
 	}
 	fyne.Do(func() {
 		if c.statusLabel != nil {
-			c.statusLabel.SetText(message)
+			c.statusLabel.Text = message
+			c.statusLabel.Refresh()
 		}
 	})
 }

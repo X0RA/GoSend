@@ -8,6 +8,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
@@ -345,6 +346,17 @@ type flatButton struct {
 	widget.BaseWidget
 	icon       fyne.Resource
 	label      string
+	labelSize  float32
+	iconSize   float32
+	padTop     float32
+	padBottom  float32
+	padLeft    float32
+	padRight   float32
+	compact    bool
+	enabled    bool
+	labelColor color.Color
+	disabled   color.Color
+	hoverColor color.Color
 	hint       string
 	onClick    func()
 	onHover    func(fyne.CanvasObject, string, bool)
@@ -371,8 +383,12 @@ func (r *flatButtonRenderer) MinSize() fyne.Size {
 }
 
 func (r *flatButtonRenderer) Refresh() {
-	if r.btn.hovered {
-		r.rect.FillColor = ctpSurface0
+	if r.btn.enabled && r.btn.hovered {
+		hover := r.btn.hoverColor
+		if hover == nil {
+			hover = ctpSurface0
+		}
+		r.rect.FillColor = hover
 	} else {
 		r.rect.FillColor = color.Transparent
 	}
@@ -388,10 +404,14 @@ func (r *flatButtonRenderer) Destroy() {}
 
 func newFlatButtonWithIcon(icon fyne.Resource, hint string, onClick func(), onHover func(fyne.CanvasObject, string, bool)) *flatButton {
 	b := &flatButton{
-		icon:    icon,
-		hint:    hint,
-		onClick: onClick,
-		onHover: onHover,
+		icon:       icon,
+		enabled:    true,
+		labelColor: ctpSubtext1,
+		disabled:   ctpSurface2,
+		hoverColor: ctpSurface0,
+		hint:       hint,
+		onClick:    onClick,
+		onHover:    onHover,
 	}
 	b.ExtendBaseWidget(b)
 	return b
@@ -400,40 +420,126 @@ func newFlatButtonWithIcon(icon fyne.Resource, hint string, onClick func(), onHo
 // newFlatButtonWithIconAndLabel creates a flat (text-like) button with icon and label for toolbar/status bar.
 func newFlatButtonWithIconAndLabel(icon fyne.Resource, label string, hint string, onClick func(), onHover func(fyne.CanvasObject, string, bool)) *flatButton {
 	b := &flatButton{
-		icon:    icon,
-		label:   label,
-		hint:    hint,
-		onClick: onClick,
-		onHover: onHover,
+		icon:       icon,
+		label:      label,
+		enabled:    true,
+		labelColor: ctpSubtext1,
+		disabled:   ctpSurface2,
+		hoverColor: ctpSurface0,
+		hint:       hint,
+		onClick:    onClick,
+		onHover:    onHover,
 	}
 	b.ExtendBaseWidget(b)
 	return b
+}
+
+// newCompactFlatButtonWithIcon creates a smaller icon-only flat button.
+func newCompactFlatButtonWithIcon(icon fyne.Resource, hint string, onClick func(), onHover func(fyne.CanvasObject, string, bool)) *flatButton {
+	b := &flatButton{
+		icon:       icon,
+		iconSize:   16,
+		padTop:     1,
+		padBottom:  1,
+		padLeft:    4,
+		padRight:   4,
+		compact:    true,
+		enabled:    true,
+		labelColor: ctpSubtext1,
+		disabled:   ctpSurface2,
+		hoverColor: ctpSurface0,
+		hint:       hint,
+		onClick:    onClick,
+		onHover:    onHover,
+	}
+	b.ExtendBaseWidget(b)
+	return b
+}
+
+// newCompactFlatButtonWithIconAndLabel creates a smaller footer-style flat button.
+func newCompactFlatButtonWithIconAndLabel(icon fyne.Resource, label string, hint string, onClick func(), onHover func(fyne.CanvasObject, string, bool)) *flatButton {
+	b := &flatButton{
+		icon:      icon,
+		label:     label,
+		labelSize: 10,
+		iconSize:  14,
+		padTop:    1,
+		padBottom: 1,
+		padLeft:   6,
+		padRight:  6,
+		compact:   true,
+		enabled:   true,
+		// Footer/action link style.
+		labelColor: ctpSubtext0,
+		disabled:   ctpSurface2,
+		hoverColor: ctpSurface0,
+		hint:       hint,
+		onClick:    onClick,
+		onHover:    onHover,
+	}
+	b.ExtendBaseWidget(b)
+	return b
+}
+
+func newCompactFlatButtonWithIconAndLabelState(icon fyne.Resource, label string, enabled bool, onClick func()) *flatButton {
+	btn := newCompactFlatButtonWithIconAndLabel(icon, label, "", onClick, nil)
+	btn.enabled = enabled
+	btn.hoverColor = ctpMantle
+	return btn
 }
 
 func (b *flatButton) CreateRenderer() fyne.WidgetRenderer {
 	rect := canvas.NewRectangle(color.Transparent)
 	rect.CornerRadius = 4
 	icon := widget.NewIcon(b.icon)
+	iconObj := fyne.CanvasObject(icon)
+	if b.iconSize > 0 {
+		iconObj = container.NewGridWrap(fyne.NewSize(b.iconSize, b.iconSize), icon)
+	}
 	// Wrap icon so the button has a minimum tap target (theme icon size is typically 24px)
 	var inner fyne.CanvasObject
 	if b.label != "" {
-		lbl := canvas.NewText(b.label, ctpSubtext1)
-		lbl.TextSize = 12
-		inner = container.NewPadded(container.NewHBox(icon, lbl))
+		textColor := b.labelColor
+		if !b.enabled {
+			textColor = b.disabled
+		}
+		lbl := canvas.NewText(b.label, textColor)
+		if b.labelSize > 0 {
+			lbl.TextSize = b.labelSize
+		} else {
+			lbl.TextSize = 12
+		}
+		if b.compact {
+			row := container.New(layout.NewCustomPaddedHBoxLayout(4), container.NewCenter(iconObj), container.NewCenter(lbl))
+			inner = container.New(layout.NewCustomPaddedLayout(b.padTop, b.padBottom, b.padLeft, b.padRight), row)
+		} else {
+			row := container.NewHBox(iconObj, lbl)
+			inner = container.NewPadded(row)
+		}
 	} else {
-		iconBox := container.NewCenter(icon)
-		inner = container.NewPadded(iconBox)
+		iconBox := container.NewCenter(iconObj)
+		if b.compact {
+			inner = container.New(layout.NewCustomPaddedLayout(b.padTop, b.padBottom, b.padLeft, b.padRight), iconBox)
+		} else {
+			inner = container.NewPadded(iconBox)
+		}
 	}
 	return &flatButtonRenderer{rect: rect, inner: inner, btn: b}
 }
 
 func (b *flatButton) Tapped(*fyne.PointEvent) {
+	if !b.enabled {
+		return
+	}
 	if b.onClick != nil {
 		b.onClick()
 	}
 }
 
 func (b *flatButton) MouseIn(*desktop.MouseEvent) {
+	if !b.enabled {
+		return
+	}
 	b.hovered = true
 	b.Refresh()
 	if b.onHover != nil {
@@ -446,6 +552,9 @@ func (b *flatButton) MouseMoved(*desktop.MouseEvent) {
 }
 
 func (b *flatButton) MouseOut() {
+	if !b.enabled {
+		return
+	}
 	b.hovered = false
 	b.Refresh()
 	if b.onHover != nil {
