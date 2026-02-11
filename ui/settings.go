@@ -9,8 +9,10 @@ import (
 	"strings"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 
 	"gosend/config"
@@ -533,18 +535,42 @@ func (c *controller) confirmClearPeerHistory(peerID string) {
 	if peerID == "" {
 		return
 	}
+	peerName := strings.TrimSpace(c.transferPeerName(peerID))
 
-	dialog.ShowConfirm(
-		"Clear Chat History",
-		"Delete all messages and transfer history with this peer?",
-		func(confirm bool) {
+	fyne.Do(func() {
+		var popup *widget.PopUp
+		respond := func(confirm bool) {
+			if popup != nil {
+				popup.Hide()
+			}
 			if !confirm {
 				return
 			}
 			go c.clearPeerHistory(peerID)
-		},
-		c.window,
-	)
+		}
+
+		message := widget.NewLabel("Delete all messages and transfer history with this peer?")
+		message.Wrapping = fyne.TextWrapWord
+		peerText := canvas.NewText("Peer: "+valueOrDefault(peerName, peerID), ctpSubtext0)
+		peerText.TextSize = 11
+		body := container.New(layout.NewCustomPaddedVBoxLayout(6), message, peerText)
+		center := container.New(layout.NewCustomPaddedLayout(12, 10, 12, 12), body)
+
+		header := newPanelHeader("Clear Chat History", "This removes local history for one peer", func() {
+			respond(false)
+		}, c.handleHoverHint)
+		footerRight := container.New(layout.NewCustomPaddedHBoxLayout(8),
+			newPanelActionButton("Keep", "Keep chat history", panelActionSecondary, func() {
+				respond(false)
+			}, c.handleHoverHint),
+			newPanelActionButton("Clear History", "Delete peer chat history", panelActionDanger, func() {
+				respond(true)
+			}, c.handleHoverHint),
+		)
+		panel := newPanelFrame(header, newPanelFooter(nil, footerRight), center)
+		popup = newPanelPopup(c.window, panel, fyne.NewSize(540, 230))
+		popup.Show()
+	})
 }
 
 func (c *controller) clearPeerHistory(peerID string) {
@@ -636,17 +662,40 @@ func parseRetentionSelection(selected string) (int, error) {
 }
 
 func (c *controller) confirmResetKeys(fingerprintLabel *widget.Label) {
-	dialog.ShowConfirm(
-		"Reset Keys",
-		"Reset identity keys? Existing peers will see a key-change warning. This requires restart.",
-		func(confirm bool) {
+	fyne.Do(func() {
+		var popup *widget.PopUp
+		respond := func(confirm bool) {
+			if popup != nil {
+				popup.Hide()
+			}
 			if !confirm {
 				return
 			}
 			go c.resetKeys(fingerprintLabel)
-		},
-		c.window,
-	)
+		}
+
+		message := widget.NewLabel("Reset identity keys? Existing peers will see a key-change warning.")
+		message.Wrapping = fyne.TextWrapWord
+		prompt := canvas.NewText("A restart is required after resetting keys.", ctpSubtext0)
+		prompt.TextSize = 11
+		body := container.New(layout.NewCustomPaddedVBoxLayout(6), message, prompt)
+		center := container.New(layout.NewCustomPaddedLayout(12, 10, 12, 12), body)
+
+		header := newPanelHeader("Reset Keys", "Regenerate local identity keys", func() {
+			respond(false)
+		}, c.handleHoverHint)
+		footerRight := container.New(layout.NewCustomPaddedHBoxLayout(8),
+			newPanelActionButton("Cancel", "Cancel key reset", panelActionSecondary, func() {
+				respond(false)
+			}, c.handleHoverHint),
+			newPanelActionButton("Reset Keys", "Reset local identity keys", panelActionDanger, func() {
+				respond(true)
+			}, c.handleHoverHint),
+		)
+		panel := newPanelFrame(header, newPanelFooter(nil, footerRight), center)
+		popup = newPanelPopup(c.window, panel, fyne.NewSize(560, 240))
+		popup.Show()
+	})
 }
 
 func (c *controller) resetKeys(fingerprintLabel *widget.Label) {

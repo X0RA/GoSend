@@ -475,6 +475,7 @@ Behavior and fixes:
 - mDNS-discovered device names with backslashes are normalized for display (e.g. `my\ name` → `my name`).
 - Incoming file prompt is deduplicated per FileID so a retry from the sender does not show a second dialog.
 - Cancel sets status "canceled"; retry fully resets terminal flags so the sender no longer shows "Complete" incorrectly after retry. Completed transfers can show Open File (launches default system application) and Copy Path.
+- Destructive/decision prompts now use shared panel chrome for consistency: cancel transfer, clear chat history, reset keys, and key-change warning.
 
 Runtime loops:
 
@@ -483,7 +484,7 @@ Runtime loops:
 - Manager error loop: streams async errors from the network manager to the status label.
 - Poll loop (every 2s): refreshes peer list and current chat transcript from SQLite.
 
-Dialogs: discovery (peers + Add, dark panels), incoming peer add confirmation (same modal panel chrome + Accept/Reject actions), incoming file accept/reject, key-change trust/deny, device settings, peer settings.
+Dialogs: discovery (peers + Add, dark panels), incoming peer add confirmation (same modal panel chrome + Accept/Reject actions), incoming file prompt (same modal panel chrome + Accept/Reject actions), key-change trust/deny (same modal panel chrome), device settings, peer settings.
 
 Key flows: Add peer (discovery → select → dial → `peer_add_request`); incoming add (accept/reject). Message (Enter to send); files (native multi-file picker with fallback → queued `SendFile`), folders (native folder picker for settings overrides and drag/drop directory → `SendFolder` manifest + queued files), transfer queue management (top-bar queue panel with filters, cancel/retry, and show-path action), key change (trust/reject with fingerprints). Incoming file (auto-accept or accept/reject with name/size/type based on per-peer/global settings). Peer settings (chat-header gear → save custom name/trust/transfer policy).
 

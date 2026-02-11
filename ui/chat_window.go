@@ -433,7 +433,11 @@ func (c *controller) cancelTransferFromUI(fileID string) {
 	}
 
 	fyne.Do(func() {
-		dialog.NewConfirm("Cancel Transfer", "Cancel this transfer?", func(confirm bool) {
+		var popup *widget.PopUp
+		respond := func(confirm bool) {
+			if popup != nil {
+				popup.Hide()
+			}
 			if !confirm {
 				return
 			}
@@ -460,7 +464,29 @@ func (c *controller) cancelTransferFromUI(fileID string) {
 				}
 				c.setStatus("Transfer canceled")
 			}()
-		}, c.window).Show()
+		}
+
+		message := widget.NewLabel("Cancel this transfer?")
+		message.Wrapping = fyne.TextWrapWord
+		prompt := canvas.NewText("This action cannot be undone.", ctpSubtext0)
+		prompt.TextSize = 11
+		body := container.New(layout.NewCustomPaddedVBoxLayout(6), message, prompt)
+		center := container.New(layout.NewCustomPaddedLayout(12, 10, 12, 12), body)
+
+		header := newPanelHeader("Cancel Transfer", "Stop the current file transfer", func() {
+			respond(false)
+		}, c.handleHoverHint)
+		footerRight := container.New(layout.NewCustomPaddedHBoxLayout(8),
+			newPanelActionButton("Keep", "Keep transfer running", panelActionSecondary, func() {
+				respond(false)
+			}, c.handleHoverHint),
+			newPanelActionButton("Cancel Transfer", "Cancel transfer", panelActionDanger, func() {
+				respond(true)
+			}, c.handleHoverHint),
+		)
+		panel := newPanelFrame(header, newPanelFooter(nil, footerRight), center)
+		popup = newPanelPopup(c.window, panel, fyne.NewSize(500, 220))
+		popup.Show()
 	})
 }
 

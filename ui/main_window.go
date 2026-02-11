@@ -1583,29 +1583,51 @@ func (c *controller) promptFileRequestDecision(notification network.FileRequestN
 	c.maybeNotifyIncomingFileRequest(notification)
 
 	decision := make(chan bool, 1)
-	info := container.NewVBox(
-		widget.NewLabel(fmt.Sprintf("%s wants to send you a file:", c.transferPeerName(notification.FromDeviceID))),
-		widget.NewLabel(""),
-		widget.NewLabel("Name: "+notification.Filename),
-		widget.NewLabel("Size: "+formatBytes(notification.Filesize)),
-		widget.NewLabel("Type: "+valueOrDefault(notification.Filetype, "unknown")),
-	)
+	peerName := c.transferPeerName(notification.FromDeviceID)
 
 	fyne.Do(func() {
-		dlg := dialog.NewCustomConfirm(
-			"Incoming File",
-			"Accept",
-			"Reject",
-			info,
-			func(accept bool) {
+		var popup *widget.PopUp
+		var respondOnce sync.Once
+		respond := func(accept bool) {
+			respondOnce.Do(func() {
 				c.filePromptPendingMu.Lock()
 				delete(c.filePromptPending, notification.FileID)
 				c.filePromptPendingMu.Unlock()
 				decision <- accept
-			},
-			c.window,
+				if popup != nil {
+					popup.Hide()
+				}
+			})
+		}
+
+		intro := widget.NewLabel(fmt.Sprintf("%s wants to send you a file.", peerName))
+		intro.Wrapping = fyne.TextWrapWord
+		fileName := canvas.NewText("Name: "+valueOrDefault(notification.Filename, notification.FileID), ctpText)
+		fileName.TextSize = 12
+		fileSize := canvas.NewText("Size: "+formatBytes(notification.Filesize), ctpSubtext0)
+		fileSize.TextSize = 11
+		fileType := canvas.NewText("Type: "+valueOrDefault(notification.Filetype, "unknown"), ctpSubtext0)
+		fileType.TextSize = 11
+		prompt := canvas.NewText("Accept this transfer?", ctpSubtext0)
+		prompt.TextSize = 11
+
+		body := container.New(layout.NewCustomPaddedVBoxLayout(6), intro, fileName, fileSize, fileType, prompt)
+		center := container.New(layout.NewCustomPaddedLayout(12, 10, 12, 12), body)
+
+		header := newPanelHeader("Incoming File", "Review before accepting", func() {
+			respond(false)
+		}, c.handleHoverHint)
+		footerRight := container.New(layout.NewCustomPaddedHBoxLayout(8),
+			newPanelActionButton("Reject", "Reject incoming file", panelActionSecondary, func() {
+				respond(false)
+			}, c.handleHoverHint),
+			newPanelActionButton("Accept", "Accept incoming file", panelActionPrimary, func() {
+				respond(true)
+			}, c.handleHoverHint),
 		)
-		dlg.Show()
+		panel := newPanelFrame(header, newPanelFooter(nil, footerRight), center)
+		popup = newPanelPopup(c.window, panel, fyne.NewSize(520, 260))
+		popup.Show()
 	})
 
 	select {
@@ -1644,26 +1666,45 @@ func (c *controller) promptKeyChangeDecision(peerDeviceID, existingPublicKeyBase
 		peerName = peer.DeviceName
 	}
 
-	content := container.NewVBox(
-		widget.NewLabel(fmt.Sprintf("The identity key for %s has changed.", peerName)),
-		widget.NewLabel("This could mean the device was reset, or a MITM attempt."),
-		widget.NewLabel(""),
-		widget.NewLabel("Old fingerprint: "+oldFingerprint),
-		widget.NewLabel("New fingerprint: "+newFingerprint),
-	)
-
 	fyne.Do(func() {
-		dlg := dialog.NewCustomConfirm(
-			"Key Change Warning",
-			"Trust New Key",
-			"Disconnect",
-			content,
-			func(trust bool) {
+		var popup *widget.PopUp
+		var respondOnce sync.Once
+		respond := func(trust bool) {
+			respondOnce.Do(func() {
 				decision <- trust
-			},
-			c.window,
+				if popup != nil {
+					popup.Hide()
+				}
+			})
+		}
+
+		message := widget.NewLabel(fmt.Sprintf("The identity key for %s has changed.", peerName))
+		message.Wrapping = fyne.TextWrapWord
+		hint := canvas.NewText("This may be a device reset or a potential MITM attempt.", ctpSubtext0)
+		hint.TextSize = 11
+		oldText := canvas.NewText("Old fingerprint: "+oldFingerprint, ctpSubtext0)
+		oldText.TextSize = 11
+		oldText.TextStyle = fyne.TextStyle{Monospace: true}
+		newText := canvas.NewText("New fingerprint: "+newFingerprint, ctpSubtext0)
+		newText.TextSize = 11
+		newText.TextStyle = fyne.TextStyle{Monospace: true}
+		body := container.New(layout.NewCustomPaddedVBoxLayout(6), message, hint, oldText, newText)
+		center := container.New(layout.NewCustomPaddedLayout(12, 10, 12, 12), body)
+
+		header := newPanelHeader("Key Change Warning", "Verify before trusting new identity key", func() {
+			respond(false)
+		}, c.handleHoverHint)
+		footerRight := container.New(layout.NewCustomPaddedHBoxLayout(8),
+			newPanelActionButton("Disconnect", "Reject key change and disconnect", panelActionSecondary, func() {
+				respond(false)
+			}, c.handleHoverHint),
+			newPanelActionButton("Trust New Key", "Trust received key and continue", panelActionPrimary, func() {
+				respond(true)
+			}, c.handleHoverHint),
 		)
-		dlg.Show()
+		panel := newPanelFrame(header, newPanelFooter(nil, footerRight), center)
+		popup = newPanelPopup(c.window, panel, fyne.NewSize(620, 280))
+		popup.Show()
 	})
 
 	select {
