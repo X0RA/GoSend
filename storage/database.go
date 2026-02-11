@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS files (
   stored_path        TEXT NOT NULL,
   checksum           TEXT NOT NULL,
   timestamp_received INTEGER,
-  transfer_status    TEXT CHECK(transfer_status IN ('pending','accepted','rejected','complete','failed')) DEFAULT 'pending'
+  transfer_status    TEXT CHECK(transfer_status IN ('pending','accepted','rejected','complete','failed','canceled')) DEFAULT 'pending'
 );
 `,
 	`
@@ -154,7 +154,7 @@ CREATE TABLE IF NOT EXISTS folder_transfers (
   root_path        TEXT NOT NULL,
   total_files      INTEGER NOT NULL,
   total_size       INTEGER NOT NULL,
-  transfer_status  TEXT NOT NULL CHECK(transfer_status IN ('pending','accepted','rejected','complete','failed')) DEFAULT 'pending',
+  transfer_status  TEXT NOT NULL CHECK(transfer_status IN ('pending','accepted','rejected','complete','failed','canceled')) DEFAULT 'pending',
   timestamp        INTEGER NOT NULL
 );
 `,

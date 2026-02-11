@@ -55,6 +55,7 @@ const (
 
 	defaultMaintenanceInterval = 24 * time.Hour
 	seenIDRetention            = 14 * 24 * time.Hour
+	reconnectStartGraceWindow  = 300 * time.Millisecond
 )
 
 var defaultReconnectBackoff = []time.Duration{
@@ -86,6 +87,9 @@ type FileRequestNotification struct {
 	Filesize     int64
 	Filetype     string
 	Checksum     string
+	IsFolder     bool
+	FolderID     string
+	TotalFiles   int
 }
 
 // FileProgress captures transfer progress for one file.
@@ -213,6 +217,7 @@ type PeerManager struct {
 	outboundFileTransfers    map[string]*outboundFileTransfer
 	inboundFileTransfers     map[string]*inboundFileTransfer
 	inboundFolderTransfers   map[string]*inboundFolderTransfer
+	recentFileDecisions      map[string]recentFileDecision
 	outboundFileEventChans   map[string]chan fileTransferEvent
 	outboundFolderEventChans map[string]chan FolderTransferResponse
 
@@ -322,6 +327,7 @@ func NewPeerManager(options PeerManagerOptions) (*PeerManager, error) {
 		outboundFileTransfers:    make(map[string]*outboundFileTransfer),
 		inboundFileTransfers:     make(map[string]*inboundFileTransfer),
 		inboundFolderTransfers:   make(map[string]*inboundFolderTransfer),
+		recentFileDecisions:      make(map[string]recentFileDecision),
 		outboundFileEventChans:   make(map[string]chan fileTransferEvent),
 		outboundFolderEventChans: make(map[string]chan FolderTransferResponse),
 		outboundTransferQueue:    make(map[string][]string),
@@ -795,6 +801,22 @@ loop:
 		m.updateRuntimeState(peerID, StateDisconnected, time.Time{})
 		if m.consumeSuppressReconnect(peerID) {
 			return
+		}
+		if m.getConnection(peerID) != nil {
+			return
+		}
+		grace := reconnectStartGraceWindow
+		if grace > 0 {
+			timer := time.NewTimer(grace)
+			select {
+			case <-timer.C:
+			case <-m.ctx.Done():
+				timer.Stop()
+				return
+			}
+			if m.getConnection(peerID) != nil {
+				return
+			}
 		}
 		if _, err := m.options.Store.GetPeer(peerID); errors.Is(err, storage.ErrNotFound) {
 			return

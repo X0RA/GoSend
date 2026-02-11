@@ -38,6 +38,7 @@ const (
 	transferStatusRejected = "rejected"
 	transferStatusComplete = "complete"
 	transferStatusFailed   = "failed"
+	transferStatusCanceled = "canceled"
 )
 
 const (
@@ -209,7 +210,7 @@ func validateDeliveryStatus(status string) error {
 
 func validateTransferStatus(status string) error {
 	switch status {
-	case transferStatusPending, transferStatusAccepted, transferStatusRejected, transferStatusComplete, transferStatusFailed:
+	case transferStatusPending, transferStatusAccepted, transferStatusRejected, transferStatusComplete, transferStatusFailed, transferStatusCanceled:
 		return nil
 	default:
 		return fmt.Errorf("invalid transfer status %q", status)

@@ -37,9 +37,10 @@ All roadmap phases in `PHASE-CHANGES.md` are implemented.
 - Per-peer outbound file transfer queue (sequential send worker), queued-transfer cancel/retry, and multi-file picker enqueue flow.
 - Native file and folder pickers via `github.com/sqweek/dialog` for attach/browse flows, with automatic fallback to Fyne picker dialogs if native picker startup fails.
 - Folder transfer envelope (`folder_transfer_request` / `folder_transfer_response`) with signed manifests, structure-preserving receive paths, and traversal-safe relative-path validation.
-- File transfer with request/accept/reject, signed chunk ack/nack + signed file completion, reconnect resume from chunk, end checksum verification, persistent transfer checkpoints for crash recovery, global receive limits/download location, and per-peer auto-accept/limit/directory overrides.
+- File transfer with explicit statuses (`pending`, `accepted`, `rejected`, `complete`, `failed`, `canceled`), signed chunk ack/nack + signed file completion, reconnect resume from chunk, end checksum verification, persistent transfer checkpoints for crash recovery, global receive limits/download location, and per-peer auto-accept/limit/directory overrides.
+- Folder transfers require one approval at the folder envelope level; accepted folder files are then auto-accepted from that manifest without per-file prompts.
 - Chat drag-and-drop (single/multi file + folder) plus transfer queue panel with All/Active/Completed/Issues filters, per-transfer status bars, speed/ETA display, compact action controls (Pause/Resume placeholders, Retry, Cancel, Show Path), and short completed-item retention.
-- Inline chat transfer cards are persisted from `files` metadata, show live speed/progress/status, support inline retry, and open the containing folder for completed received files.
+- Inline chat transfer cards are persisted from `files` metadata, show live speed/progress/status, support inline retry, label rejected transfers as `Rejected` (not `Failed`), and include `Open Folder`, `Open File`, and `Copy Path` actions for completed files.
 - Desktop notifications for incoming messages and file requests when the app is in background or another peer chat is active, with global enable/disable and per-peer mute (auto-accepted inbound transfers do not trigger file-request notifications).
 - Per-peer controls include custom names, trust level (`normal`/`trusted`), notification mute, fingerprint verification flag, trusted badge, and verified badge in the peer list.
 - Peer list state indicators include `Connecting...`, reconnect countdown (`Reconnecting in Ns...`), and inline `Transferring...` progress.
@@ -101,11 +102,11 @@ go mod tidy
 
 Manual UI verification for transfer/search/notification UX:
 
-1. Drag one file into an active chat, verify a queued card appears as `Waiting...` then progresses to `complete`.
+1. Drag one file into an active chat, wait at least one response-timeout interval before accepting on the receiver, and verify only one incoming prompt is required and transfer proceeds after acceptance.
 2. Drag multiple files together, verify they preserve drop order and run sequentially.
-3. Drag a folder containing nested files + an empty subdirectory, verify receiver preserves structure.
+3. Drag a folder containing nested files + an empty subdirectory, verify the receiver sees a single folder approval prompt and the received structure is preserved.
 4. Drag mixed items (files + folders), verify all items enqueue in the original drop order.
-5. Open the transfer queue panel and verify cancel/retry actions and 30-second completed-item retention behavior.
+5. Open the transfer queue panel and verify rejected transfers are shown as `Rejected` (not `Failed`), canceled transfers are shown as `Canceled`, and cancel/retry actions still work with 30-second completed-item retention behavior.
 6. Toggle chat search, query a known message term, and verify transcript rows are filtered.
 7. Enable the files-only search filter and verify only transfer cards are shown for the selected peer.
 8. Background the app or switch to another peer chat, send a message/file request from another client, and verify desktop notifications fire (respecting per-peer mute/global toggle).

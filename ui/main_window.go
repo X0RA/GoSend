@@ -885,8 +885,10 @@ func transferQueueStatusText(entry chatFileEntry) string {
 	switch {
 	case strings.EqualFold(status, "complete"), (entry.TransferCompleted && strings.EqualFold(status, "accepted")):
 		return "Complete"
-	case strings.EqualFold(status, "failed"), strings.EqualFold(status, "rejected"):
+	case strings.EqualFold(status, "failed"):
 		return "Failed"
+	case strings.EqualFold(status, "rejected"):
+		return "Rejected"
 	case strings.EqualFold(status, "canceled"):
 		return "Canceled"
 	case strings.EqualFold(status, "pending"):
@@ -1210,11 +1212,21 @@ func (c *controller) maybeNotifyIncomingFileRequest(notification network.FileReq
 
 	name := strings.TrimSpace(notification.Filename)
 	if name == "" {
-		name = "Unnamed file"
+		if notification.IsFolder {
+			name = "Unnamed folder"
+		} else {
+			name = "Unnamed file"
+		}
+	}
+	title := "Incoming file request"
+	message := fmt.Sprintf("%s wants to send %s", c.transferPeerName(peerID), name)
+	if notification.IsFolder {
+		title = "Incoming folder request"
+		message = fmt.Sprintf("%s wants to send folder %s (%d file(s))", c.transferPeerName(peerID), name, notification.TotalFiles)
 	}
 	c.sendDesktopNotification(
-		"Incoming file request",
-		fmt.Sprintf("%s wants to send %s", c.transferPeerName(peerID), name),
+		title,
+		message,
 	)
 }
 
@@ -1600,7 +1612,17 @@ func (c *controller) promptFileRequestDecision(notification network.FileRequestN
 			})
 		}
 
-		intro := widget.NewLabel(fmt.Sprintf("%s wants to send you a file.", peerName))
+		entityLabel := "file"
+		headerTitle := "Incoming File"
+		headerSubtitle := "Review before accepting"
+		promptText := "Accept this transfer?"
+		if notification.IsFolder {
+			entityLabel = "folder"
+			headerTitle = "Incoming Folder"
+			headerSubtitle = "Review folder contents before accepting"
+			promptText = "Accept this folder transfer?"
+		}
+		intro := widget.NewLabel(fmt.Sprintf("%s wants to send you a %s.", peerName, entityLabel))
 		intro.Wrapping = fyne.TextWrapWord
 		fileName := canvas.NewText("Name: "+valueOrDefault(notification.Filename, notification.FileID), ctpText)
 		fileName.TextSize = 12
@@ -1608,20 +1630,27 @@ func (c *controller) promptFileRequestDecision(notification network.FileRequestN
 		fileSize.TextSize = 11
 		fileType := canvas.NewText("Type: "+valueOrDefault(notification.Filetype, "unknown"), ctpSubtext0)
 		fileType.TextSize = 11
-		prompt := canvas.NewText("Accept this transfer?", ctpSubtext0)
+		prompt := canvas.NewText(promptText, ctpSubtext0)
 		prompt.TextSize = 11
 
-		body := container.New(layout.NewCustomPaddedVBoxLayout(6), intro, fileName, fileSize, fileType, prompt)
+		bodyItems := []fyne.CanvasObject{intro, fileName, fileSize, fileType}
+		if notification.IsFolder {
+			totalFiles := canvas.NewText(fmt.Sprintf("Files: %d", notification.TotalFiles), ctpSubtext0)
+			totalFiles.TextSize = 11
+			bodyItems = append(bodyItems, totalFiles)
+		}
+		bodyItems = append(bodyItems, prompt)
+		body := container.New(layout.NewCustomPaddedVBoxLayout(6), bodyItems...)
 		center := container.New(layout.NewCustomPaddedLayout(12, 10, 12, 12), body)
 
-		header := newPanelHeader("Incoming File", "Review before accepting", func() {
+		header := newPanelHeader(headerTitle, headerSubtitle, func() {
 			respond(false)
 		}, c.handleHoverHint)
 		footerRight := container.New(layout.NewCustomPaddedHBoxLayout(8),
-			newPanelActionButton("Reject", "Reject incoming file", panelActionSecondary, func() {
+			newPanelActionButton("Reject", "Reject incoming transfer", panelActionSecondary, func() {
 				respond(false)
 			}, c.handleHoverHint),
-			newPanelActionButton("Accept", "Accept incoming file", panelActionPrimary, func() {
+			newPanelActionButton("Accept", "Accept incoming transfer", panelActionPrimary, func() {
 				respond(true)
 			}, c.handleHoverHint),
 		)
@@ -1637,20 +1666,22 @@ func (c *controller) promptFileRequestDecision(notification network.FileRequestN
 		c.filePromptPendingMu.Unlock()
 		return false, errors.New("application is shutting down")
 	case accept := <-decision:
-		status := "rejected"
-		if accept {
-			status = "accepted"
+		if !notification.IsFolder {
+			status := "rejected"
+			if accept {
+				status = "accepted"
+			}
+			c.upsertFileTransfer(chatFileEntry{
+				FileID:       notification.FileID,
+				PeerDeviceID: notification.FromDeviceID,
+				Direction:    "receive",
+				Filename:     notification.Filename,
+				Filesize:     notification.Filesize,
+				Filetype:     notification.Filetype,
+				AddedAt:      time.Now().UnixMilli(),
+				Status:       status,
+			})
 		}
-		c.upsertFileTransfer(chatFileEntry{
-			FileID:       notification.FileID,
-			PeerDeviceID: notification.FromDeviceID,
-			Direction:    "receive",
-			Filename:     notification.Filename,
-			Filesize:     notification.Filesize,
-			Filetype:     notification.Filetype,
-			AddedAt:      time.Now().UnixMilli(),
-			Status:       status,
-		})
 		c.refreshChatForPeer(notification.FromDeviceID)
 		return accept, nil
 	}

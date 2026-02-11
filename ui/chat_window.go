@@ -911,7 +911,7 @@ func renderFileRow(file chatFileEntry, localDeviceID string, parentWindow fyne.W
 		contentItems = append(contentItems, indent(speed))
 	}
 
-	if !file.TransferCompleted && file.Status != "failed" && file.Status != "rejected" {
+	if !file.TransferCompleted && file.Status != "failed" && file.Status != "rejected" && file.Status != "canceled" {
 		progressValue := float32(0)
 		if file.TotalBytes > 0 {
 			progressValue = float32(file.BytesTransferred) / float32(file.TotalBytes)
@@ -932,8 +932,9 @@ func renderFileRow(file chatFileEntry, localDeviceID string, parentWindow fyne.W
 	}
 
 	canCancel := !file.TransferCompleted && (strings.EqualFold(file.Status, "pending") || strings.EqualFold(file.Status, "accepted"))
-	canRetry := !file.TransferCompleted && (strings.EqualFold(file.Status, "failed") || strings.EqualFold(file.Status, "rejected")) && strings.EqualFold(file.Direction, "send")
+	canRetry := strings.EqualFold(file.Direction, "send") && (strings.EqualFold(file.Status, "failed") || strings.EqualFold(file.Status, "rejected") || strings.EqualFold(file.Status, "canceled"))
 	canOpenFile := file.TransferCompleted && storedPath != "" && strings.EqualFold(file.Status, "complete")
+	canOpenFolder := file.TransferCompleted && storedPath != "" && strings.EqualFold(file.Status, "complete")
 	canCopyPath := storedPath != "" && parentWindow != nil && parentWindow.Clipboard() != nil
 
 	actionButtons := make([]fyne.CanvasObject, 0, 4)
@@ -945,6 +946,13 @@ func renderFileRow(file chatFileEntry, localDeviceID string, parentWindow fyne.W
 	if canRetry && onRetryTransfer != nil {
 		actionButtons = append(actionButtons, newCompactFlatButtonWithIconAndLabelState(iconRefresh(), "Retry", true, func() {
 			onRetryTransfer(file.FileID)
+		}))
+	}
+	if canOpenFolder {
+		actionButtons = append(actionButtons, newCompactFlatButtonWithIconAndLabelState(iconFolderOpen(), "Open Folder", true, func() {
+			if err := openContainingFolder(storedPath); err != nil && parentWindow != nil {
+				dialog.ShowError(err, parentWindow)
+			}
 		}))
 	}
 	if canOpenFile {
@@ -985,7 +993,7 @@ func isImageFile(filename string) bool {
 func fileTransferStatusText(file chatFileEntry) string {
 	switch strings.ToLower(file.Status) {
 	case "rejected":
-		return "Failed"
+		return "Rejected"
 	case "failed":
 		return "Failed"
 	case "canceled":
@@ -1206,7 +1214,8 @@ func (c *controller) mergeChatFilesForPeer(peerID string, files []storage.FileMe
 		}
 		terminal := strings.EqualFold(liveEntry.Status, "complete") ||
 			strings.EqualFold(liveEntry.Status, "failed") ||
-			strings.EqualFold(liveEntry.Status, "rejected")
+			strings.EqualFold(liveEntry.Status, "rejected") ||
+			strings.EqualFold(liveEntry.Status, "canceled")
 		if terminal && liveEntry.TransferCompleted {
 			continue
 		}
@@ -1241,8 +1250,10 @@ func (c *controller) chatFileEntryFromMetadata(meta storage.FileMetadata) chatFi
 
 	terminal := strings.EqualFold(meta.TransferStatus, "complete") ||
 		strings.EqualFold(meta.TransferStatus, "failed") ||
-		strings.EqualFold(meta.TransferStatus, "rejected")
+		strings.EqualFold(meta.TransferStatus, "rejected") ||
+		strings.EqualFold(meta.TransferStatus, "canceled")
 	completed := strings.EqualFold(meta.TransferStatus, "complete")
+	transferCompleted := terminal
 	completedAt := int64(0)
 	if terminal {
 		completedAt = addedAt
@@ -1267,7 +1278,7 @@ func (c *controller) chatFileEntryFromMetadata(meta storage.FileMetadata) chatFi
 		BytesTransferred:  bytesTransferred,
 		TotalBytes:        meta.Filesize,
 		Status:            meta.TransferStatus,
-		TransferCompleted: completed,
+		TransferCompleted: transferCompleted,
 		CompletedAt:       completedAt,
 	}
 }
@@ -1386,18 +1397,20 @@ func (c *controller) handleFileProgress(progress network.FileProgress) {
 		entry.StoredPath = meta.StoredPath
 		entry.FolderID = meta.FolderID
 		entry.RelativePath = meta.RelativePath
-		metaTerminal := strings.EqualFold(meta.TransferStatus, "rejected") || strings.EqualFold(meta.TransferStatus, "failed") || strings.EqualFold(meta.TransferStatus, "complete")
+		metaTerminal := strings.EqualFold(meta.TransferStatus, "rejected") || strings.EqualFold(meta.TransferStatus, "failed") || strings.EqualFold(meta.TransferStatus, "complete") || strings.EqualFold(meta.TransferStatus, "canceled")
 		isRetryReset := strings.EqualFold(entry.Status, "pending") && !entry.TransferCompleted
 		if !isRetryReset && (metaTerminal || !(strings.EqualFold(meta.TransferStatus, "pending") && entry.BytesTransferred > 0)) {
 			entry.Status = meta.TransferStatus
 		}
-		if !isRetryReset && (meta.TransferStatus == "complete" || meta.TransferStatus == "rejected" || meta.TransferStatus == "failed") {
+		if !isRetryReset && (meta.TransferStatus == "complete" || meta.TransferStatus == "rejected" || meta.TransferStatus == "failed" || meta.TransferStatus == "canceled") {
 			entry.TransferCompleted = true
 		}
 	}
 
 	if entry.TransferCompleted {
-		entry.Status = "complete"
+		if strings.TrimSpace(entry.Status) == "" {
+			entry.Status = "complete"
+		}
 		entry.CompletedAt = time.Now().UnixMilli()
 	}
 	if entry.TotalBytes == 0 {

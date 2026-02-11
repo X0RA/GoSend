@@ -61,6 +61,17 @@ func TestFileCRUD(t *testing.T) {
 	if updated.TransferStatus != transferStatusComplete {
 		t.Fatalf("expected transfer status %q, got %q", transferStatusComplete, updated.TransferStatus)
 	}
+
+	if err := store.UpdateTransferStatus(file.FileID, transferStatusCanceled); err != nil {
+		t.Fatalf("UpdateTransferStatus(canceled) failed: %v", err)
+	}
+	canceled, err := store.GetFileByID(file.FileID)
+	if err != nil {
+		t.Fatalf("GetFileByID after canceled update failed: %v", err)
+	}
+	if canceled.TransferStatus != transferStatusCanceled {
+		t.Fatalf("expected transfer status %q, got %q", transferStatusCanceled, canceled.TransferStatus)
+	}
 }
 
 func TestTransferCheckpointCRUD(t *testing.T) {
@@ -193,6 +204,17 @@ func TestFolderTransferMetadataAndFileLinking(t *testing.T) {
 	}
 	if updatedFolder.TransferStatus != transferStatusComplete {
 		t.Fatalf("expected folder transfer status %q, got %q", transferStatusComplete, updatedFolder.TransferStatus)
+	}
+
+	if err := store.UpdateFolderTransferStatus(folder.FolderID, transferStatusCanceled); err != nil {
+		t.Fatalf("UpdateFolderTransferStatus(canceled) failed: %v", err)
+	}
+	canceledFolder, err := store.GetFolderTransfer(folder.FolderID)
+	if err != nil {
+		t.Fatalf("GetFolderTransfer after canceled update failed: %v", err)
+	}
+	if canceledFolder.TransferStatus != transferStatusCanceled {
+		t.Fatalf("expected folder transfer status %q, got %q", transferStatusCanceled, canceledFolder.TransferStatus)
 	}
 }
 

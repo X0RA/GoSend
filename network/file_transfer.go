@@ -39,11 +39,22 @@ const (
 	fileCompleteStatusComplete = "complete"
 	fileCompleteStatusFailed   = "failed"
 
+	fileCancelMessageBySender   = "transfer canceled by sender"
+	fileCancelMessageByReceiver = "transfer canceled by receiver"
+
 	outboundCheckpointChunkInterval = 50
 	outboundCheckpointByteInterval  = 10 * 1024 * 1024
 	inboundCheckpointChunkInterval  = 10
 	inboundCheckpointByteInterval   = 2 * 1024 * 1024
+	minRecentFileDecisionTTL        = 30 * time.Second
+	maxRecentFileDecisionTTL        = 5 * time.Minute
 )
+
+type recentFileDecision struct {
+	Accepted  bool
+	DecidedAt int64
+	ExpiresAt time.Time
+}
 
 type outboundFileTransfer struct {
 	mu sync.Mutex
@@ -398,6 +409,9 @@ func (m *PeerManager) beginOutboundFileTransfer(transfer *outboundFileTransfer, 
 		transfer.cancel = nil
 		pending := !transfer.Done && !transfer.Rejected && !transfer.Canceled
 		wasCanceled := transfer.Canceled
+		bytesSent := transfer.BytesSent
+		totalBytes := transfer.Filesize
+		totalChunks := transfer.TotalChunks
 		transfer.mu.Unlock()
 
 		if err != nil && !errors.Is(err, context.Canceled) {
@@ -407,8 +421,18 @@ func (m *PeerManager) beginOutboundFileTransfer(transfer *outboundFileTransfer, 
 			_ = m.options.Store.UpdateTransferStatus(transfer.FileID, "pending")
 			m.enqueueOutboundTransfer(transfer.PeerDeviceID, transfer.FileID, true)
 		} else if wasCanceled {
-			_ = m.options.Store.UpdateTransferStatus(transfer.FileID, "failed")
+			_ = m.options.Store.UpdateTransferStatus(transfer.FileID, "canceled")
 			m.removeTransferCheckpoint(transfer.FileID, storage.TransferDirectionSend)
+			m.emitFileProgress(FileProgress{
+				FileID:            transfer.FileID,
+				PeerDeviceID:      transfer.PeerDeviceID,
+				Direction:         fileTransferDirectionSend,
+				BytesTransferred:  bytesSent,
+				TotalBytes:        totalBytes,
+				TotalChunks:       totalChunks,
+				Status:            "canceled",
+				TransferCompleted: true,
+			})
 		}
 		m.finishOutboundTransfer(transfer.PeerDeviceID, transfer.FileID)
 		m.startNextQueuedTransfer(transfer.PeerDeviceID)
@@ -569,13 +593,22 @@ func (m *PeerManager) CancelTransfer(fileID string) error {
 
 		m.removeQueuedOutboundTransfer(peerID, fileID)
 		if running {
+			if conn := m.getConnection(peerID); conn != nil {
+				_ = m.sendSignedFileComplete(conn, FileComplete{
+					Type:      TypeFileComplete,
+					FileID:    fileID,
+					Status:    fileCompleteStatusFailed,
+					Message:   fileCancelMessageBySender,
+					Timestamp: time.Now().UnixMilli(),
+				})
+			}
 			if cancel != nil {
 				cancel()
 			}
 			return nil
 		}
 
-		_ = m.options.Store.UpdateTransferStatus(fileID, "failed")
+		_ = m.options.Store.UpdateTransferStatus(fileID, "canceled")
 		m.removeTransferCheckpoint(fileID, storage.TransferDirectionSend)
 		m.finishOutboundTransfer(peerID, fileID)
 		m.startNextQueuedTransfer(peerID)
@@ -586,7 +619,7 @@ func (m *PeerManager) CancelTransfer(fileID string) error {
 			BytesTransferred:  bytesSent,
 			TotalBytes:        totalBytes,
 			TotalChunks:       totalChunks,
-			Status:            "failed",
+			Status:            "canceled",
 			TransferCompleted: true,
 		})
 		return nil
@@ -594,18 +627,19 @@ func (m *PeerManager) CancelTransfer(fileID string) error {
 
 	if inbound != nil {
 		peerID := inbound.FromDeviceID
+		bytesReceived := inbound.BytesReceived
 		totalBytes := inbound.Filesize
 		totalChunks := inbound.TotalChunks
 		m.removeInboundTransfer(fileID)
 		m.removeTransferCheckpoint(fileID, storage.TransferDirectionReceive)
 		_ = os.Remove(inbound.TempPath)
-		_ = m.options.Store.UpdateTransferStatus(fileID, "failed")
+		_ = m.options.Store.UpdateTransferStatus(fileID, "canceled")
 		if conn := m.getConnection(peerID); conn != nil {
 			_ = m.sendSignedFileComplete(conn, FileComplete{
 				Type:      TypeFileComplete,
 				FileID:    fileID,
 				Status:    fileCompleteStatusFailed,
-				Message:   "transfer canceled by receiver",
+				Message:   fileCancelMessageByReceiver,
 				Timestamp: time.Now().UnixMilli(),
 			})
 		}
@@ -613,10 +647,10 @@ func (m *PeerManager) CancelTransfer(fileID string) error {
 			FileID:            fileID,
 			PeerDeviceID:      peerID,
 			Direction:         fileTransferDirectionReceive,
-			BytesTransferred:  0,
+			BytesTransferred:  bytesReceived,
 			TotalBytes:        totalBytes,
 			TotalChunks:       totalChunks,
-			Status:            "failed",
+			Status:            "canceled",
 			TransferCompleted: true,
 		})
 		return nil
@@ -625,7 +659,7 @@ func (m *PeerManager) CancelTransfer(fileID string) error {
 	if _, err := m.options.Store.GetFileByID(fileID); err != nil {
 		return err
 	}
-	return m.options.Store.UpdateTransferStatus(fileID, "failed")
+	return m.options.Store.UpdateTransferStatus(fileID, "canceled")
 }
 
 // RetryTransfer re-queues a failed outbound transfer from its persisted metadata.
@@ -735,7 +769,14 @@ func (m *PeerManager) runOutboundFileTransfer(runCtx context.Context, transfer *
 		transfer.mu.Lock()
 		transfer.Rejected = true
 		transfer.mu.Unlock()
-		_ = m.options.Store.UpdateTransferStatus(transfer.FileID, "rejected")
+		status := "rejected"
+		if isCancellationResponseMessage(acceptResponse.Message) {
+			status = "canceled"
+			transfer.mu.Lock()
+			transfer.Canceled = true
+			transfer.mu.Unlock()
+		}
+		_ = m.options.Store.UpdateTransferStatus(transfer.FileID, status)
 		m.removeTransferCheckpoint(transfer.FileID, storage.TransferDirectionSend)
 		m.emitFileProgress(FileProgress{
 			FileID:            transfer.FileID,
@@ -743,7 +784,7 @@ func (m *PeerManager) runOutboundFileTransfer(runCtx context.Context, transfer *
 			Direction:         fileTransferDirectionSend,
 			BytesTransferred:  0,
 			TotalBytes:        transfer.Filesize,
-			Status:            "rejected",
+			Status:            status,
 			TransferCompleted: true,
 		})
 		return nil
@@ -839,7 +880,14 @@ func (m *PeerManager) runOutboundFileTransfer(runCtx context.Context, transfer *
 				transfer.mu.Lock()
 				transfer.Rejected = true
 				transfer.mu.Unlock()
-				_ = m.options.Store.UpdateTransferStatus(transfer.FileID, "rejected")
+				status := "rejected"
+				if isCancellationResponseMessage(response.Message) {
+					status = "canceled"
+					transfer.mu.Lock()
+					transfer.Canceled = true
+					transfer.mu.Unlock()
+				}
+				_ = m.options.Store.UpdateTransferStatus(transfer.FileID, status)
 				m.removeTransferCheckpoint(transfer.FileID, storage.TransferDirectionSend)
 				m.emitFileProgress(FileProgress{
 					FileID:            transfer.FileID,
@@ -847,7 +895,7 @@ func (m *PeerManager) runOutboundFileTransfer(runCtx context.Context, transfer *
 					Direction:         fileTransferDirectionSend,
 					BytesTransferred:  transfer.BytesSent,
 					TotalBytes:        transfer.Filesize,
-					Status:            "rejected",
+					Status:            status,
 					TransferCompleted: true,
 				})
 				return nil
@@ -904,8 +952,25 @@ func (m *PeerManager) runOutboundFileTransfer(runCtx context.Context, transfer *
 		transfer.mu.Lock()
 		transfer.Done = true
 		transfer.mu.Unlock()
-		_ = m.options.Store.UpdateTransferStatus(transfer.FileID, "failed")
+		status := "failed"
+		if isCancellationComplete(complete) {
+			transfer.mu.Lock()
+			transfer.Canceled = true
+			transfer.mu.Unlock()
+			status = "canceled"
+		}
+		_ = m.options.Store.UpdateTransferStatus(transfer.FileID, status)
 		m.removeTransferCheckpoint(transfer.FileID, storage.TransferDirectionSend)
+		m.emitFileProgress(FileProgress{
+			FileID:            transfer.FileID,
+			PeerDeviceID:      transfer.PeerDeviceID,
+			Direction:         fileTransferDirectionSend,
+			BytesTransferred:  transfer.BytesSent,
+			TotalBytes:        transfer.Filesize,
+			TotalChunks:       transfer.TotalChunks,
+			Status:            status,
+			TransferCompleted: true,
+		})
 		return nil
 	}
 
@@ -993,6 +1058,7 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 	finalPath := filepath.Join(downloadDir, prefixedFilename(request.FileID, request.Filename))
 	relativePath := ""
 	folderID := strings.TrimSpace(request.FolderID)
+	folderAutoAccept := false
 
 	rejectWithMessage := func(message string) {
 		response := FileResponse{
@@ -1008,6 +1074,24 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 			return
 		}
 		_ = conn.SendMessage(response)
+	}
+
+	sendAccept := func(resumeFrom int) {
+		response := FileResponse{
+			Type:            TypeFileResponse,
+			FileID:          request.FileID,
+			Status:          fileResponseStatusAccepted,
+			FromDeviceID:    m.options.Identity.DeviceID,
+			ResumeFromChunk: resumeFrom,
+			Timestamp:       time.Now().UnixMilli(),
+		}
+		if err := m.signFileResponse(&response); err != nil {
+			m.reportError(err)
+			return
+		}
+		if err := conn.SendMessage(response); err != nil {
+			m.reportError(err)
+		}
 	}
 
 	if folderID != "" {
@@ -1029,8 +1113,56 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 			rejectWithMessage("invalid folder path")
 			return
 		}
+		if len(folder.Manifest) > 0 {
+			entry, exists := folder.Manifest[relativePath]
+			if !exists || entry.IsDirectory {
+				rejectWithMessage("unknown folder entry")
+				return
+			}
+			if entry.Size != request.Filesize {
+				rejectWithMessage("folder file size mismatch")
+				return
+			}
+		}
+		folderAutoAccept = true
 	}
 	tempPath := finalPath + ".part"
+
+	inbound := m.getInboundTransfer(request.FileID)
+	if inbound != nil {
+		_ = m.options.Store.UpdateTransferStatus(request.FileID, "accepted")
+		inbound.mu.Lock()
+		resumeFrom := inbound.NextChunk
+		inbound.mu.Unlock()
+		sendAccept(resumeFrom)
+		return
+	}
+
+	if decision, ok := m.recentFileDecision(request.FileID); ok && !decision.Accepted {
+		if request.Timestamp <= decision.DecidedAt {
+			meta := storage.FileMetadata{
+				FileID:         request.FileID,
+				FolderID:       folderID,
+				RelativePath:   relativePath,
+				FromDeviceID:   request.FromDeviceID,
+				ToDeviceID:     request.ToDeviceID,
+				Filename:       request.Filename,
+				Filesize:       request.Filesize,
+				Filetype:       request.Filetype,
+				StoredPath:     finalPath,
+				Checksum:       request.Checksum,
+				TransferStatus: "rejected",
+			}
+			if err := m.upsertFileMetadata(meta); err != nil {
+				m.reportError(err)
+			} else {
+				_ = m.options.Store.UpdateTransferStatus(request.FileID, "rejected")
+			}
+			rejectWithMessage("file transfer rejected by user")
+			return
+		}
+		m.clearRecentFileDecision(request.FileID)
+	}
 
 	effectiveSizeLimit := m.resolveReceiveLimit(peerSettings)
 	accept := true
@@ -1039,6 +1171,8 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 	if effectiveSizeLimit > 0 && request.Filesize > effectiveSizeLimit {
 		accept = false
 		rejectMessage = fmt.Sprintf("file size exceeds configured limit (%d bytes)", effectiveSizeLimit)
+	} else if folderAutoAccept {
+		accept = true
 	} else if peerSettings != nil && peerSettings.AutoAcceptFiles {
 		accept = true
 	} else if m.options.OnFileRequest != nil {
@@ -1049,6 +1183,9 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 			Filesize:     request.Filesize,
 			Filetype:     request.Filetype,
 			Checksum:     request.Checksum,
+			FolderID:     folderID,
+			IsFolder:     false,
+			TotalFiles:   1,
 		})
 		if err != nil {
 			m.reportError(err)
@@ -1057,13 +1194,8 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 		accept = decision
 	}
 
-	inbound := m.getInboundTransfer(request.FileID)
 	if !accept {
-		if inbound != nil {
-			m.removeInboundTransfer(request.FileID)
-			m.removeTransferCheckpoint(request.FileID, storage.TransferDirectionReceive)
-			_ = os.Remove(inbound.TempPath)
-		}
+		m.rememberFileDecision(request.FileID, false, m.recentFileDecisionTTL())
 		meta := storage.FileMetadata{
 			FileID:         request.FileID,
 			FolderID:       folderID,
@@ -1085,77 +1217,61 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 		rejectWithMessage(rejectMessage)
 		return
 	}
+	m.clearRecentFileDecision(request.FileID)
 
-	if inbound == nil {
-		if err := os.MkdirAll(filepath.Dir(finalPath), 0o700); err != nil {
-			m.reportError(err)
-			return
-		}
-		file, err := os.OpenFile(tempPath, os.O_CREATE|os.O_RDWR, 0o600)
-		if err != nil {
-			m.reportError(err)
-			return
-		}
-		_ = file.Close()
-		if err := os.Truncate(tempPath, request.Filesize); err != nil {
-			m.reportError(err)
-			return
-		}
-
-		inbound = &inboundFileTransfer{
-			FileID:         request.FileID,
-			FromDeviceID:   request.FromDeviceID,
-			Filename:       request.Filename,
-			Filesize:       request.Filesize,
-			Filetype:       request.Filetype,
-			Checksum:       request.Checksum,
-			ChunkSize:      m.options.FileChunkSize,
-			TotalChunks:    chunkCount(request.Filesize, m.options.FileChunkSize),
-			TempPath:       tempPath,
-			FinalPath:      finalPath,
-			ReceivedChunks: make(map[int]bool),
-		}
-		m.setInboundTransfer(inbound)
-
-		meta := storage.FileMetadata{
-			FileID:         request.FileID,
-			FolderID:       folderID,
-			RelativePath:   relativePath,
-			FromDeviceID:   request.FromDeviceID,
-			ToDeviceID:     request.ToDeviceID,
-			Filename:       request.Filename,
-			Filesize:       request.Filesize,
-			Filetype:       request.Filetype,
-			StoredPath:     finalPath,
-			Checksum:       request.Checksum,
-			TransferStatus: "pending",
-		}
-		if err := m.upsertFileMetadata(meta); err != nil {
-			m.reportError(err)
-		}
-		m.maybePersistInboundCheckpoint(inbound, true)
+	if err := os.MkdirAll(filepath.Dir(finalPath), 0o700); err != nil {
+		m.reportError(err)
+		return
 	}
+	file, err := os.OpenFile(tempPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		m.reportError(err)
+		return
+	}
+	_ = file.Close()
+	if err := os.Truncate(tempPath, request.Filesize); err != nil {
+		m.reportError(err)
+		return
+	}
+
+	inbound = &inboundFileTransfer{
+		FileID:         request.FileID,
+		FromDeviceID:   request.FromDeviceID,
+		Filename:       request.Filename,
+		Filesize:       request.Filesize,
+		Filetype:       request.Filetype,
+		Checksum:       request.Checksum,
+		ChunkSize:      m.options.FileChunkSize,
+		TotalChunks:    chunkCount(request.Filesize, m.options.FileChunkSize),
+		TempPath:       tempPath,
+		FinalPath:      finalPath,
+		ReceivedChunks: make(map[int]bool),
+	}
+	m.setInboundTransfer(inbound)
+
+	meta := storage.FileMetadata{
+		FileID:         request.FileID,
+		FolderID:       folderID,
+		RelativePath:   relativePath,
+		FromDeviceID:   request.FromDeviceID,
+		ToDeviceID:     request.ToDeviceID,
+		Filename:       request.Filename,
+		Filesize:       request.Filesize,
+		Filetype:       request.Filetype,
+		StoredPath:     finalPath,
+		Checksum:       request.Checksum,
+		TransferStatus: "pending",
+	}
+	if err := m.upsertFileMetadata(meta); err != nil {
+		m.reportError(err)
+	}
+	m.maybePersistInboundCheckpoint(inbound, true)
 
 	_ = m.options.Store.UpdateTransferStatus(request.FileID, "accepted")
 	inbound.mu.Lock()
 	resumeFrom := inbound.NextChunk
 	inbound.mu.Unlock()
-
-	response := FileResponse{
-		Type:            TypeFileResponse,
-		FileID:          request.FileID,
-		Status:          fileResponseStatusAccepted,
-		FromDeviceID:    m.options.Identity.DeviceID,
-		ResumeFromChunk: resumeFrom,
-		Timestamp:       time.Now().UnixMilli(),
-	}
-	if err := m.signFileResponse(&response); err != nil {
-		m.reportError(err)
-		return
-	}
-	if err := conn.SendMessage(response); err != nil {
-		m.reportError(err)
-	}
+	sendAccept(resumeFrom)
 }
 
 func (m *PeerManager) handleFileResponse(conn *PeerConnection, response FileResponse) {
@@ -1264,6 +1380,9 @@ func (m *PeerManager) handleFolderTransferRequest(conn *PeerConnection, request 
 			Filesize:     totalSize,
 			Filetype:     "inode/directory",
 			Checksum:     "",
+			FolderID:     request.FolderID,
+			IsFolder:     true,
+			TotalFiles:   totalFiles,
 		})
 		if err != nil {
 			m.reportError(err)
@@ -1560,18 +1679,34 @@ func (m *PeerManager) handleFileComplete(conn *PeerConnection, complete FileComp
 	}
 
 	if complete.Status != fileCompleteStatusComplete {
-		_ = m.options.Store.UpdateTransferStatus(complete.FileID, "failed")
+		status := "failed"
+		responseMessage := "sender marked transfer failed"
+		if isCancellationComplete(complete) {
+			status = "canceled"
+			responseMessage = fileCancelMessageBySender
+		}
+		_ = m.options.Store.UpdateTransferStatus(complete.FileID, status)
 		m.removeInboundTransfer(complete.FileID)
 		m.removeTransferCheckpoint(complete.FileID, storage.TransferDirectionReceive)
 		if err := m.sendSignedFileComplete(conn, FileComplete{
 			Type:      TypeFileComplete,
 			FileID:    complete.FileID,
 			Status:    fileCompleteStatusFailed,
-			Message:   "sender marked transfer failed",
+			Message:   responseMessage,
 			Timestamp: time.Now().UnixMilli(),
 		}); err != nil {
 			m.reportError(err)
 		}
+		m.emitFileProgress(FileProgress{
+			FileID:            complete.FileID,
+			PeerDeviceID:      conn.PeerDeviceID(),
+			Direction:         fileTransferDirectionReceive,
+			BytesTransferred:  inbound.BytesReceived,
+			TotalBytes:        inbound.Filesize,
+			TotalChunks:       inbound.TotalChunks,
+			Status:            status,
+			TransferCompleted: true,
+		})
 		return
 	}
 
@@ -1993,7 +2128,7 @@ func (m *PeerManager) restoreInboundTransfer(checkpoint storage.TransferCheckpoi
 
 func isTerminalTransferStatus(status string) bool {
 	switch status {
-	case "complete", "rejected", "failed":
+	case "complete", "rejected", "failed", "canceled":
 		return true
 	default:
 		return false
@@ -2269,6 +2404,74 @@ func (m *PeerManager) setInboundFolderTransfer(folder *inboundFolderTransfer) {
 	m.fileMu.Unlock()
 }
 
+func (m *PeerManager) recentFileDecision(fileID string) (recentFileDecision, bool) {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return recentFileDecision{}, false
+	}
+
+	now := time.Now()
+
+	m.fileMu.Lock()
+	defer m.fileMu.Unlock()
+
+	decision, ok := m.recentFileDecisions[fileID]
+	if !ok {
+		return recentFileDecision{}, false
+	}
+	if !decision.ExpiresAt.IsZero() && now.After(decision.ExpiresAt) {
+		delete(m.recentFileDecisions, fileID)
+		return recentFileDecision{}, false
+	}
+	return decision, true
+}
+
+func (m *PeerManager) rememberFileDecision(fileID string, accepted bool, ttl time.Duration) {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return
+	}
+	if ttl <= 0 {
+		ttl = m.recentFileDecisionTTL()
+	}
+
+	decidedAt := time.Now()
+
+	m.fileMu.Lock()
+	m.recentFileDecisions[fileID] = recentFileDecision{
+		Accepted:  accepted,
+		DecidedAt: decidedAt.UnixMilli(),
+		ExpiresAt: decidedAt.Add(ttl),
+	}
+	m.fileMu.Unlock()
+}
+
+func (m *PeerManager) clearRecentFileDecision(fileID string) {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return
+	}
+
+	m.fileMu.Lock()
+	delete(m.recentFileDecisions, fileID)
+	m.fileMu.Unlock()
+}
+
+func (m *PeerManager) recentFileDecisionTTL() time.Duration {
+	timeout := m.options.FileResponseTimeout
+	if timeout <= 0 {
+		timeout = defaultFileResponseTimout
+	}
+	ttl := timeout * 3
+	if ttl < minRecentFileDecisionTTL {
+		return minRecentFileDecisionTTL
+	}
+	if ttl > maxRecentFileDecisionTTL {
+		return maxRecentFileDecisionTTL
+	}
+	return ttl
+}
+
 func (m *PeerManager) removeInboundFolderTransfer(folderID string) {
 	if strings.TrimSpace(folderID) == "" {
 		return
@@ -2355,6 +2558,26 @@ func (m *PeerManager) emitFileProgress(progress FileProgress) {
 	if m.options.OnFileProgress != nil {
 		m.options.OnFileProgress(progress)
 	}
+}
+
+func isCancellationResponseMessage(message string) bool {
+	switch normalizeTransferMessage(message) {
+	case fileCancelMessageBySender, fileCancelMessageByReceiver, "transfer cancelled by sender", "transfer cancelled by receiver":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCancellationComplete(complete FileComplete) bool {
+	if !strings.EqualFold(strings.TrimSpace(complete.Status), fileCompleteStatusFailed) {
+		return false
+	}
+	return isCancellationResponseMessage(complete.Message)
+}
+
+func normalizeTransferMessage(message string) string {
+	return strings.ToLower(strings.TrimSpace(message))
 }
 
 func readFileChunk(file *os.File, offset int64, chunkSize int) ([]byte, error) {
