@@ -458,6 +458,63 @@ func TestFileTransferDelayedAcceptPromptsOnce(t *testing.T) {
 	}
 }
 
+func TestFileTransferDelayedAcceptBeyondResponseWindowDoesNotReject(t *testing.T) {
+	aFiles := filepath.Join(t.TempDir(), "a-files")
+	bFiles := filepath.Join(t.TempDir(), "b-files")
+	sourcePath := createFixtureFile(t, t.TempDir(), "delayed-accept-long.bin", 512*1024)
+
+	a := newTestManager(t, testManagerConfig{
+		deviceID:      "peer-a",
+		name:          "Peer A",
+		filesDir:      aFiles,
+		fileChunkSize: 32 * 1024,
+	})
+	defer a.stop()
+
+	var approveCalls atomic.Int32
+	releaseDecision := make(chan struct{})
+	var releaseOnce sync.Once
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID:             "peer-b",
+		name:                 "Peer B",
+		filesDir:             bFiles,
+		fileChunkSize:        32 * 1024,
+		fileRequestRateLimit: 3,
+		fileRequestWindow:    time.Minute,
+		approveFile: func(FileRequestNotification) (bool, error) {
+			if approveCalls.Add(1) == 1 {
+				<-releaseDecision
+			}
+			return true, nil
+		},
+	})
+	defer b.stop()
+	defer releaseOnce.Do(func() { close(releaseDecision) })
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a"); err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+
+	fileID, err := a.manager.SendFile("peer-b", sourcePath)
+	if err != nil {
+		t.Fatalf("SendFile failed: %v", err)
+	}
+
+	time.Sleep(9 * time.Second)
+	releaseOnce.Do(func() { close(releaseDecision) })
+
+	waitForFileStatus(t, a.store, fileID, "complete", 25*time.Second)
+	waitForFileStatus(t, b.store, fileID, "complete", 25*time.Second)
+
+	if got := approveCalls.Load(); got != 1 {
+		t.Fatalf("expected one approval callback after delayed accept beyond response window, got %d", got)
+	}
+}
+
 func TestFileTransferDelayedRejectPromptsOnce(t *testing.T) {
 	aFiles := filepath.Join(t.TempDir(), "a-files")
 	bFiles := filepath.Join(t.TempDir(), "b-files")
@@ -853,6 +910,90 @@ func TestCancelActiveTransferPropagatesCanceledStatus(t *testing.T) {
 
 	waitForFileStatus(t, a.store, sentFileID, "canceled", 20*time.Second)
 	waitForFileStatus(t, b.store, sentFileID, "canceled", 20*time.Second)
+}
+
+func TestCancelBeforeApprovalPropagatesCanceledStatus(t *testing.T) {
+	aFiles := filepath.Join(t.TempDir(), "a-files")
+	bFiles := filepath.Join(t.TempDir(), "b-files")
+	sourcePath := createFixtureFile(t, t.TempDir(), "cancel-before-approval.bin", 768*1024)
+
+	a := newTestManager(t, testManagerConfig{
+		deviceID:      "peer-a",
+		name:          "Peer A",
+		filesDir:      aFiles,
+		fileChunkSize: 32 * 1024,
+	})
+	defer a.stop()
+
+	var approveCalls atomic.Int32
+	approvalStarted := make(chan struct{})
+	var approvalStartedOnce sync.Once
+	canceledObserved := make(chan struct{})
+	var canceledObservedOnce sync.Once
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID:      "peer-b",
+		name:          "Peer B",
+		filesDir:      bFiles,
+		fileChunkSize: 32 * 1024,
+		approveFile: func(FileRequestNotification) (bool, error) {
+			approvalStartedOnce.Do(func() {
+				close(approvalStarted)
+			})
+			approveCalls.Add(1)
+			select {
+			case <-canceledObserved:
+				return false, ErrFileRequestDismissed
+			case <-time.After(6 * time.Second):
+				return false, errors.New("timed out waiting for cancellation signal")
+			}
+		},
+		onFileProgress: func(progress FileProgress) {
+			if progress.Direction == fileTransferDirectionReceive &&
+				strings.EqualFold(progress.Status, "canceled") &&
+				progress.TransferCompleted {
+				canceledObservedOnce.Do(func() {
+					close(canceledObserved)
+				})
+			}
+		},
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a"); err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+
+	fileID, err := a.manager.SendFile("peer-b", sourcePath)
+	if err != nil {
+		t.Fatalf("SendFile failed: %v", err)
+	}
+
+	select {
+	case <-approvalStarted:
+	case <-time.After(6 * time.Second):
+		t.Fatalf("timed out waiting for approval callback to start")
+	}
+
+	if err := a.manager.CancelTransfer(fileID); err != nil {
+		t.Fatalf("CancelTransfer failed: %v", err)
+	}
+
+	select {
+	case <-canceledObserved:
+	case <-time.After(6 * time.Second):
+		t.Fatalf("timed out waiting for receiver canceled progress event")
+	}
+
+	waitForFileStatus(t, a.store, fileID, "canceled", 20*time.Second)
+	waitForFileStatus(t, b.store, fileID, "canceled", 20*time.Second)
+
+	if got := approveCalls.Load(); got != 1 {
+		t.Fatalf("expected one pending approval callback, got %d", got)
+	}
 }
 
 func TestFolderTransferRequestRejectsPathTraversal(t *testing.T) {

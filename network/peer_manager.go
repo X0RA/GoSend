@@ -65,6 +65,12 @@ var defaultReconnectBackoff = []time.Duration{
 	60 * time.Second,
 }
 
+var (
+	// ErrFileRequestDismissed indicates the pending file request decision was superseded
+	// (for example, the sender canceled before receiver approval).
+	ErrFileRequestDismissed = errors.New("network: file request dismissed")
+)
+
 const (
 	securityEventTypeHandshakeFailure             = "handshake_failure"
 	securityEventTypeSignatureVerificationFailed  = "signature_verification_failed"
@@ -202,6 +208,7 @@ type PeerManager struct {
 	rateLimitMu        sync.Mutex
 	lastAddRequestAt   map[string]time.Time
 	fileRequestHistory map[string][]time.Time
+	fileRequestSeenIDs map[string]map[string]time.Time
 
 	endpointMu          sync.RWMutex
 	discoveredEndpoints map[string][]string
@@ -322,6 +329,7 @@ func NewPeerManager(options PeerManagerOptions) (*PeerManager, error) {
 		suppressReconnect:        make(map[string]bool),
 		lastAddRequestAt:         make(map[string]time.Time),
 		fileRequestHistory:       make(map[string][]time.Time),
+		fileRequestSeenIDs:       make(map[string]map[string]time.Time),
 		discoveredEndpoints:      make(map[string][]string),
 		endpointHealth:           make(map[string]map[string]int),
 		activeDrains:             make(map[string]bool),
@@ -2259,7 +2267,7 @@ func (m *PeerManager) allowAddRequest(peerDeviceID string, now time.Time) bool {
 	return true
 }
 
-func (m *PeerManager) allowFileRequest(peerDeviceID string, now time.Time) bool {
+func (m *PeerManager) allowFileRequest(peerDeviceID, fileID string, now time.Time) bool {
 	if peerDeviceID == "" {
 		return false
 	}
@@ -2280,14 +2288,45 @@ func (m *PeerManager) allowFileRequest(peerDeviceID string, now time.Time) bool 
 			filtered = append(filtered, seenAt)
 		}
 	}
+	m.fileRequestHistory[peerDeviceID] = filtered
+
+	trimmedFileID := strings.TrimSpace(fileID)
+	if trimmedFileID != "" {
+		seenByPeer := m.fileRequestSeenIDs[peerDeviceID]
+		if len(seenByPeer) > 0 {
+			for seenFileID, seenAt := range seenByPeer {
+				if !seenAt.After(cutoff) {
+					delete(seenByPeer, seenFileID)
+				}
+			}
+			if len(seenByPeer) == 0 {
+				delete(m.fileRequestSeenIDs, peerDeviceID)
+				seenByPeer = nil
+			}
+		}
+		if seenByPeer != nil {
+			if seenAt, exists := seenByPeer[trimmedFileID]; exists && seenAt.After(cutoff) {
+				// Retries for the same file request should not consume additional rate-limit slots.
+				seenByPeer[trimmedFileID] = now
+				return true
+			}
+		}
+	}
 
 	if len(filtered) >= limit {
-		m.fileRequestHistory[peerDeviceID] = filtered
 		return false
 	}
 
 	filtered = append(filtered, now)
 	m.fileRequestHistory[peerDeviceID] = filtered
+	if trimmedFileID != "" {
+		seenByPeer := m.fileRequestSeenIDs[peerDeviceID]
+		if seenByPeer == nil {
+			seenByPeer = make(map[string]time.Time)
+			m.fileRequestSeenIDs[peerDeviceID] = seenByPeer
+		}
+		seenByPeer[trimmedFileID] = now
+	}
 	return true
 }
 

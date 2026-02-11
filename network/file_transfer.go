@@ -759,7 +759,7 @@ func (m *PeerManager) runOutboundFileTransfer(runCtx context.Context, transfer *
 		return err
 	}
 
-	acceptResponse, err := m.waitForFileResponse(runCtx, eventCh, func(response FileResponse) bool {
+	acceptResponse, err := m.waitForInitialFileResponse(runCtx, conn, eventCh, func(response FileResponse) bool {
 		return response.Status == fileResponseStatusAccepted || response.Status == fileResponseStatusRejected
 	})
 	if err != nil {
@@ -1031,7 +1031,7 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 		_ = m.sendErrorMessage(conn, "invalid_signature", "file request signature verification failed", request.FileID)
 		return
 	}
-	if !m.allowFileRequest(request.FromDeviceID, time.Now()) {
+	if !m.allowFileRequest(request.FromDeviceID, request.FileID, time.Now()) {
 		m.logSecurityEvent(securityEventTypeConnectionRateLimitTriggered, request.FromDeviceID, storage.SecuritySeverityWarning, map[string]any{
 			"limit_type":       "file_request_per_peer",
 			"limit_per_window": m.options.FileRequestRateLimit,
@@ -1126,8 +1126,6 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 		}
 		folderAutoAccept = true
 	}
-	tempPath := finalPath + ".part"
-
 	inbound := m.getInboundTransfer(request.FileID)
 	if inbound != nil {
 		_ = m.options.Store.UpdateTransferStatus(request.FileID, "accepted")
@@ -1181,9 +1179,7 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 			// Sender retries will be handled by the original decision path for this file ID.
 			return
 		}
-		defer m.endPendingFileApproval(request.FileID)
-
-		decision, err := m.options.OnFileRequest(FileRequestNotification{
+		notification := FileRequestNotification{
 			FileID:       request.FileID,
 			FromDeviceID: request.FromDeviceID,
 			Filename:     request.Filename,
@@ -1193,12 +1189,67 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 			FolderID:     folderID,
 			IsFolder:     false,
 			TotalFiles:   1,
-		})
-		if err != nil {
+		}
+
+		m.wg.Add(1)
+		go func(req FileRequest, notif FileRequestNotification, rejectedMsg, reqFolderID, reqRelativePath, reqFinalPath string) {
+			defer m.wg.Done()
+			defer m.endPendingFileApproval(req.FileID)
+
+			decision, err := m.options.OnFileRequest(notif)
+			if err != nil {
+				if errors.Is(err, ErrFileRequestDismissed) {
+					return
+				}
+				m.reportError(err)
+				return
+			}
+
+			m.finalizeInboundFileRequest(conn, req, reqFolderID, reqRelativePath, reqFinalPath, decision, rejectedMsg)
+		}(request, notification, rejectMessage, folderID, relativePath, finalPath)
+		return
+	}
+	m.finalizeInboundFileRequest(conn, request, folderID, relativePath, finalPath, accept, rejectMessage)
+}
+
+func (m *PeerManager) finalizeInboundFileRequest(conn *PeerConnection, request FileRequest, folderID, relativePath, finalPath string, accept bool, rejectMessage string) {
+	sendResponse := func(response FileResponse) {
+		targetConn := conn
+		if current := m.getConnection(request.FromDeviceID); current != nil && current.State() != StateDisconnected {
+			targetConn = current
+		}
+		if targetConn == nil || targetConn.State() == StateDisconnected {
+			return
+		}
+		if err := m.signFileResponse(&response); err != nil {
 			m.reportError(err)
 			return
 		}
-		accept = decision
+		if err := targetConn.SendMessage(response); err != nil {
+			m.reportError(err)
+		}
+	}
+
+	rejectWithMessage := func(message string) {
+		sendResponse(FileResponse{
+			Type:         TypeFileResponse,
+			FileID:       request.FileID,
+			Status:       fileResponseStatusRejected,
+			FromDeviceID: m.options.Identity.DeviceID,
+			Timestamp:    time.Now().UnixMilli(),
+			Message:      message,
+		})
+	}
+
+	sendAccept := func(resumeFrom int) {
+		sendResponse(FileResponse{
+			Type:            TypeFileResponse,
+			FileID:          request.FileID,
+			Status:          fileResponseStatusAccepted,
+			FromDeviceID:    m.options.Identity.DeviceID,
+			ResumeFromChunk: resumeFrom,
+			Timestamp:       time.Now().UnixMilli(),
+		})
 	}
 
 	if !accept {
@@ -1226,6 +1277,17 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 	}
 	m.clearRecentFileDecision(request.FileID)
 
+	existingMeta, err := m.options.Store.GetFileByID(request.FileID)
+	if err == nil && strings.EqualFold(strings.TrimSpace(existingMeta.TransferStatus), "canceled") {
+		_ = m.options.Store.UpdateTransferStatus(request.FileID, "canceled")
+		rejectWithMessage(fileCancelMessageBySender)
+		return
+	}
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		m.reportError(err)
+	}
+
+	tempPath := finalPath + ".part"
 	if err := os.MkdirAll(filepath.Dir(finalPath), 0o700); err != nil {
 		m.reportError(err)
 		return
@@ -1241,7 +1303,7 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 		return
 	}
 
-	inbound = &inboundFileTransfer{
+	inbound := &inboundFileTransfer{
 		FileID:         request.FileID,
 		FromDeviceID:   request.FromDeviceID,
 		Filename:       request.Filename,
@@ -1650,6 +1712,10 @@ func (m *PeerManager) handleFileComplete(conn *PeerConnection, complete FileComp
 			}
 			return
 		}
+		if isCancellationComplete(complete) {
+			m.recordInboundCanceledBeforeApproval(conn, complete)
+			return
+		}
 		// Sender timed out waiting; if receiver sends FileComplete late, still mark complete so sender UI updates
 		if outbound != nil && complete.Status == fileCompleteStatusComplete {
 			outbound.mu.Lock()
@@ -1796,6 +1862,52 @@ func (m *PeerManager) handleFileComplete(conn *PeerConnection, complete FileComp
 	})
 }
 
+func (m *PeerManager) recordInboundCanceledBeforeApproval(conn *PeerConnection, complete FileComplete) {
+	fileID := strings.TrimSpace(complete.FileID)
+	if fileID == "" {
+		return
+	}
+
+	peerDeviceID := strings.TrimSpace(conn.PeerDeviceID())
+	meta, err := m.options.Store.GetFileByID(fileID)
+	filesize := int64(0)
+	if err != nil {
+		if !errors.Is(err, storage.ErrNotFound) {
+			m.reportError(err)
+			return
+		}
+
+		newMeta := storage.FileMetadata{
+			FileID:         fileID,
+			FromDeviceID:   peerDeviceID,
+			ToDeviceID:     m.options.Identity.DeviceID,
+			Filename:       fileID,
+			Filesize:       0,
+			Filetype:       "",
+			StoredPath:     filepath.Join(m.currentDownloadDirectory(), prefixedFilename(fileID, fileID)),
+			Checksum:       "canceled-before-approval",
+			TransferStatus: "canceled",
+		}
+		if saveErr := m.upsertFileMetadata(newMeta); saveErr != nil {
+			m.reportError(saveErr)
+		}
+	} else if meta != nil {
+		filesize = meta.Filesize
+	}
+
+	_ = m.options.Store.UpdateTransferStatus(fileID, "canceled")
+	m.emitFileProgress(FileProgress{
+		FileID:            fileID,
+		PeerDeviceID:      peerDeviceID,
+		Direction:         fileTransferDirectionReceive,
+		BytesTransferred:  0,
+		TotalBytes:        filesize,
+		TotalChunks:       chunkCount(filesize, m.options.FileChunkSize),
+		Status:            "canceled",
+		TransferCompleted: true,
+	})
+}
+
 func (m *PeerManager) sendChunkNack(conn *PeerConnection, fileID string, chunkIndex int, msg string) {
 	response := FileResponse{
 		Type:         TypeFileResponse,
@@ -1876,6 +1988,28 @@ func (m *PeerManager) waitForFileResponse(ctx context.Context, events <-chan fil
 			return FileResponse{}, ctx.Err()
 		case <-timer.C:
 			return FileResponse{}, context.DeadlineExceeded
+		case event := <-events:
+			if event.Response != nil && match(*event.Response) {
+				return *event.Response, nil
+			}
+		}
+	}
+}
+
+func (m *PeerManager) waitForInitialFileResponse(ctx context.Context, conn *PeerConnection, events <-chan fileTransferEvent, match func(FileResponse) bool) (FileResponse, error) {
+	if conn == nil {
+		return FileResponse{}, io.EOF
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return FileResponse{}, ctx.Err()
+		case <-conn.Done():
+			if err := conn.LastError(); err != nil {
+				return FileResponse{}, err
+			}
+			return FileResponse{}, io.EOF
 		case event := <-events:
 			if event.Response != nil && match(*event.Response) {
 				return *event.Response, nil

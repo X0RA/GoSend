@@ -1404,6 +1404,9 @@ func (c *controller) handleFileProgress(progress network.FileProgress) {
 	if strings.TrimSpace(progress.Status) != "" {
 		entry.Status = strings.TrimSpace(progress.Status)
 	}
+	if strings.EqualFold(entry.Direction, "receive") && strings.EqualFold(entry.Status, "canceled") {
+		c.dismissPendingFilePrompt(entry.FileID)
+	}
 
 	meta, err := c.store.GetFileByID(progress.FileID)
 	if err == nil {

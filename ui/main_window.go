@@ -114,7 +114,7 @@ type controller struct {
 	runtimeLogLines      []string
 
 	filePromptPendingMu sync.Mutex
-	filePromptPending   map[string]struct{}
+	filePromptPending   map[string]*filePromptState
 
 	refreshMu      sync.Mutex
 	refreshRunning bool
@@ -129,6 +129,16 @@ type controller struct {
 	tooltipText    string
 
 	activeListenPort int
+}
+
+type filePromptDecision struct {
+	Accept         bool
+	RemoteCanceled bool
+}
+
+type filePromptState struct {
+	dismiss         func(remoteCanceled bool)
+	cancelRequested bool
 }
 
 // Run starts the Phase 9 GUI.
@@ -1230,6 +1240,34 @@ func (c *controller) maybeNotifyIncomingFileRequest(notification network.FileReq
 	)
 }
 
+func (c *controller) dismissPendingFilePrompt(fileID string) bool {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return false
+	}
+
+	c.filePromptPendingMu.Lock()
+	if c.filePromptPending == nil {
+		c.filePromptPendingMu.Unlock()
+		return false
+	}
+	state := c.filePromptPending[fileID]
+	if state == nil {
+		c.filePromptPendingMu.Unlock()
+		return false
+	}
+	dismiss := state.dismiss
+	if dismiss == nil {
+		state.cancelRequested = true
+		c.filePromptPendingMu.Unlock()
+		return true
+	}
+	c.filePromptPendingMu.Unlock()
+
+	dismiss(true)
+	return true
+}
+
 func (c *controller) shouldSendNotification(peerID string) bool {
 	if c == nil || c.cfg == nil || !c.cfg.NotificationsEnabled {
 		return false
@@ -1583,33 +1621,58 @@ func (c *controller) promptIncomingPeerAddRequest(req network.AddRequestNotifica
 func (c *controller) promptFileRequestDecision(notification network.FileRequestNotification) (bool, error) {
 	c.filePromptPendingMu.Lock()
 	if c.filePromptPending == nil {
-		c.filePromptPending = make(map[string]struct{})
+		c.filePromptPending = make(map[string]*filePromptState)
 	}
 	if _, already := c.filePromptPending[notification.FileID]; already {
 		c.filePromptPendingMu.Unlock()
-		return false, nil
+		return false, network.ErrFileRequestDismissed
 	}
-	c.filePromptPending[notification.FileID] = struct{}{}
+	promptState := &filePromptState{}
+	c.filePromptPending[notification.FileID] = promptState
 	c.filePromptPendingMu.Unlock()
 
 	c.maybeNotifyIncomingFileRequest(notification)
 
-	decision := make(chan bool, 1)
+	decision := make(chan filePromptDecision, 1)
 	peerName := c.transferPeerName(notification.FromDeviceID)
 
 	fyne.Do(func() {
 		var popup *widget.PopUp
 		var respondOnce sync.Once
-		respond := func(accept bool) {
+		respond := func(result filePromptDecision) {
 			respondOnce.Do(func() {
 				c.filePromptPendingMu.Lock()
 				delete(c.filePromptPending, notification.FileID)
 				c.filePromptPendingMu.Unlock()
-				decision <- accept
+				decision <- result
 				if popup != nil {
 					popup.Hide()
 				}
 			})
+		}
+		dismiss := func(remoteCanceled bool) {
+			respond(filePromptDecision{
+				Accept:         false,
+				RemoteCanceled: remoteCanceled,
+			})
+		}
+
+		c.filePromptPendingMu.Lock()
+		state := c.filePromptPending[notification.FileID]
+		if state == nil {
+			c.filePromptPendingMu.Unlock()
+			return
+		}
+		state.dismiss = func(remoteCanceled bool) {
+			fyne.Do(func() {
+				dismiss(remoteCanceled)
+			})
+		}
+		cancelRequested := state.cancelRequested
+		c.filePromptPendingMu.Unlock()
+		if cancelRequested {
+			dismiss(true)
+			return
 		}
 
 		entityLabel := "file"
@@ -1644,14 +1707,14 @@ func (c *controller) promptFileRequestDecision(notification network.FileRequestN
 		center := container.New(layout.NewCustomPaddedLayout(12, 10, 12, 12), body)
 
 		header := newPanelHeader(headerTitle, headerSubtitle, func() {
-			respond(false)
+			dismiss(false)
 		}, c.handleHoverHint)
 		footerRight := container.New(layout.NewCustomPaddedHBoxLayout(8),
 			newPanelActionButton("Reject", "Reject incoming transfer", panelActionSecondary, func() {
-				respond(false)
+				dismiss(false)
 			}, c.handleHoverHint),
 			newPanelActionButton("Accept", "Accept incoming transfer", panelActionPrimary, func() {
-				respond(true)
+				respond(filePromptDecision{Accept: true})
 			}, c.handleHoverHint),
 		)
 		panel := newPanelFrame(header, newPanelFooter(nil, footerRight), center)
@@ -1665,7 +1728,25 @@ func (c *controller) promptFileRequestDecision(notification network.FileRequestN
 		delete(c.filePromptPending, notification.FileID)
 		c.filePromptPendingMu.Unlock()
 		return false, errors.New("application is shutting down")
-	case accept := <-decision:
+	case result := <-decision:
+		if result.RemoteCanceled {
+			if !notification.IsFolder {
+				c.upsertFileTransfer(chatFileEntry{
+					FileID:            notification.FileID,
+					PeerDeviceID:      notification.FromDeviceID,
+					Direction:         "receive",
+					Filename:          notification.Filename,
+					Filesize:          notification.Filesize,
+					Filetype:          notification.Filetype,
+					AddedAt:           time.Now().UnixMilli(),
+					Status:            "canceled",
+					TransferCompleted: true,
+				})
+			}
+			c.refreshChatForPeer(notification.FromDeviceID)
+			return false, network.ErrFileRequestDismissed
+		}
+		accept := result.Accept
 		if !notification.IsFolder {
 			status := "rejected"
 			if accept {

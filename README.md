@@ -299,7 +299,7 @@ Outbound:
 
 - `SendFile(peerID, path)` and `SendFiles(peerID, paths)` enqueue outbound files into a per-peer ordered queue; only one file is active per peer at a time.
 - `SendFolder(peerID, folderPath)` builds a signed folder manifest, waits for `folder_transfer_response`, then enqueues accepted files with `folder_id` + `relative_path` metadata.
-- Sends `file_request`; waits for `accepted` or `rejected`.
+- Sends `file_request`; waits for `accepted` or `rejected` without a fixed approval timeout (wait ends on user decision, explicit cancel, context shutdown, or connection close/reconnect).
 - On accept, resumes from `resume_from_chunk` if provided.
 - Chunks are read from source file and encrypted as `file_data` with per-chunk nonce.
 - Receiver responds with `chunk_ack` / `chunk_nack`.
@@ -313,8 +313,9 @@ Inbound:
 - For each incoming `file_request`, the manager resolves peer settings (`peer_settings`) and computes effective receive policy.
 - If `folder_id`/`relative_path` are present, the target file path is resolved under the accepted inbound folder root and validated to remain inside that root.
 - Effective size limit is peer `max_file_size` when set (`>0`), otherwise global `max_receive_file_size`; oversized requests are auto-rejected with a descriptive message.
-- File requests are rate-limited per peer (default 5/minute); excess requests are rejected and logged as security events.
+- File requests are rate-limited per peer (default 5/minute); retries for the same `file_id` are treated as one logical request so delayed-approval retries do not consume extra rate-limit slots.
 - If within limit and `auto_accept_files=true`, the request is auto-accepted; otherwise the UI accept/reject callback is invoked.
+- If the sender cancels before receiver approval, the receiver marks the pending request as `canceled` and the incoming prompt is dismissed.
 - Accepted non-folder transfers write to `<resolved-download-dir>/<file_id>_<basename>.part`; folder-scoped transfers write to `<folder-root>/<relative_path>.part`. The resolved base directory is peer `download_directory` override first, then global `download_directory`.
 - Inbound checkpoints are persisted in batches (every 10 chunks or 2 MB).
 - On `file_complete`, receiver verifies checksum and renames `.part` to final file.
@@ -475,7 +476,7 @@ Behavior and fixes:
 - Rejected file transfers now update the sender UI to "rejected" (network layer emits progress on reject).
 - mDNS-discovered device names with backslashes are normalized for display (e.g. `my\ name` → `my name`).
 - Incoming file prompt is deduplicated per FileID so a retry from the sender does not show a second dialog.
-- Cancel sets status "canceled"; retry fully resets terminal flags so the sender no longer shows "Complete" incorrectly after retry. Completed transfers can show Open File (launches default system application) and Copy Path.
+- Cancel sets status "canceled"; retry fully resets terminal flags so the sender no longer shows "Complete" incorrectly after retry. If cancel happens before receiver approval, the pending receiver prompt is dismissed and both sides settle to `canceled`. Completed transfers can show Open File (launches default system application), Open Folder, and Copy Path.
 - Destructive/decision prompts now use shared panel chrome for consistency: cancel transfer, clear chat history, reset keys, and key-change warning.
 
 Runtime loops:
