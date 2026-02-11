@@ -624,11 +624,12 @@ func (m *PeerManager) registerConnection(conn *PeerConnection) {
 	conn.SetRekeyNeededCallback(m.onConnectionRekeyNeeded)
 
 	m.connMu.Lock()
-	if existing, exists := m.connections[peerID]; exists && existing != conn {
-		_ = existing.Close()
-	}
+	existing, exists := m.connections[peerID]
 	m.connections[peerID] = conn
 	m.connMu.Unlock()
+	if exists && existing != conn {
+		_ = existing.Close()
+	}
 
 	m.stopReconnect(peerID)
 	m.updateRuntimeState(peerID, conn.State(), time.Time{})
@@ -777,12 +778,17 @@ loop:
 
 	m.connMu.Lock()
 	current := m.connections[peerID]
-	if current == conn {
+	wasActiveConnection := current == conn
+	if wasActiveConnection {
 		delete(m.connections, peerID)
 	}
 	m.connMu.Unlock()
 
 	if peerID != "" {
+		// A newer connection already replaced this one, so do not mark offline or start reconnect.
+		if !wasActiveConnection {
+			return
+		}
 		if err := m.options.Store.UpdatePeerStatus(peerID, peerStatusOffline, time.Now().UnixMilli()); err != nil && !errors.Is(err, storage.ErrNotFound) {
 			m.reportError(err)
 		}

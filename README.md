@@ -286,6 +286,7 @@ Reconnect:
 
 - Base backoff sequence: `0s -> 5s -> 15s -> 60s -> 60s...`, each interval jittered by ±25%.
 - On disconnect: peer marked offline and reconnect worker starts (unless suppressed by manual remove/disconnect).
+- Connection replacement is treated as session handoff: when a newer session for the same peer is registered, the older session close does not mark the peer offline or start reconnect.
 - Candidate endpoints are sorted by in-memory `endpoint_health` score (higher first) before each reconnect round; successful dials increment health and failures decrement with floor `0`.
 - Reconnect attempts are capped at `50` by default; after cap exhaustion, retries pause until a fresh discovery event triggers a new worker.
 - Discovery bridge (`NotifyPeerDiscoveredEndpoints`) updates stored endpoint candidates and triggers reconnect for known non-blocked peers.

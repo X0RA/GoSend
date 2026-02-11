@@ -21,8 +21,11 @@ import (
 
 func TestPeerAddFlowWithApprovalQueue(t *testing.T) {
 	a := newTestManager(t, testManagerConfig{
-		deviceID: "peer-a",
-		name:     "Peer A",
+		deviceID:          "peer-a",
+		name:              "Peer A",
+		keepAliveInterval: 2 * time.Second,
+		keepAliveTimeout:  2 * time.Second,
+		frameReadTimeout:  300 * time.Millisecond,
 	})
 	defer a.stop()
 
@@ -416,6 +419,78 @@ func TestSimultaneousAddResolution(t *testing.T) {
 
 	waitForPeerStatus(t, a.store, "peer-b", peerStatusOnline, 2*time.Second)
 	waitForPeerStatus(t, b.store, "peer-a", peerStatusOnline, 2*time.Second)
+}
+
+func TestConnectionReplacementDoesNotTriggerReconnectBurst(t *testing.T) {
+	a := newTestManager(t, testManagerConfig{
+		deviceID: "peer-a",
+		name:     "Peer A",
+	})
+	defer a.stop()
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID:                  "peer-b",
+		name:                      "Peer B",
+		connectionRateLimitPerIP:  1,
+		connectionRateLimitWindow: 500 * time.Millisecond,
+		keepAliveInterval:         2 * time.Second,
+		keepAliveTimeout:          2 * time.Second,
+		frameReadTimeout:          300 * time.Millisecond,
+	})
+	defer b.stop()
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	accepted, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a")
+	if err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+	if !accepted {
+		t.Fatalf("expected peer add to be accepted")
+	}
+	waitForPeerStatus(t, a.store, "peer-b", peerStatusOnline, 2*time.Second)
+	waitForPeerStatus(t, b.store, "peer-a", peerStatusOnline, 2*time.Second)
+
+	// Reset B's per-IP limiter window before forcing a replacement connection.
+	time.Sleep(650 * time.Millisecond)
+
+	beforeEvents, err := b.store.GetSecurityEvents(storage.SecurityEventFilter{
+		EventType: securityEventTypeConnectionRateLimitTriggered,
+		Limit:     100,
+	})
+	if err != nil {
+		t.Fatalf("GetSecurityEvents before replacement failed: %v", err)
+	}
+	beforeIncomingLimitCount := 0
+	for _, event := range beforeEvents {
+		if strings.Contains(event.Details, "incoming_connections_per_ip") {
+			beforeIncomingLimitCount++
+		}
+	}
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A replacement connect B failed: %v", err)
+	}
+
+	time.Sleep(600 * time.Millisecond)
+
+	afterEvents, err := b.store.GetSecurityEvents(storage.SecurityEventFilter{
+		EventType: securityEventTypeConnectionRateLimitTriggered,
+		Limit:     100,
+	})
+	if err != nil {
+		t.Fatalf("GetSecurityEvents after replacement failed: %v", err)
+	}
+	afterIncomingLimitCount := 0
+	for _, event := range afterEvents {
+		if strings.Contains(event.Details, "incoming_connections_per_ip") {
+			afterIncomingLimitCount++
+		}
+	}
+	if afterIncomingLimitCount > beforeIncomingLimitCount {
+		t.Fatalf("expected no inbound per-IP limiter trigger on replacement, before=%d after=%d", beforeIncomingLimitCount, afterIncomingLimitCount)
+	}
 }
 
 func TestInvalidPeerAddRequestSignatureIgnored(t *testing.T) {
@@ -889,6 +964,10 @@ type testManagerConfig struct {
 	randomSource              *mathrand.Rand
 	connectionRateLimitPerIP  int
 	connectionRateLimitWindow time.Duration
+	connectionTimeout         time.Duration
+	keepAliveInterval         time.Duration
+	keepAliveTimeout          time.Duration
+	frameReadTimeout          time.Duration
 }
 
 func newTestManager(t *testing.T, cfg testManagerConfig) *testManager {
@@ -924,6 +1003,22 @@ func newTestManagerWithConfig(t *testing.T, store *storage.Store, identity Local
 	if chunkSize <= 0 {
 		chunkSize = 32 * 1024
 	}
+	connectionTimeout := cfg.connectionTimeout
+	if connectionTimeout <= 0 {
+		connectionTimeout = 2 * time.Second
+	}
+	keepAliveInterval := cfg.keepAliveInterval
+	if keepAliveInterval <= 0 {
+		keepAliveInterval = 80 * time.Millisecond
+	}
+	keepAliveTimeout := cfg.keepAliveTimeout
+	if keepAliveTimeout <= 0 {
+		keepAliveTimeout = 80 * time.Millisecond
+	}
+	frameReadTimeout := cfg.frameReadTimeout
+	if frameReadTimeout <= 0 {
+		frameReadTimeout = 30 * time.Millisecond
+	}
 
 	manager, err := NewPeerManager(PeerManagerOptions{
 		Identity:                  identity,
@@ -946,10 +1041,10 @@ func newTestManagerWithConfig(t *testing.T, store *storage.Store, identity Local
 		AddRequestCooldown:        cfg.addRequestCooldown,
 		FileRequestRateLimit:      cfg.fileRequestRateLimit,
 		FileRequestWindow:         cfg.fileRequestWindow,
-		ConnectionTimeout:         2 * time.Second,
-		KeepAliveInterval:         80 * time.Millisecond,
-		KeepAliveTimeout:          80 * time.Millisecond,
-		FrameReadTimeout:          30 * time.Millisecond,
+		ConnectionTimeout:         connectionTimeout,
+		KeepAliveInterval:         keepAliveInterval,
+		KeepAliveTimeout:          keepAliveTimeout,
+		FrameReadTimeout:          frameReadTimeout,
 		ConnectionRateLimitPerIP:  cfg.connectionRateLimitPerIP,
 		ConnectionRateLimitWindow: cfg.connectionRateLimitWindow,
 		RekeyInterval:             cfg.rekeyInterval,
