@@ -1141,9 +1141,6 @@ func (c *controller) upsertFileTransfer(entry chatFileEntry) {
 		if entry.TotalBytes == 0 {
 			entry.TotalBytes = existing.TotalBytes
 		}
-		if entry.BytesTransferred == 0 {
-			entry.BytesTransferred = existing.BytesTransferred
-		}
 		if entry.SpeedBytesPerSec == 0 {
 			entry.SpeedBytesPerSec = existing.SpeedBytesPerSec
 		}
@@ -1153,15 +1150,28 @@ func (c *controller) upsertFileTransfer(entry chatFileEntry) {
 		if entry.Status == "" {
 			entry.Status = existing.Status
 		}
-		terminalStatus := strings.EqualFold(entry.Status, "rejected") || strings.EqualFold(entry.Status, "failed") || strings.EqualFold(entry.Status, "complete") || strings.EqualFold(entry.Status, "canceled")
+		status := strings.ToLower(strings.TrimSpace(entry.Status))
+		terminalStatus := status == "rejected" || status == "failed" || status == "complete" || status == "canceled"
+		activeStatus := status == "pending" || status == "accepted"
+		if entry.BytesTransferred == 0 {
+			switch {
+			case status == "accepted" && !existing.TransferCompleted && strings.EqualFold(existing.Status, "accepted"):
+				// Preserve in-flight progress when duplicate accepted updates arrive for the same active transfer.
+				entry.BytesTransferred = existing.BytesTransferred
+			case !activeStatus:
+				entry.BytesTransferred = existing.BytesTransferred
+			}
+		}
 		if terminalStatus {
 			entry.TransferCompleted = true
-		} else if strings.EqualFold(entry.Status, "pending") {
+		} else if activeStatus {
 			entry.TransferCompleted = false
 		} else if !entry.TransferCompleted {
 			entry.TransferCompleted = existing.TransferCompleted
 		}
-		if entry.CompletedAt == 0 {
+		if activeStatus {
+			entry.CompletedAt = 0
+		} else if entry.CompletedAt == 0 {
 			entry.CompletedAt = existing.CompletedAt
 		}
 		if entry.AddedAt == 0 {
@@ -1175,6 +1185,9 @@ func (c *controller) upsertFileTransfer(entry chatFileEntry) {
 	}
 	if entry.TransferCompleted && entry.CompletedAt == 0 {
 		entry.CompletedAt = time.Now().UnixMilli()
+	}
+	if !entry.TransferCompleted {
+		entry.CompletedAt = 0
 	}
 	c.fileTransfers[entry.FileID] = entry
 	c.chatMu.Unlock()
@@ -1321,21 +1334,31 @@ func mergeChatFileEntry(base, live chatFileEntry) chatFileEntry {
 	if live.ETASeconds > 0 {
 		merged.ETASeconds = live.ETASeconds
 	}
-	baseTerminal := strings.EqualFold(merged.Status, "rejected") || strings.EqualFold(merged.Status, "failed") || strings.EqualFold(merged.Status, "complete") || strings.EqualFold(merged.Status, "canceled")
-	if strings.TrimSpace(live.Status) != "" && !baseTerminal {
+	baseStatus := strings.ToLower(strings.TrimSpace(merged.Status))
+	baseTerminal := baseStatus == "rejected" || baseStatus == "failed" || baseStatus == "complete" || baseStatus == "canceled"
+	liveStatus := strings.ToLower(strings.TrimSpace(live.Status))
+	liveTerminal := liveStatus == "rejected" || liveStatus == "failed" || liveStatus == "complete" || liveStatus == "canceled"
+	liveActive := liveStatus == "pending" || liveStatus == "accepted"
+	if liveStatus != "" && (liveActive || !baseTerminal) {
 		merged.Status = live.Status
 	}
-	if strings.EqualFold(live.Status, "pending") {
+	if liveActive {
 		merged.TransferCompleted = false
+		merged.CompletedAt = 0
 		merged.BytesTransferred = live.BytesTransferred
 	}
 	if live.TransferCompleted {
 		merged.TransferCompleted = true
 	}
-	if baseTerminal {
+	if liveTerminal {
 		merged.TransferCompleted = true
 	}
-	if merged.CompletedAt == 0 {
+	if baseTerminal && !liveActive && !live.TransferCompleted {
+		merged.TransferCompleted = true
+	}
+	if !merged.TransferCompleted {
+		merged.CompletedAt = 0
+	} else if merged.CompletedAt == 0 {
 		merged.CompletedAt = live.CompletedAt
 	}
 	if merged.AddedAt == 0 {

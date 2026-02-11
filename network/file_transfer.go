@@ -1176,6 +1176,13 @@ func (m *PeerManager) handleFileRequest(conn *PeerConnection, request FileReques
 	} else if peerSettings != nil && peerSettings.AutoAcceptFiles {
 		accept = true
 	} else if m.options.OnFileRequest != nil {
+		if !m.beginPendingFileApproval(request.FileID) {
+			// Manual decision for this file is already pending; ignore duplicate request attempts.
+			// Sender retries will be handled by the original decision path for this file ID.
+			return
+		}
+		defer m.endPendingFileApproval(request.FileID)
+
 		decision, err := m.options.OnFileRequest(FileRequestNotification{
 			FileID:       request.FileID,
 			FromDeviceID: request.FromDeviceID,
@@ -2401,6 +2408,33 @@ func (m *PeerManager) setInboundFolderTransfer(folder *inboundFolderTransfer) {
 	}
 	m.fileMu.Lock()
 	m.inboundFolderTransfers[folder.FolderID] = folder
+	m.fileMu.Unlock()
+}
+
+func (m *PeerManager) beginPendingFileApproval(fileID string) bool {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return false
+	}
+
+	m.fileMu.Lock()
+	defer m.fileMu.Unlock()
+
+	if _, exists := m.pendingFileApprovals[fileID]; exists {
+		return false
+	}
+	m.pendingFileApprovals[fileID] = struct{}{}
+	return true
+}
+
+func (m *PeerManager) endPendingFileApproval(fileID string) {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return
+	}
+
+	m.fileMu.Lock()
+	delete(m.pendingFileApprovals, fileID)
 	m.fileMu.Unlock()
 }
 

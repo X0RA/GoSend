@@ -513,6 +513,69 @@ func TestFileTransferDelayedRejectPromptsOnce(t *testing.T) {
 	}
 }
 
+func TestFileTransferDelayedAcceptWithReplacementConnectionDoesNotReject(t *testing.T) {
+	aFiles := filepath.Join(t.TempDir(), "a-files")
+	bFiles := filepath.Join(t.TempDir(), "b-files")
+	sourcePath := createFixtureFile(t, t.TempDir(), "delayed-accept-reconnect.bin", 1024*1024)
+
+	a := newTestManager(t, testManagerConfig{
+		deviceID:      "peer-a",
+		name:          "Peer A",
+		filesDir:      aFiles,
+		fileChunkSize: 32 * 1024,
+	})
+	defer a.stop()
+
+	var approveCalls atomic.Int32
+	releaseDecision := make(chan struct{})
+	var releaseOnce sync.Once
+
+	b := newTestManager(t, testManagerConfig{
+		deviceID:      "peer-b",
+		name:          "Peer B",
+		filesDir:      bFiles,
+		fileChunkSize: 32 * 1024,
+		approveFile: func(FileRequestNotification) (bool, error) {
+			call := approveCalls.Add(1)
+			if call == 1 {
+				<-releaseDecision
+				return true, nil
+			}
+			// Simulate UI behavior where duplicate pending prompts should not cause a reject.
+			return false, nil
+		},
+	})
+	defer b.stop()
+	defer releaseOnce.Do(func() { close(releaseDecision) })
+
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("A connect B failed: %v", err)
+	}
+	if _, err := addWithAutoApproval(a.manager, "peer-b", b.manager, "peer-a"); err != nil {
+		t.Fatalf("peer add flow failed: %v", err)
+	}
+
+	fileID, err := a.manager.SendFile("peer-b", sourcePath)
+	if err != nil {
+		t.Fatalf("SendFile failed: %v", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	if _, err := a.manager.Connect(b.addr()); err != nil {
+		t.Fatalf("replacement connect failed: %v", err)
+	}
+
+	time.Sleep(4 * time.Second)
+	releaseOnce.Do(func() { close(releaseDecision) })
+
+	waitForFileStatus(t, a.store, fileID, "complete", 20*time.Second)
+	waitForFileStatus(t, b.store, fileID, "complete", 20*time.Second)
+
+	if got := approveCalls.Load(); got != 1 {
+		t.Fatalf("expected one approval callback across delayed accept + replacement connection, got %d", got)
+	}
+}
+
 func TestFolderTransferPreservesStructure(t *testing.T) {
 	aFiles := filepath.Join(t.TempDir(), "a-files")
 	bFiles := filepath.Join(t.TempDir(), "b-files")

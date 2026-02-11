@@ -217,6 +217,7 @@ type PeerManager struct {
 	outboundFileTransfers    map[string]*outboundFileTransfer
 	inboundFileTransfers     map[string]*inboundFileTransfer
 	inboundFolderTransfers   map[string]*inboundFolderTransfer
+	pendingFileApprovals     map[string]struct{}
 	recentFileDecisions      map[string]recentFileDecision
 	outboundFileEventChans   map[string]chan fileTransferEvent
 	outboundFolderEventChans map[string]chan FolderTransferResponse
@@ -327,6 +328,7 @@ func NewPeerManager(options PeerManagerOptions) (*PeerManager, error) {
 		outboundFileTransfers:    make(map[string]*outboundFileTransfer),
 		inboundFileTransfers:     make(map[string]*inboundFileTransfer),
 		inboundFolderTransfers:   make(map[string]*inboundFolderTransfer),
+		pendingFileApprovals:     make(map[string]struct{}),
 		recentFileDecisions:      make(map[string]recentFileDecision),
 		outboundFileEventChans:   make(map[string]chan fileTransferEvent),
 		outboundFolderEventChans: make(map[string]chan FolderTransferResponse),
