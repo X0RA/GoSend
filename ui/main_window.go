@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"image/color"
 	"net"
 	"path/filepath"
 	"sort"
@@ -530,89 +531,117 @@ func (c *controller) showTransferQueuePanel() {
 	scroll.SetMinSize(fyne.NewSize(760, 420))
 
 	currentFilter := "all"
-	var subtitleText, footerCountText *canvas.Text
+	var subtitleText, completeCountText, issueCountText *canvas.Text
+	filterButtons := make(map[string]*flatButton, 4)
+	filterBGs := make(map[string]*canvas.Rectangle, 4)
+	var popup *widget.PopUp
+	stop := make(chan struct{})
+	var stopOnce sync.Once
+
+	closeQueue := func() {
+		stopOnce.Do(func() { close(stop) })
+		if popup != nil {
+			popup.Hide()
+		}
+	}
+
+	refreshFilterButtons := func() {
+		for key, btn := range filterButtons {
+			bg := filterBGs[key]
+			if btn == nil || bg == nil {
+				continue
+			}
+			selected := key == currentFilter
+			if selected {
+				bg.FillColor = ctpBlue
+				btn.labelColor = ctpBase
+				btn.hoverColor = ctpLavender
+			} else {
+				bg.FillColor = color.Transparent
+				btn.labelColor = ctpSubtext0
+				btn.hoverColor = ctpSurface1
+			}
+			bg.Refresh()
+			btn.Refresh()
+		}
+	}
+
 	render := func() {
 		entries := c.transferQueueEntriesSnapshot()
-		filtered := entries
-		switch currentFilter {
-		case "active":
-			filtered = nil
-			for _, e := range entries {
-				s := strings.ToLower(e.Status)
-				if s == "pending" || s == "accepted" {
-					filtered = append(filtered, e)
-				}
-			}
-		case "done":
-			filtered = nil
-			for _, e := range entries {
-				if strings.EqualFold(e.Status, "complete") && e.TransferCompleted {
-					filtered = append(filtered, e)
-				}
-			}
-		case "issues":
-			filtered = nil
-			for _, e := range entries {
-				s := strings.ToLower(e.Status)
-				if s == "failed" || s == "rejected" {
-					filtered = append(filtered, e)
-				}
-			}
-		}
-
+		filtered := make([]chatFileEntry, 0, len(entries))
 		activeCount, completeCount, issueCount := 0, 0, 0
+
 		for _, e := range entries {
-			s := strings.ToLower(e.Status)
-			if s == "pending" || s == "accepted" {
+			switch transferQueueCategory(e) {
+			case "active":
 				activeCount++
-			} else if strings.EqualFold(e.Status, "complete") && e.TransferCompleted {
+			case "done":
 				completeCount++
-			} else if s == "failed" || s == "rejected" {
+			case "issues":
 				issueCount++
+			}
+			if currentFilter == "all" || currentFilter == transferQueueCategory(e) {
+				filtered = append(filtered, e)
 			}
 		}
 
 		fyne.Do(func() {
+			refreshFilterButtons()
 			if subtitleText != nil {
 				subtitleText.Text = fmt.Sprintf("%d active, %d complete, %d with issues", activeCount, completeCount, issueCount)
 				subtitleText.Refresh()
 			}
-			if footerCountText != nil {
-				footerCountText.Text = fmt.Sprintf("Complete: %d  Issues: %d", completeCount, issueCount)
-				footerCountText.Refresh()
+			if completeCountText != nil {
+				completeCountText.Text = fmt.Sprintf("✓ Complete: %d", completeCount)
+				completeCountText.Refresh()
+			}
+			if issueCountText != nil {
+				issueCountText.Text = fmt.Sprintf("! Issues: %d", issueCount)
+				issueCountText.Refresh()
 			}
 			content.RemoveAll()
 			if len(filtered) == 0 {
-				empty := widget.NewLabel("No transfers in this view")
-				content.Add(container.NewPadded(empty))
+				empty := canvas.NewText("No transfers in this view", ctpSubtext0)
+				empty.TextSize = 22
+				content.Add(container.New(layout.NewCustomPaddedLayout(14, 14, 18, 0), empty))
 				content.Refresh()
 				return
 			}
 
-			currentPeer := ""
 			for _, entry := range filtered {
-				if entry.PeerDeviceID != currentPeer {
-					currentPeer = entry.PeerDeviceID
-					header := widget.NewLabel(c.transferPeerName(entry.PeerDeviceID))
-					header.TextStyle = fyne.TextStyle{Bold: true}
-					content.Add(container.NewPadded(header))
-				}
-				content.Add(c.renderTransferQueueRow(entry))
+				content.Add(withBottomDivider(c.renderTransferQueueRow(entry)))
 			}
 			content.Refresh()
 		})
 	}
 
-	render()
+	makeFilterButton := func(key, label string) fyne.CanvasObject {
+		btn := newCompactFlatButtonWithIconAndLabel(nil, label, "", func() {
+			currentFilter = key
+			render()
+		}, c.handleHoverHint)
+		btn.labelSize = 10
+		btn.padTop = 1
+		btn.padBottom = 1
+		btn.padLeft = 8
+		btn.padRight = 8
+		btn.hoverColor = ctpSurface1
+		btn.labelColor = ctpSubtext0
+		bg := canvas.NewRectangle(color.Transparent)
+		bg.CornerRadius = 4
+		filterButtons[key] = btn
+		filterBGs[key] = bg
+		return container.NewStack(bg, btn)
+	}
 
-	allBtn := widget.NewButton("All", func() { currentFilter = "all"; render() })
-	activeBtn := widget.NewButton("Active", func() { currentFilter = "active"; render() })
-	doneBtn := widget.NewButton("Completed", func() { currentFilter = "done"; render() })
-	issuesBtn := widget.NewButton("Issues", func() { currentFilter = "issues"; render() })
-	filterBar := container.NewHBox(allBtn, activeBtn, doneBtn, issuesBtn)
+	allBtn := makeFilterButton("all", "All")
+	activeBtn := makeFilterButton("active", "Active")
+	doneBtn := makeFilterButton("done", "Completed")
+	issuesBtn := makeFilterButton("issues", "Issues")
+	filterBar := container.New(layout.NewCustomPaddedHBoxLayout(4), allBtn, activeBtn, doneBtn, issuesBtn)
 	filterBg := canvas.NewRectangle(ctpSurface0)
 	filterBg.SetMinSize(fyne.NewSize(1, 36))
-	filterRow := container.NewStack(filterBg, container.NewPadded(filterBar))
+	filterRow := withBottomDivider(container.NewStack(filterBg, container.New(layout.NewCustomPaddedLayout(4, 4, 12, 12), filterBar)))
 
 	subtitleText = canvas.NewText("0 active, 0 complete, 0 with issues", ctpOverlay1)
 	subtitleText.TextSize = 11
@@ -620,32 +649,30 @@ func (c *controller) showTransferQueuePanel() {
 	headerTitle.TextSize = 14
 	headerTitle.TextStyle = fyne.TextStyle{Bold: true}
 	headerLeft := container.NewVBox(headerTitle, subtitleText)
-	headerBg := canvas.NewRectangle(ctpMantle)
-	headerBg.SetMinSize(fyne.NewSize(1, 52))
-	header := container.NewStack(headerBg, container.NewPadded(headerLeft))
 
-	clearBtn := widget.NewButton("Clear Completed", func() {
+	headerCloseBtn := newPanelIconCloseButton("Close transfer queue", closeQueue, c.handleHoverHint)
+
+	headerBg := canvas.NewRectangle(ctpMantle)
+	headerBg.SetMinSize(fyne.NewSize(1, 56))
+	headerMain := container.NewHBox(headerLeft, layout.NewSpacer(), headerCloseBtn)
+	header := withBottomDivider(container.NewStack(headerBg, container.New(layout.NewCustomPaddedLayout(6, 6, 12, 10), headerMain)))
+
+	clearBtn := newPanelActionButton("Clear Completed", "Clear completed transfers", panelActionSecondary, func() {
 		c.clearCompletedTransfers()
 		render()
-	})
-	closeBtn := widget.NewButton("Close", nil)
-	footerCountText = canvas.NewText("Complete: 0  Issues: 0", ctpOverlay1)
-	footerCountText.TextSize = 11
-	footerRight := container.NewHBox(clearBtn, closeBtn)
-	footerBg := canvas.NewRectangle(ctpMantle)
-	footerBg.SetMinSize(fyne.NewSize(1, 44))
-	footer := container.NewStack(footerBg, container.NewPadded(container.NewBorder(nil, nil, footerCountText, footerRight)))
+	}, c.handleHoverHint)
+	closeBtn := newPanelActionButton("Close", "Close transfer queue", panelActionPrimary, closeQueue, c.handleHoverHint)
 
-	panel := container.NewBorder(
-		container.NewVBox(header, filterRow),
-		footer,
-		nil, nil, scroll,
-	)
-	dlg := dialog.NewCustomWithoutButtons("Transfer Queue", panel, c.window)
-	closeBtn.OnTapped = func() { dlg.Hide() }
+	completeCountText = canvas.NewText("✓ Complete: 0", ctpGreen)
+	completeCountText.TextSize = 11
+	issueCountText = canvas.NewText("! Issues: 0", ctpRed)
+	issueCountText.TextSize = 11
+	footerCounts := container.New(layout.NewCustomPaddedHBoxLayout(10), completeCountText, issueCountText)
+	footerRight := container.New(layout.NewCustomPaddedHBoxLayout(8), clearBtn, closeBtn)
+	footer := newPanelFooter(footerCounts, footerRight)
+	panel := newPanelFrame(newVNoGap(header, filterRow), footer, scroll)
+	render()
 
-	stop := make(chan struct{})
-	dlg.SetOnClosed(func() { close(stop) })
 	go func() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
@@ -661,8 +688,8 @@ func (c *controller) showTransferQueuePanel() {
 		}
 	}()
 
-	dlg.Resize(fyne.NewSize(780, 520))
-	dlg.Show()
+	popup = newPanelPopup(c.window, panel, fyne.NewSize(780, 520))
+	popup.Show()
 }
 
 func (c *controller) transferPeerName(peerDeviceID string) string {
@@ -686,7 +713,7 @@ func (c *controller) transferQueueEntriesSnapshot() []chatFileEntry {
 	c.chatMu.RLock()
 	entries := make([]chatFileEntry, 0, len(c.fileTransfers))
 	for _, entry := range c.fileTransfers {
-		terminal := strings.EqualFold(entry.Status, "complete") || strings.EqualFold(entry.Status, "failed") || strings.EqualFold(entry.Status, "rejected")
+		terminal := transferQueueCategory(entry) != "active"
 		if terminal {
 			completedAt := entry.CompletedAt
 			if completedAt == 0 {
@@ -701,71 +728,238 @@ func (c *controller) transferQueueEntriesSnapshot() []chatFileEntry {
 	c.chatMu.RUnlock()
 
 	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].PeerDeviceID != entries[j].PeerDeviceID {
-			return entries[i].PeerDeviceID < entries[j].PeerDeviceID
+		bucketI, bucketJ := transferQueueSortBucket(entries[i]), transferQueueSortBucket(entries[j])
+		if bucketI != bucketJ {
+			return bucketI < bucketJ
 		}
 		if entries[i].AddedAt == entries[j].AddedAt {
 			return entries[i].FileID < entries[j].FileID
 		}
-		return entries[i].AddedAt < entries[j].AddedAt
+		return entries[i].AddedAt > entries[j].AddedAt
 	})
 	return entries
 }
 
 func (c *controller) renderTransferQueueRow(entry chatFileEntry) fyne.CanvasObject {
-	status := fileTransferStatusText(entry)
-	if entry.TransferCompleted && strings.EqualFold(entry.Status, "complete") {
-		status = "Complete"
+	status := transferQueueStatusText(entry)
+	statusColor := transferQueueStatusColor(entry)
+
+	directionLabel := "From"
+	directionIcon := iconDownload()
+	if strings.EqualFold(entry.Direction, "send") {
+		directionLabel = "To"
+		directionIcon = iconUpload()
 	}
-	progressPercent := "--"
+
+	path := strings.TrimSpace(entry.StoredPath)
+	category := transferQueueCategory(entry)
+	canPause := false
+	canResume := false
+	canRetry := category == "issues" && strings.EqualFold(entry.Direction, "send")
+	canCancel := category == "active"
+	canShowPath := category == "done" && path != ""
+
+	progress := float32(0)
 	if entry.TotalBytes > 0 {
-		progressPercent = fmt.Sprintf("%.0f%%", float64(entry.BytesTransferred)*100/float64(entry.TotalBytes))
+		progress = float32(entry.BytesTransferred) / float32(entry.TotalBytes)
 	}
-	speedLabel := "--"
-	if entry.SpeedBytesPerSec > 0 && !entry.TransferCompleted {
+	if category == "done" {
+		progress = 1
+	}
+	if progress < 0 {
+		progress = 0
+	} else if progress > 1 {
+		progress = 1
+	}
+
+	speedLabel := ""
+	if entry.SpeedBytesPerSec > 0 && category == "active" {
 		speedLabel = fmt.Sprintf("%s/s", formatBytes(int64(entry.SpeedBytesPerSec)))
 	}
-	etaLabel := "--"
-	if entry.ETASeconds > 0 && !entry.TransferCompleted {
+	etaLabel := ""
+	if entry.ETASeconds > 0 && category == "active" {
 		etaLabel = (time.Duration(entry.ETASeconds) * time.Second).Round(time.Second).String()
 	}
 
-	statusColor := ctpOverlay1
-	switch {
-	case strings.EqualFold(entry.Status, "complete") || (entry.TransferCompleted && strings.EqualFold(entry.Status, "accepted")):
-		statusColor = ctpGreen
-	case strings.EqualFold(entry.Status, "failed") || strings.EqualFold(entry.Status, "rejected"):
-		statusColor = ctpRed
-	case strings.EqualFold(entry.Status, "pending") || strings.EqualFold(entry.Status, "accepted"):
-		statusColor = ctpBlue
-	}
+	nameLabel := widget.NewLabel(valueOrDefault(entry.Filename, entry.FileID))
+	nameLabel.Truncation = fyne.TextTruncateEllipsis
+	sizeLabel := canvas.NewText(formatBytes(entry.Filesize), ctpOverlay1)
+	sizeLabel.TextSize = 11
+	sizeLabel.TextStyle = fyne.TextStyle{Monospace: true}
 
-	title := widget.NewLabel(valueOrDefault(entry.Filename, entry.FileID))
-	title.TextStyle = fyne.TextStyle{Bold: true}
-	metaStr := fmt.Sprintf("%s · %s · %s", formatTimestamp(entry.AddedAt), formatBytes(entry.Filesize), progressPercent)
-	if speedLabel != "--" {
-		metaStr += " · " + speedLabel
-	}
-	if etaLabel != "--" {
-		metaStr += " · ETA " + etaLabel
-	}
-	metaText := canvas.NewText(metaStr, ctpOverlay1)
-	metaText.TextSize = 11
-	statusText := canvas.NewText(" · "+status, statusColor)
-	statusText.TextSize = 11
+	dirIcon := widget.NewIcon(directionIcon)
+	topLeft := container.New(layout.NewCustomPaddedHBoxLayout(8), container.NewGridWrap(fyne.NewSize(14, 14), dirIcon), nameLabel)
+	topRow := container.NewBorder(nil, nil, topLeft, sizeLabel, nil)
+
+	peerText := canvas.NewText(fmt.Sprintf("%s %s", directionLabel, c.transferPeerName(entry.PeerDeviceID)), ctpOverlay1)
+	peerText.TextSize = 11
+	statusText := canvas.NewText(status, statusColor)
 	statusText.TextStyle = fyne.TextStyle{Bold: true}
+	statusText.TextSize = 11
 
-	rowItems := []fyne.CanvasObject{title, container.NewHBox(metaText, statusText)}
-	if !entry.TransferCompleted && (strings.EqualFold(entry.Status, "pending") || strings.EqualFold(entry.Status, "accepted")) {
-		cancelBtn := widget.NewButton("Cancel", func() { c.cancelTransferFromUI(entry.FileID) })
-		cancelBtn.Importance = widget.DangerImportance
-		rowItems = append(rowItems, cancelBtn)
+	metaItems := []fyne.CanvasObject{peerText, statusText}
+	if speedLabel != "" {
+		speedText := canvas.NewText(speedLabel, ctpOverlay1)
+		speedText.TextSize = 11
+		metaItems = append(metaItems, speedText)
 	}
-	if (strings.EqualFold(entry.Status, "failed") || strings.EqualFold(entry.Status, "rejected")) && strings.EqualFold(entry.Direction, "send") {
-		retryBtn := widget.NewButton("Retry", func() { c.retryTransferFromUI(entry.FileID) })
-		rowItems = append(rowItems, retryBtn)
+	if etaLabel != "" {
+		etaText := canvas.NewText("ETA "+etaLabel, ctpOverlay1)
+		etaText.TextSize = 11
+		metaItems = append(metaItems, etaText)
 	}
-	return container.NewPadded(newRoundedBg(ctpSurface0, 4, container.NewVBox(rowItems...)))
+	metaRow := container.New(layout.NewCustomPaddedHBoxLayout(8), metaItems...)
+
+	makeAction := func(icon fyne.Resource, label string, enabled bool, tapped func()) fyne.CanvasObject {
+		if tapped == nil {
+			tapped = func() {}
+		}
+		btn := newCompactFlatButtonWithIconAndLabelState(icon, label, enabled, tapped)
+		btn.labelSize = 10
+		btn.iconSize = 11
+		btn.padTop = 1
+		btn.padBottom = 1
+		btn.padLeft = 6
+		btn.padRight = 6
+		return btn
+	}
+	actions := container.New(layout.NewCustomPaddedHBoxLayout(4),
+		makeAction(iconPause(), "Pause", canPause, nil),
+		makeAction(iconResume(), "Resume", canResume, nil),
+		makeAction(iconRefresh(), "Retry", canRetry, func() { c.retryTransferFromUI(entry.FileID) }),
+		makeAction(iconBlock(), "Cancel", canCancel, func() { c.cancelTransferFromUI(entry.FileID) }),
+		makeAction(iconFolderOpen(), "Show Path", canShowPath, func() {
+			if err := openContainingFolder(path); err != nil {
+				dialog.ShowError(err, c.window)
+			}
+		}),
+	)
+
+	indent := func(object fyne.CanvasObject) fyne.CanvasObject {
+		return container.New(layout.NewCustomPaddedLayout(0, 0, 22, 0), object)
+	}
+
+	items := []fyne.CanvasObject{
+		topRow,
+		indent(metaRow),
+		indent(newTransferQueueProgressBar(progress, statusColor)),
+	}
+	if path != "" {
+		pathText := canvas.NewText(path, ctpOverlay0)
+		pathText.TextSize = 11
+		pathText.TextStyle = fyne.TextStyle{Monospace: true}
+		items = append(items, indent(pathText))
+	}
+	items = append(items, indent(actions))
+
+	row := container.New(layout.NewCustomPaddedVBoxLayout(4), items...)
+	return container.New(layout.NewCustomPaddedLayout(8, 8, 12, 12), row)
+}
+
+func transferQueueCategory(entry chatFileEntry) string {
+	status := strings.ToLower(strings.TrimSpace(entry.Status))
+	switch {
+	case strings.EqualFold(status, "complete"), (entry.TransferCompleted && strings.EqualFold(status, "accepted")):
+		return "done"
+	case strings.EqualFold(status, "failed"), strings.EqualFold(status, "rejected"), strings.EqualFold(status, "canceled"):
+		return "issues"
+	default:
+		return "active"
+	}
+}
+
+func transferQueueSortBucket(entry chatFileEntry) int {
+	switch transferQueueCategory(entry) {
+	case "active":
+		return 0
+	case "issues":
+		return 1
+	default:
+		return 2
+	}
+}
+
+func transferQueueStatusText(entry chatFileEntry) string {
+	status := strings.ToLower(strings.TrimSpace(entry.Status))
+	switch {
+	case strings.EqualFold(status, "complete"), (entry.TransferCompleted && strings.EqualFold(status, "accepted")):
+		return "Complete"
+	case strings.EqualFold(status, "failed"), strings.EqualFold(status, "rejected"):
+		return "Failed"
+	case strings.EqualFold(status, "canceled"):
+		return "Canceled"
+	case strings.EqualFold(status, "pending"):
+		return "Queued"
+	default:
+		return "Transferring"
+	}
+}
+
+func transferQueueStatusColor(entry chatFileEntry) color.Color {
+	status := strings.ToLower(strings.TrimSpace(entry.Status))
+	switch {
+	case strings.EqualFold(status, "complete"), (entry.TransferCompleted && strings.EqualFold(status, "accepted")):
+		return ctpGreen
+	case strings.EqualFold(status, "failed"), strings.EqualFold(status, "rejected"), strings.EqualFold(status, "canceled"):
+		return ctpRed
+	case strings.EqualFold(status, "pending"):
+		return ctpYellow
+	default:
+		return ctpBlue
+	}
+}
+
+type transferQueueProgressLayout struct {
+	progress float32
+}
+
+func (l *transferQueueProgressLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	if len(objects) < 2 {
+		return
+	}
+	track := objects[0]
+	fill := objects[1]
+
+	track.Move(fyne.NewPos(0, 0))
+	track.Resize(size)
+
+	p := l.progress
+	if p < 0 {
+		p = 0
+	} else if p > 1 {
+		p = 1
+	}
+	fillWidth := size.Width * p
+	if p > 0 && fillWidth < 2 {
+		fillWidth = 2
+	}
+	fill.Move(fyne.NewPos(0, 0))
+	fill.Resize(fyne.NewSize(fillWidth, size.Height))
+}
+
+func (l *transferQueueProgressLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	if len(objects) < 2 {
+		return fyne.NewSize(0, 0)
+	}
+	trackMin := objects[0].MinSize()
+	fillMin := objects[1].MinSize()
+	if fillMin.Height > trackMin.Height {
+		trackMin.Height = fillMin.Height
+	}
+	if fillMin.Width > trackMin.Width {
+		trackMin.Width = fillMin.Width
+	}
+	return trackMin
+}
+
+func newTransferQueueProgressBar(progress float32, fillColor color.Color) fyne.CanvasObject {
+	track := canvas.NewRectangle(ctpSurface2)
+	track.CornerRadius = 2
+	track.SetMinSize(fyne.NewSize(1, 4))
+	fill := canvas.NewRectangle(fillColor)
+	fill.CornerRadius = 2
+	fill.SetMinSize(fyne.NewSize(1, 4))
+	return container.New(&transferQueueProgressLayout{progress: progress}, track, fill)
 }
 
 func (c *controller) clearCompletedTransfers() {
@@ -806,6 +1000,13 @@ func (c *controller) setStatus(message string) {
 }
 
 func (c *controller) showLogsDialog() {
+	var popup *widget.PopUp
+	closeDialog := func() {
+		if popup != nil {
+			popup.Hide()
+		}
+	}
+
 	runtimeEntry := widget.NewMultiLineEntry()
 	runtimeEntry.SetMinRowsVisible(12)
 	runtimeEntry.Disable()
@@ -854,12 +1055,15 @@ func (c *controller) showLogsDialog() {
 		container.NewTabItem("Security Events", securityScroll),
 	)
 	tabs.SetTabLocation(container.TabLocationTop)
-	closeBtn := widget.NewButton("Close", nil)
-	content := container.NewBorder(nil, container.NewPadded(closeBtn), nil, nil, tabs)
-	d := dialog.NewCustomWithoutButtons("Application Logs", content, c.window)
-	closeBtn.OnTapped = func() { d.Hide() }
-	d.Resize(fyne.NewSize(620, 380))
-	d.Show()
+
+	header := newPanelHeader("Application Logs", "Runtime and security event history", closeDialog, c.handleHoverHint)
+	footerRight := container.New(layout.NewCustomPaddedHBoxLayout(8),
+		newPanelActionButton("Close", "Close logs", panelActionSecondary, closeDialog, c.handleHoverHint),
+	)
+	footer := newPanelFooter(nil, footerRight)
+	panel := newPanelFrame(header, footer, tabs)
+	popup = newPanelPopup(c.window, panel, fyne.NewSize(620, 380))
+	popup.Show()
 }
 
 func (c *controller) setAppForeground(foreground bool) {

@@ -466,33 +466,18 @@ func (c *controller) showDiscoveryDialog() {
 		c.syncDiscoveryAddButton()
 	}
 
-	subtitle := canvas.NewText("Peers discovered on your local network", ctpOverlay1)
-	subtitle.TextSize = 11
-	title := canvas.NewText("Discover Peers", ctpText)
-	title.TextSize = 14
-	title.TextStyle = fyne.TextStyle{Bold: true}
-	headerLeft := container.NewVBox(title, subtitle)
-
-	closeBtn := newCompactFlatButtonWithIcon(iconCancel(), "Close discover dialog", func() {
+	closeDialog := func() {
 		c.closeDiscoveryDialog()
-	}, c.handleHoverHint)
-	closeBtn.iconSize = 14
-	closeBtn.padTop = 2
-	closeBtn.padBottom = 2
-	closeBtn.padLeft = 2
-	closeBtn.padRight = 2
-	headerRow := container.NewHBox(headerLeft, layout.NewSpacer(), closeBtn)
-	headerBg := canvas.NewRectangle(ctpMantle)
-	headerBg.SetMinSize(fyne.NewSize(1, 56))
-	header := container.NewStack(headerBg, container.New(layout.NewCustomPaddedLayout(8, 8, 12, 12), headerRow))
+	}
+	header := newPanelHeader("Discover Peers", "Peers discovered on your local network", closeDialog, c.handleHoverHint)
 
 	refreshBtn := newCompactFlatButtonWithIconAndLabel(iconRefresh(), "Refresh", "Refresh discovered peers", func() {
 		go c.refreshDiscovery()
 	}, c.handleHoverHint)
-	refreshBtn.labelSize = 11
-	refreshBtn.iconSize = 13
-	refreshBtn.padTop = 2
-	refreshBtn.padBottom = 2
+	refreshBtn.labelSize = 10
+	refreshBtn.iconSize = 11
+	refreshBtn.padTop = 1
+	refreshBtn.padBottom = 1
 	refreshBtn.padLeft = 8
 	refreshBtn.padRight = 8
 	refreshBtn.labelColor = ctpSubtext1
@@ -509,49 +494,25 @@ func (c *controller) showDiscoveryDialog() {
 		peerCopy := *peer
 		go c.addDiscoveredPeer(peerCopy)
 	}, c.handleHoverHint)
-	c.discoveryAddBtn.labelSize = 11
-	c.discoveryAddBtn.iconSize = 13
-	c.discoveryAddBtn.padTop = 2
-	c.discoveryAddBtn.padBottom = 2
+	c.discoveryAddBtn.labelSize = 10
+	c.discoveryAddBtn.iconSize = 11
+	c.discoveryAddBtn.padTop = 1
+	c.discoveryAddBtn.padBottom = 1
 	c.discoveryAddBtn.padLeft = 8
 	c.discoveryAddBtn.padRight = 8
 	c.discoveryAddBg = canvas.NewRectangle(ctpSurface0)
 	c.discoveryAddBg.CornerRadius = 4
 	addWrap := container.NewStack(c.discoveryAddBg, c.discoveryAddBtn)
 
-	footerCloseBtn := newCompactFlatButtonWithIconAndLabel(iconCancel(), "Close", "Close discover dialog", func() {
-		c.closeDiscoveryDialog()
-	}, c.handleHoverHint)
-	footerCloseBtn.labelSize = 11
-	footerCloseBtn.iconSize = 13
-	footerCloseBtn.padTop = 2
-	footerCloseBtn.padBottom = 2
-	footerCloseBtn.padLeft = 8
-	footerCloseBtn.padRight = 8
-	footerCloseBtn.labelColor = ctpSubtext0
-	footerCloseBtn.hoverColor = ctpSurface1
-	footerCloseBg := canvas.NewRectangle(ctpSurface0)
-	footerCloseBg.CornerRadius = 4
-	footerCloseWrap := container.NewStack(footerCloseBg, footerCloseBtn)
+	footerCloseWrap := newPanelActionButton("Close", "Close discover dialog", panelActionSecondary, closeDialog, c.handleHoverHint)
 
 	footerRight := container.New(layout.NewCustomPaddedHBoxLayout(8), addWrap, footerCloseWrap)
-	footerRow := container.NewHBox(refreshWrap, layout.NewSpacer(), footerRight)
-	footerBg := canvas.NewRectangle(ctpMantle)
-	footerBg.SetMinSize(fyne.NewSize(1, 42))
-	footer := container.NewStack(footerBg, container.New(layout.NewCustomPaddedLayout(6, 6, 12, 12), footerRow))
+	footer := newPanelFooter(refreshWrap, footerRight)
 
-	content := newNoGapBorder(withBottomDivider(header), withTopDivider(footer), c.discoveryList)
-	panelBg := canvas.NewRectangle(ctpBase)
-	panelBg.CornerRadius = 6
-	panelBg.StrokeColor = ctpSurface1
-	panelBg.StrokeWidth = 1
-	panel := container.NewStack(panelBg, content)
-
-	popupContent := container.New(layout.NewCustomPaddedLayout(-4, -4, -4, -4), panel)
-	c.discoveryDialog = widget.NewModalPopUp(popupContent, c.window.Canvas())
+	panel := newPanelFrame(header, footer, c.discoveryList)
+	c.discoveryDialog = newPanelPopup(c.window, panel, fyne.NewSize(520, 460))
 	c.refreshDiscoveryRows()
 	c.syncDiscoveryAddButton()
-	c.discoveryDialog.Resize(fyne.NewSize(520, 460))
 	c.discoveryDialog.Show()
 }
 

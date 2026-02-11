@@ -454,6 +454,7 @@ type flatButton struct {
 type flatButtonRenderer struct {
 	rect  *canvas.Rectangle
 	inner fyne.CanvasObject
+	label *canvas.Text
 	btn   *flatButton
 }
 
@@ -481,6 +482,14 @@ func (r *flatButtonRenderer) Refresh() {
 	if r.btn.iconWidget != nil {
 		r.btn.iconWidget.SetResource(r.btn.currentIcon())
 		r.btn.iconWidget.Refresh()
+	}
+	if r.label != nil {
+		if r.btn.enabled {
+			r.label.Color = r.btn.labelColor
+		} else {
+			r.label.Color = r.btn.disabled
+		}
+		r.label.Refresh()
 	}
 	r.rect.CornerRadius = 4
 	r.rect.Refresh()
@@ -609,25 +618,35 @@ func (b *flatButton) CreateRenderer() fyne.WidgetRenderer {
 	if b.iconSize > 0 {
 		iconObj = container.NewGridWrap(fyne.NewSize(b.iconSize, b.iconSize), icon)
 	}
+	showIcon := b.currentIcon() != nil
 	// Wrap icon so the button has a minimum tap target (theme icon size is typically 24px)
 	var inner fyne.CanvasObject
+	var lbl *canvas.Text
 	if b.label != "" {
 		textColor := b.labelColor
 		if !b.enabled {
 			textColor = b.disabled
 		}
-		lbl := canvas.NewText(b.label, textColor)
+		lbl = canvas.NewText(b.label, textColor)
 		if b.labelSize > 0 {
 			lbl.TextSize = b.labelSize
 		} else {
 			lbl.TextSize = 12
 		}
 		if b.compact {
-			row := container.New(layout.NewCustomPaddedHBoxLayout(4), container.NewCenter(iconObj), container.NewCenter(lbl))
-			inner = container.New(layout.NewCustomPaddedLayout(b.padTop, b.padBottom, b.padLeft, b.padRight), row)
+			if showIcon {
+				row := container.New(layout.NewCustomPaddedHBoxLayout(4), container.NewCenter(iconObj), container.NewCenter(lbl))
+				inner = container.New(layout.NewCustomPaddedLayout(b.padTop, b.padBottom, b.padLeft, b.padRight), row)
+			} else {
+				inner = container.New(layout.NewCustomPaddedLayout(b.padTop, b.padBottom, b.padLeft, b.padRight), container.NewCenter(lbl))
+			}
 		} else {
-			row := container.NewHBox(iconObj, lbl)
-			inner = container.NewPadded(row)
+			if showIcon {
+				row := container.NewHBox(iconObj, lbl)
+				inner = container.NewPadded(row)
+			} else {
+				inner = container.NewPadded(container.NewCenter(lbl))
+			}
 		}
 	} else {
 		iconBox := container.NewCenter(iconObj)
@@ -637,7 +656,7 @@ func (b *flatButton) CreateRenderer() fyne.WidgetRenderer {
 			inner = container.NewPadded(iconBox)
 		}
 	}
-	return &flatButtonRenderer{rect: rect, inner: inner, btn: b}
+	return &flatButtonRenderer{rect: rect, inner: inner, label: lbl, btn: b}
 }
 
 func (b *flatButton) Tapped(*fyne.PointEvent) {

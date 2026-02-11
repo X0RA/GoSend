@@ -175,11 +175,14 @@ func (c *controller) showSettingsDialog() {
 		resetKeysBtn,
 	)
 
-	dlg := dialog.NewCustomConfirm("Device Settings", "Save", "Close", content, func(save bool) {
-		if !save {
-			return
+	var popup *widget.PopUp
+	closeDialog := func() {
+		if popup != nil {
+			popup.Hide()
 		}
+	}
 
+	saveSettings := func() {
 		name := strings.TrimSpace(nameEntry.Text)
 		if name == "" {
 			dialog.ShowError(fmt.Errorf("device name is required"), c.window)
@@ -233,6 +236,7 @@ func (c *controller) showSettingsDialog() {
 			c.cfg.CleanupDownloadedFiles != cleanupDownloadedFiles.Checked
 		if !changed {
 			c.setStatus("Settings saved")
+			closeDialog()
 			return
 		}
 
@@ -254,6 +258,7 @@ func (c *controller) showSettingsDialog() {
 			if c.manager != nil {
 				if err := c.manager.UpdateDeviceName(name); err != nil {
 					c.setStatus(fmt.Sprintf("Device name updated in config; runtime update failed: %v", err))
+					closeDialog()
 					dialog.ShowInformation("Restart Recommended", "Device name was saved, but runtime update failed. Restart the app to fully apply it.", c.window)
 					return
 				}
@@ -261,26 +266,38 @@ func (c *controller) showSettingsDialog() {
 			if c.discovery != nil {
 				if err := c.discovery.UpdateDeviceName(name); err != nil {
 					c.setStatus(fmt.Sprintf("Device name updated in config; mDNS update failed: %v", err))
+					closeDialog()
 					dialog.ShowInformation("Restart Recommended", "Device name was saved, but discovery update failed. Restart the app to fully apply it.", c.window)
 					return
 				}
 			}
 			c.identity.DeviceName = name
 			c.setStatus("Settings saved")
+			closeDialog()
 			return
 		}
 
 		if portChanged {
 			c.setStatus("Settings saved. Restart required to apply port changes.")
+			closeDialog()
 			dialog.ShowInformation("Restart Required", "Settings were saved. Restart the app to apply port changes.", c.window)
 			return
 		}
 
 		c.setStatus("Settings saved")
-	}, c.window)
+		closeDialog()
+	}
 
-	dlg.Resize(fyne.NewSize(640, 520))
-	dlg.Show()
+	header := newPanelHeader("Device Settings", "Local device and transfer preferences", closeDialog, c.handleHoverHint)
+	footerRight := container.NewHBox(
+		newPanelActionButton("Close", "Close device settings", panelActionSecondary, closeDialog, c.handleHoverHint),
+		newPanelActionButton("Save", "Save device settings", panelActionPrimary, saveSettings, c.handleHoverHint),
+	)
+	scroll := container.NewVScroll(content)
+	scroll.SetMinSize(fyne.NewSize(640, 460))
+	panel := newPanelFrame(header, newPanelFooter(nil, footerRight), scroll)
+	popup = newPanelPopup(c.window, panel, fyne.NewSize(660, 560))
+	popup.Show()
 }
 
 func (c *controller) showSelectedPeerSettingsDialog() {
@@ -448,11 +465,14 @@ func (c *controller) showSelectedPeerSettingsDialog() {
 		clearHistoryBtn,
 	)
 
-	dlg := dialog.NewCustomConfirm("Peer Settings", "Save", "Close", content, func(save bool) {
-		if !save {
-			return
+	var popup *widget.PopUp
+	closeDialog := func() {
+		if popup != nil {
+			popup.Hide()
 		}
+	}
 
+	saveSettings := func() {
 		trustLevelValue := storage.PeerTrustLevelNormal
 		if trustLevel.Selected == "Trusted" {
 			trustLevelValue = storage.PeerTrustLevelTrusted
@@ -494,9 +514,18 @@ func (c *controller) showSelectedPeerSettingsDialog() {
 		c.refreshPeersFromStore()
 		c.refreshChatForPeer(peer.DeviceID)
 		c.setStatus("Peer settings saved")
-	}, c.window)
-	dlg.Resize(fyne.NewSize(660, 560))
-	dlg.Show()
+		closeDialog()
+	}
+	header := newPanelHeader("Peer Settings", "Peer identity and transfer preferences", closeDialog, c.handleHoverHint)
+	footerRight := container.NewHBox(
+		newPanelActionButton("Close", "Close peer settings", panelActionSecondary, closeDialog, c.handleHoverHint),
+		newPanelActionButton("Save", "Save peer settings", panelActionPrimary, saveSettings, c.handleHoverHint),
+	)
+	scroll := container.NewVScroll(content)
+	scroll.SetMinSize(fyne.NewSize(640, 500))
+	panel := newPanelFrame(header, newPanelFooter(nil, footerRight), scroll)
+	popup = newPanelPopup(c.window, panel, fyne.NewSize(680, 580))
+	popup.Show()
 }
 
 func (c *controller) confirmClearPeerHistory(peerID string) {
