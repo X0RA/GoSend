@@ -23,6 +23,7 @@ import (
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+	sqdialog "github.com/sqweek/dialog"
 
 	"gosend/config"
 	appcrypto "gosend/crypto"
@@ -85,7 +86,7 @@ type controller struct {
 	chatSearchVisible bool
 	chatFilesOnly     bool
 
-	fileProgressBars   map[string]*widget.ProgressBar
+	fileProgressBars   map[string]*thinProgressBar
 	fileProgressBarsMu sync.Mutex
 
 	runtimeMu         sync.RWMutex
@@ -909,57 +910,106 @@ func transferQueueStatusColor(entry chatFileEntry) color.Color {
 	}
 }
 
-type transferQueueProgressLayout struct {
-	progress float32
+type thinProgressBar struct {
+	widget.BaseWidget
+	progress  float32
+	fillColor color.Color
 }
 
-func (l *transferQueueProgressLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
-	if len(objects) < 2 {
-		return
-	}
-	track := objects[0]
-	fill := objects[1]
-
-	track.Move(fyne.NewPos(0, 0))
-	track.Resize(size)
-
-	p := l.progress
+func clampThinProgress(value float32) float32 {
+	p := value
 	if p < 0 {
 		p = 0
 	} else if p > 1 {
 		p = 1
 	}
+	return p
+}
+
+func (b *thinProgressBar) currentFillColor() color.Color {
+	if b == nil || b.fillColor == nil {
+		return ctpBlue
+	}
+	return b.fillColor
+}
+
+type thinProgressBarRenderer struct {
+	bar   *thinProgressBar
+	track *canvas.Rectangle
+	fill  *canvas.Rectangle
+}
+
+func (r *thinProgressBarRenderer) Layout(size fyne.Size) {
+	r.track.Move(fyne.NewPos(0, 0))
+	r.track.Resize(size)
+
+	p := clampThinProgress(r.bar.progress)
 	fillWidth := size.Width * p
 	if p > 0 && fillWidth < 2 {
 		fillWidth = 2
 	}
-	fill.Move(fyne.NewPos(0, 0))
-	fill.Resize(fyne.NewSize(fillWidth, size.Height))
+	r.fill.Move(fyne.NewPos(0, 0))
+	r.fill.Resize(fyne.NewSize(fillWidth, size.Height))
 }
 
-func (l *transferQueueProgressLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
-	if len(objects) < 2 {
-		return fyne.NewSize(0, 0)
+func (r *thinProgressBarRenderer) MinSize() fyne.Size {
+	return fyne.NewSize(1, 4)
+}
+
+func (r *thinProgressBarRenderer) Refresh() {
+	r.track.FillColor = ctpSurface2
+	r.track.CornerRadius = 2
+	r.fill.FillColor = r.bar.currentFillColor()
+	r.fill.CornerRadius = 2
+	r.track.Refresh()
+	r.fill.Refresh()
+}
+
+func (r *thinProgressBarRenderer) Objects() []fyne.CanvasObject {
+	return []fyne.CanvasObject{r.track, r.fill}
+}
+
+func (r *thinProgressBarRenderer) Destroy() {}
+
+func (b *thinProgressBar) CreateRenderer() fyne.WidgetRenderer {
+	track := canvas.NewRectangle(ctpSurface2)
+	track.CornerRadius = 2
+	fill := canvas.NewRectangle(b.currentFillColor())
+	fill.CornerRadius = 2
+	return &thinProgressBarRenderer{
+		bar:   b,
+		track: track,
+		fill:  fill,
 	}
-	trackMin := objects[0].MinSize()
-	fillMin := objects[1].MinSize()
-	if fillMin.Height > trackMin.Height {
-		trackMin.Height = fillMin.Height
+}
+
+func (b *thinProgressBar) SetValue(value float32) {
+	if b == nil {
+		return
 	}
-	if fillMin.Width > trackMin.Width {
-		trackMin.Width = fillMin.Width
+	b.progress = clampThinProgress(value)
+	b.Refresh()
+}
+
+func (b *thinProgressBar) SetFillColor(fillColor color.Color) {
+	if b == nil {
+		return
 	}
-	return trackMin
+	b.fillColor = fillColor
+	b.Refresh()
+}
+
+func newThinProgressBar(progress float32, fillColor color.Color) *thinProgressBar {
+	bar := &thinProgressBar{
+		progress:  clampThinProgress(progress),
+		fillColor: fillColor,
+	}
+	bar.ExtendBaseWidget(bar)
+	return bar
 }
 
 func newTransferQueueProgressBar(progress float32, fillColor color.Color) fyne.CanvasObject {
-	track := canvas.NewRectangle(ctpSurface2)
-	track.CornerRadius = 2
-	track.SetMinSize(fyne.NewSize(1, 4))
-	fill := canvas.NewRectangle(fillColor)
-	fill.CornerRadius = 2
-	fill.SetMinSize(fyne.NewSize(1, 4))
-	return container.New(&transferQueueProgressLayout{progress: progress}, track, fill)
+	return newThinProgressBar(progress, fillColor)
 }
 
 func (c *controller) clearCompletedTransfers() {
@@ -1462,16 +1512,47 @@ func (c *controller) reconnectDiscoveredKnownPeers() {
 
 func (c *controller) promptIncomingPeerAddRequest(req network.AddRequestNotification) (bool, error) {
 	decision := make(chan bool, 1)
+	peerName := strings.TrimSpace(req.PeerDeviceName)
+	if peerName == "" {
+		peerName = strings.TrimSpace(req.PeerDeviceID)
+	}
+	if peerName == "" {
+		peerName = "Unknown peer"
+	}
 
 	fyne.Do(func() {
-		peerName := req.PeerDeviceName
-		if strings.TrimSpace(peerName) == "" {
-			peerName = req.PeerDeviceID
+		var popup *widget.PopUp
+		var respondOnce sync.Once
+		respond := func(accept bool) {
+			respondOnce.Do(func() {
+				decision <- accept
+				if popup != nil {
+					popup.Hide()
+				}
+			})
 		}
-		message := fmt.Sprintf("%s wants to add you as a peer. Accept?", peerName)
-		dialog.ShowConfirm("Incoming Peer Request", message, func(accept bool) {
-			decision <- accept
-		}, c.window)
+
+		message := widget.NewLabel(fmt.Sprintf("%s wants to add you as a peer.", peerName))
+		message.Wrapping = fyne.TextWrapWord
+		prompt := canvas.NewText("Accept this request?", ctpSubtext0)
+		prompt.TextSize = 11
+		body := container.New(layout.NewCustomPaddedVBoxLayout(8), message, prompt)
+		center := container.New(layout.NewCustomPaddedLayout(12, 10, 12, 12), body)
+
+		header := newPanelHeader("Incoming Peer Request", "Review and decide whether to connect", func() {
+			respond(false)
+		}, c.handleHoverHint)
+		footerRight := container.New(layout.NewCustomPaddedHBoxLayout(8),
+			newPanelActionButton("Reject", "Reject peer request", panelActionSecondary, func() {
+				respond(false)
+			}, c.handleHoverHint),
+			newPanelActionButton("Accept", "Accept peer request", panelActionPrimary, func() {
+				respond(true)
+			}, c.handleHoverHint),
+		)
+		panel := newPanelFrame(header, newPanelFooter(nil, footerRight), center)
+		popup = newPanelPopup(c.window, panel, fyne.NewSize(500, 220))
+		popup.Show()
 	})
 
 	select {
@@ -1479,9 +1560,9 @@ func (c *controller) promptIncomingPeerAddRequest(req network.AddRequestNotifica
 		return false, errors.New("application is shutting down")
 	case accept := <-decision:
 		if accept {
-			c.setStatus(fmt.Sprintf("Accepted peer request from %s", req.PeerDeviceName))
+			c.setStatus(fmt.Sprintf("Accepted peer request from %s", peerName))
 		} else {
-			c.setStatus(fmt.Sprintf("Rejected peer request from %s", req.PeerDeviceName))
+			c.setStatus(fmt.Sprintf("Rejected peer request from %s", peerName))
 		}
 		return accept, nil
 	}
@@ -1607,6 +1688,41 @@ func (c *controller) pickFilePath() ([]string, error) {
 }
 
 func (c *controller) pickSingleFilePath() (string, error) {
+	path, err := c.pickSingleFilePathNative()
+	if err == nil || errors.Is(err, errFilePickerCancelled) {
+		return path, err
+	}
+	return c.pickSingleFilePathFyne()
+}
+
+func (c *controller) pickSingleFilePathNative() (path string, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("native file picker failed: %v", recovered)
+		}
+	}()
+
+	picker := sqdialog.File().Title("Select File")
+	if dir := strings.TrimSpace(c.currentDownloadDirectory()); dir != "" {
+		picker = picker.SetStartDir(dir)
+	}
+
+	path, err = picker.Load()
+	if err != nil {
+		if errors.Is(err, sqdialog.ErrCancelled) {
+			return "", errFilePickerCancelled
+		}
+		return "", err
+	}
+
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", errFilePickerCancelled
+	}
+	return path, nil
+}
+
+func (c *controller) pickSingleFilePathFyne() (string, error) {
 	type pickResult struct {
 		path string
 		err  error
@@ -1643,6 +1759,41 @@ func (c *controller) pickSingleFilePath() (string, error) {
 }
 
 func (c *controller) pickFolderPath() (string, error) {
+	path, err := c.pickFolderPathNative()
+	if err == nil || errors.Is(err, errFilePickerCancelled) {
+		return path, err
+	}
+	return c.pickFolderPathFyne()
+}
+
+func (c *controller) pickFolderPathNative() (path string, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("native folder picker failed: %v", recovered)
+		}
+	}()
+
+	picker := sqdialog.Directory().Title("Select Folder")
+	if dir := strings.TrimSpace(c.currentDownloadDirectory()); dir != "" {
+		picker = picker.SetStartDir(dir)
+	}
+
+	path, err = picker.Browse()
+	if err != nil {
+		if errors.Is(err, sqdialog.ErrCancelled) {
+			return "", errFilePickerCancelled
+		}
+		return "", err
+	}
+
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", errFilePickerCancelled
+	}
+	return path, nil
+}
+
+func (c *controller) pickFolderPathFyne() (string, error) {
 	type pickResult struct {
 		path string
 		err  error

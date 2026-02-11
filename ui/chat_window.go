@@ -654,9 +654,9 @@ func (c *controller) renderChatTranscript() {
 		if c.chatMessagesBox == nil {
 			return
 		}
-		// Map FileID -> progress bar so we can update the correct bar on progress without rebuilding the list.
-		barMap := make(map[string]*widget.ProgressBar)
-		registerBar := func(fileID string, bar *widget.ProgressBar) {
+		// Map FileID -> thin progress bar so we can update the correct bar on progress without rebuilding the list.
+		barMap := make(map[string]*thinProgressBar)
+		registerBar := func(fileID string, bar *thinProgressBar) {
 			if fileID != "" && bar != nil {
 				barMap[fileID] = bar
 			}
@@ -801,7 +801,7 @@ func isOutgoingMessage(message storage.Message, localDeviceID string) bool {
 }
 
 // onProgressBarCreated is called when a file row has a progress bar so the controller can update it by FileID.
-type onProgressBarCreated func(fileID string, bar *widget.ProgressBar)
+type onProgressBarCreated func(fileID string, bar *thinProgressBar)
 
 func renderFileRow(file chatFileEntry, localDeviceID string, parentWindow fyne.Window, registerProgressBar onProgressBarCreated, onCancelTransfer func(string), onRetryTransfer func(string)) fyne.CanvasObject {
 	_ = localDeviceID
@@ -885,9 +885,13 @@ func renderFileRow(file chatFileEntry, localDeviceID string, parentWindow fyne.W
 		contentItems = append(contentItems, indent(speed))
 	}
 
-	if !file.TransferCompleted && file.Status != "failed" && file.Status != "rejected" && file.TotalBytes > 0 {
-		progress := widget.NewProgressBar()
-		progress.SetValue(float64(file.BytesTransferred) / float64(file.TotalBytes))
+	if !file.TransferCompleted && file.Status != "failed" && file.Status != "rejected" {
+		progressValue := float32(0)
+		if file.TotalBytes > 0 {
+			progressValue = float32(file.BytesTransferred) / float32(file.TotalBytes)
+		}
+		progressColor := transferQueueStatusColor(file)
+		progress := newThinProgressBar(progressValue, progressColor)
 		contentItems = append(contentItems, indent(progress))
 		if registerProgressBar != nil && file.FileID != "" {
 			registerProgressBar(file.FileID, progress)
@@ -1396,11 +1400,15 @@ func (c *controller) handleFileProgress(progress network.FileProgress) {
 	c.fileProgressBarsMu.Lock()
 	bar := c.fileProgressBars[progress.FileID]
 	c.fileProgressBarsMu.Unlock()
-	if bar != nil && entry.TotalBytes > 0 {
-		value := float64(entry.BytesTransferred) / float64(entry.TotalBytes)
+	if bar != nil {
+		value := float32(0)
+		if entry.TotalBytes > 0 {
+			value = float32(float64(entry.BytesTransferred) / float64(entry.TotalBytes))
+		}
+		fillColor := transferQueueStatusColor(entry)
 		fyne.Do(func() {
 			bar.SetValue(value)
-			bar.Refresh()
+			bar.SetFillColor(fillColor)
 		})
 	}
 	fyne.Do(func() {
